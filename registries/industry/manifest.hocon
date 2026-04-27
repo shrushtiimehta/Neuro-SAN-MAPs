@@ -45,4 +45,9 @@
     "industry/expedia.hocon": true,
     "industry/macys.hocon": true,
     "industry/LinkedInJobSeekerSupportNetwork.hocon": true,
+
+    # MAPs (Mini Amusement Parks) benchmark — six specialists each with their own
+    # AgentChecklistMiddleware-backed plan, advising a director that posts one
+    # action per turn to the maps_mcp_server (see apps/maps_park/).
+    "industry/maps_park.hocon": true,
 }

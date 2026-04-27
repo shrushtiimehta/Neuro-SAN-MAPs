@@ -203,3 +203,6 @@ registries/generated/
 
 # test local only
 registries/manifest.hocon.test
+
+# Persistent memory store written by middleware/persistent_memory
+memory/
