@@ -45,7 +45,7 @@ start() {
 
 start "maps_node"   "$MAPS_REPO"       "node map_backend/server.js"
 sleep 2
-start "maps_mcp"    "$OPEN_GRIDWORLD"  "python maps_mcp_server.py --layout the_islands --difficulty medium --mcp_port 8765 --maps_repo_dir '$MAPS_REPO'"
+start "maps_mcp"    "$OPEN_GRIDWORLD"  "python maps_mcp_server.py --layout the_islands --difficulty medium --mcp_port 8765 --num_parks 1 --maps_repo_dir '$MAPS_REPO'"
 sleep 3
 start "studio"      "$STUDIO_DIR"      "python -m run"
 sleep 5

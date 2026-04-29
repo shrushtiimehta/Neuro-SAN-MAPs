@@ -1,0 +1,65 @@
+# See staff_notes.md for qualitative mechanics and field meanings.
+# Specialist subtypes: yellow=clown, blue=stocker, green=park crier, red=vendor.
+
+staff:
+  janitor:
+    yellow:
+      salary: 25
+      clean_rate: 0.028
+      cleaning_threshold: 0.85
+      notes: "Cleans tiles."
+    blue:
+      salary: 100
+      clean_rate: 0.075
+      cleaning_threshold: 0.95
+      notes: "Cleans tiles fast, walks fast."
+    green:
+      salary: 500
+      clean_rate: 0.2
+      cleaning_threshold: 1.0
+      notes: "Cleans tiles faster, walks fast."
+    red:
+      salary: 2000
+      clean_rate: 0.35
+      cleaning_threshold: 1.2
+      notes: "Cleans tiles fastest, walks fast.\nProvides preventative cleaning."
+
+  mechanic:
+    yellow:
+      salary: 15
+      repair_rate: 2
+      notes: "Repairs rides."
+    blue:
+      salary: 100
+      repair_rate: 8
+      notes: "Repairs rides fast, walks fast."
+    green:
+      salary: 250
+      repair_rate: 20
+      notes: "Repairs rides faster, walks fast."
+    red:
+      salary: 1000
+      repair_rate: 50
+      notes: "Repairs rides fastest, walks fast.\nProvides preventative maintenance."
+
+  specialist:
+    yellow: # clown
+      salary: 60
+      happiness_boost: 0.25
+      notes: "Entertains guest in ride lines."
+    blue: # stocker
+      salary: 350
+      stocking_rate: 0.1   # Percentage of inventory that will attempt to get
+      max_inventory: 100   # Max number of items that can be carried
+      restock_threshold: 0.25  # Only restores shops who's proportion of inventory drops below this
+      idle_ticks: 30       # Idle for the last N steps of the simulation each day
+      notes: "Restocks shops."
+    green: # park crier
+      salary: 250
+      notes: "Informs guests about dirty\nor out of service attractions."
+    red: # vendor
+      salary: 300
+      happiness_boost: 0.2
+      hunger_reduction: 0.3
+      thirst_reduction: 0.4
+      notes: "Provides fun food and drink to\nguests waiting in line."

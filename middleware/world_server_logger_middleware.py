@@ -40,7 +40,12 @@ from langgraph.types import Command
 
 
 class WorldServerLoggerMiddleware(AgentMiddleware):
-    """Append one JSONL row per ``world_server`` (MAPs MCP) tool call."""
+    """Append one JSONL row per MAPs world-step tool call.
+
+    Supports both the legacy single-tool ``world_server`` shape (the agent
+    calls one MCP tool with a JSON-string payload) and the new typed
+    ``maps_*`` coded_tools (one per MAPs action with structured args).
+    """
 
     DEFAULT_LOG_PATH: ClassVar[str] = "logs/maps_park/run.jsonl"
     DEFAULT_TOOL_NAME: ClassVar[str] = "world_server"
@@ -48,11 +53,17 @@ class WorldServerLoggerMiddleware(AgentMiddleware):
     def __init__(
         self,
         log_path: str = DEFAULT_LOG_PATH,
-        tool_name: str = DEFAULT_TOOL_NAME,
+        tool_name: str | None = None,
+        tool_names: list[str] | None = None,
     ) -> None:
         super().__init__()
         self.log_path: str = log_path
-        self.tool_name: str = tool_name
+        if tool_names:
+            self.tool_names: list[str] = list(tool_names)
+        elif tool_name:
+            self.tool_names = [tool_name]
+        else:
+            self.tool_names = [self.DEFAULT_TOOL_NAME]
         self.logger: Logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
         self._ensure_log_dir()
 
@@ -73,19 +84,21 @@ class WorldServerLoggerMiddleware(AgentMiddleware):
 
         result: ToolMessage | Command[Any] = await handler(request)
 
-        if name == self.tool_name and isinstance(result, ToolMessage):
-            self._record(args, result.content)
+        if name in self.tool_names and isinstance(result, ToolMessage):
+            self._record(name, args, result.content)
 
         return result
 
-    def _record(self, args: dict[str, Any], raw_content: Any) -> None:
+    def _record(self, tool_name: str, args: dict[str, Any], raw_content: Any) -> None:
         flat_args: dict[str, Any] = self._unwrap_args(args)
         envelope: dict[str, Any] = self._parse_content(raw_content)
         observation: dict[str, Any] = envelope.get("observation") or {}
+        action_label: Any = flat_args.get("action") or self._synthesize_action(tool_name, flat_args)
         row: dict[str, Any] = {
             "wall_time": time.time(),
+            "tool": tool_name,
             "park": flat_args.get("park"),
-            "action": flat_args.get("action"),
+            "action": action_label,
             "episode": envelope.get("episode"),
             "step": envelope.get("step", observation.get("step")),
             "horizon": envelope.get("horizon"),
@@ -111,6 +124,24 @@ class WorldServerLoggerMiddleware(AgentMiddleware):
                 raw_content[:500] if isinstance(raw_content, str) else repr(raw_content)[:500]
             )
         self._append(row)
+
+    @staticmethod
+    def _synthesize_action(tool_name: str, flat_args: dict[str, Any]) -> str | None:
+        """Build a human-readable action label from a typed maps_* call.
+
+        For the legacy single-tool path, the LLM already supplies an
+        ``action`` string. For the typed coded_tools we reconstruct one
+        like ``place(x=8, y=7, type='ride', ...)`` for log readability.
+        """
+        if not tool_name.startswith("maps_"):
+            return None
+        action_name: str = tool_name[len("maps_"):]
+        kv_parts: list[str] = []
+        for key, value in flat_args.items():
+            if key == "park":
+                continue
+            kv_parts.append(f"{key}={value!r}")
+        return f"{action_name}({', '.join(kv_parts)})"
 
     @staticmethod
     def _unwrap_args(args: dict[str, Any]) -> dict[str, Any]:
