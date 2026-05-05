@@ -92,7 +92,7 @@ class ActionDispatcher(CodedTool):
         # park_director's instructions — because routing the write through
         # the LLM was dropping the nested 'observation' payload (LLM
         # paraphrasing). Doing it in Python guarantees nothing is stripped.
-        if isinstance(response, dict) and "error" not in response:
+        if isinstance(response, dict) and not response.get("error"):
             try:
                 await LatestObservation().async_invoke(
                     {"mode": "write", "park": park, "observation": response},

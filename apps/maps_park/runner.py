@@ -40,6 +40,7 @@ Prerequisites (run these first in separate shells):
 """
 
 import argparse
+import json
 import os
 import time
 
@@ -50,7 +51,7 @@ DEFAULT_AGENT = "industry/maps_park"
 DEFAULT_HOST = "localhost"
 DEFAULT_PORT = 30011
 DEFAULT_TICK_SECONDS = 5
-DEFAULT_MAX_TURNS = 0  # 0 means run forever
+DEFAULT_MAX_TURNS = 101  # one full episode by default
 
 
 def set_up_session(agent_name: str, host: str, port: int):
@@ -80,7 +81,24 @@ def step(session, thread, message: str):
     processor = StreamingInputProcessor("DEFAULT", "/tmp/maps_park_thinking.txt", session, None)
     thread["user_input"] = message
     thread = processor.process_once(thread)
-    return thread.get("last_chat_response"), thread
+    token_accounting = processor.processor.get_token_accounting()
+    return thread.get("last_chat_response"), thread, token_accounting
+
+
+def read_last_verified(log_path: str) -> dict | None:
+    """Return the last non-empty row from run.jsonl as ground-truth."""
+    if not os.path.exists(log_path):
+        return None
+    last = None
+    try:
+        with open(log_path, "r", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if line:
+                    last = json.loads(line)
+    except (OSError, json.JSONDecodeError):
+        pass
+    return last
 
 
 def main():
@@ -94,17 +112,43 @@ def main():
                         help="Stop after this many turns. 0 means run forever.")
     args = parser.parse_args()
 
+    log_path = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", "logs", "maps_park", "run.jsonl"))
+    obs_file = os.path.join(os.path.dirname(__file__), "..", "..", "memory", "maps_park", "latest_observations.json")
+    obs_path = os.path.normpath(obs_file)
+    if os.path.exists(obs_path):
+        os.remove(obs_path)
+        print(f"Cleared stale observation cache: {obs_path}")
+
     session, thread = set_up_session(args.agent, args.host, args.port)
 
-    user_input = "Start the run. Step all 5 parks (0..4) — one action per park."
+    user_input = "Start the run. Take one action on park 0."
     turn = 0
     try:
         while True:
             turn += 1
             print(f"\n========== TURN {turn} ==========")
-            response, thread = step(session, thread, user_input)
+            response, thread, tokens = step(session, thread, user_input)
             print(response or "(no response)")
-            user_input = "Step all 5 parks (0..4) — one action per park."
+            if tokens:
+                total = tokens.get("total_tokens", "?")
+                cost = tokens.get("total_cost", "?")
+                prompt = tokens.get("prompt_tokens", "?")
+                completion = tokens.get("completion_tokens", "?")
+                print(f"[tokens] total={total}  prompt={prompt}  completion={completion}  cost=${cost:.4f}")
+            verified = read_last_verified(log_path)
+            if verified and verified.get("step") is not None:
+                v_step  = verified.get("step", "?")
+                v_cash  = verified.get("cash", "?")
+                v_rew   = verified.get("reward", "?")
+                v_cum   = verified.get("cumulative_reward", "?")
+                v_act   = verified.get("action", "?")
+                v_done  = verified.get("done", False)
+                print(f"[verified] step={v_step}/100  action={v_act}  cash=${v_cash}"
+                      f"  reward={v_rew}  cumulative={v_cum}"
+                      + ("  EPISODE DONE" if v_done else ""))
+            else:
+                print("[verified] no ground-truth row yet (run.jsonl empty or fields null)")
+            user_input = "Take one action on park 0."
             if args.max_turns and turn >= args.max_turns:
                 print(f"\nReached max_turns={args.max_turns}; stopping.")
                 break

@@ -43,6 +43,12 @@ start() {
 [[ -d "$MAPS_REPO/map_backend" ]] || { echo "MAPs repo not found at $MAPS_REPO"; exit 1; }
 [[ -f "$OPEN_GRIDWORLD/maps_mcp_server.py" ]] || { echo "open_gridworld not found at $OPEN_GRIDWORLD"; exit 1; }
 
+# Kill any leftover processes from a previous run before starting fresh.
+pkill -f "map_backend/server.js" 2>/dev/null || true
+pkill -f "maps_mcp_server.py"    2>/dev/null || true
+pkill -f "neuro_san.*run"        2>/dev/null || true
+sleep 1
+
 start "maps_node"   "$MAPS_REPO"       "node map_backend/server.js"
 sleep 2
 start "maps_mcp"    "$OPEN_GRIDWORLD"  "python maps_mcp_server.py --layout the_islands --difficulty medium --mcp_port 8765 --num_parks 1 --maps_repo_dir '$MAPS_REPO'"

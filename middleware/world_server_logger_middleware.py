@@ -21,6 +21,7 @@ simulator, not the LLM's narration.
 
 from __future__ import annotations
 
+import ast
 import json
 import logging
 import os
@@ -85,13 +86,35 @@ class WorldServerLoggerMiddleware(AgentMiddleware):
         result: ToolMessage | Command[Any] = await handler(request)
 
         if name in self.tool_names and isinstance(result, ToolMessage):
-            self._record(name, args, result.content)
+            flat_args: dict[str, Any] = self._unwrap_args(args)
+            park: str = str(flat_args.get("park", "0"))
+            envelope: dict[str, Any] = await self._read_latest_observation(park)
+            if not envelope:
+                envelope = self._parse_content(result.content)
+            self._record(name, args, envelope)
 
         return result
 
-    def _record(self, tool_name: str, args: dict[str, Any], raw_content: Any) -> None:
+    async def _read_latest_observation(self, park: str) -> dict[str, Any]:
+        """Read the freshest observation envelope from LatestObservation.
+
+        ActionDispatcher writes to LatestObservation before returning, so
+        the window always holds the just-completed step. Reading here gives
+        us a clean Python dict without any serialisation wrapper to strip.
+        """
+        try:
+            from coded_tools.maps_park.latest_observation import LatestObservation  # noqa: PLC0415
+            window = await LatestObservation().async_invoke(
+                {"mode": "read", "park": park}, {}
+            )
+            if isinstance(window, dict) and window.get("window_size", 0) > 0:
+                return window.get("latest") or {}
+        except Exception as exc:  # noqa: BLE001
+            self.logger.debug("LatestObservation read failed: %s", exc)
+        return {}
+
+    def _record(self, tool_name: str, args: dict[str, Any], envelope: dict[str, Any]) -> None:
         flat_args: dict[str, Any] = self._unwrap_args(args)
-        envelope: dict[str, Any] = self._parse_content(raw_content)
         observation: dict[str, Any] = envelope.get("observation") or {}
         action_label: Any = flat_args.get("action") or self._synthesize_action(tool_name, flat_args)
         row: dict[str, Any] = {
@@ -120,9 +143,7 @@ class WorldServerLoggerMiddleware(AgentMiddleware):
         }
         if all(row.get(k) is None for k in ("step", "cash", "cumulative_reward")):
             row["_raw_args"] = args
-            row["_raw_content_preview"] = (
-                raw_content[:500] if isinstance(raw_content, str) else repr(raw_content)[:500]
-            )
+            row["_envelope_preview"] = repr(envelope)[:500]
         self._append(row)
 
     @staticmethod
@@ -191,11 +212,37 @@ class WorldServerLoggerMiddleware(AgentMiddleware):
         return {}
 
     @staticmethod
+    def _strip_content_wrapper(text: str) -> str:
+        """Strip ToolMessage repr wrapper: content="<dict>" → <dict>.
+
+        When neuro-san serialises a coded-tool dict result into a ToolMessage,
+        the `.content` attribute sometimes arrives as the Python repr of the
+        whole message rather than just the payload, e.g.:
+            content="{'park_index': 0, 'step': 1, ...}"
+        Stripping the wrapper exposes the inner Python-repr dict so that
+        ast.literal_eval can parse it correctly.
+        """
+        for prefix, suffix in (('content="', '"'), ("content='", "'")):
+            if text.startswith(prefix) and text.endswith(suffix) and len(text) > len(prefix) + len(suffix):
+                inner = text[len(prefix):-len(suffix)]
+                # Unescape any escaped quotes that were part of the wrapper encoding
+                inner = inner.replace(f"\\{suffix}", suffix)
+                return inner
+        return text
+
+    @staticmethod
     def _try_json(text: str) -> dict[str, Any]:
+        # Strip ToolMessage repr wrapper before attempting to parse
+        text = WorldServerLoggerMiddleware._strip_content_wrapper(text)
         try:
             parsed: Any = json.loads(text)
             return parsed if isinstance(parsed, dict) else {}
         except json.JSONDecodeError:
+            pass
+        try:
+            parsed = ast.literal_eval(text)
+            return parsed if isinstance(parsed, dict) else {}
+        except (ValueError, SyntaxError):
             return {}
 
     @staticmethod

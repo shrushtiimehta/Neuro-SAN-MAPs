@@ -2,7 +2,7 @@
     include "registries/aaosa_basic.hocon"
 
     "metadata": {
-        "description": "Multi-agent park manager that plays the MAPs (Mini Amusement Parks) benchmark on a single park (slot 0). Each user turn is one step; episodes run for 100 steps; many episodes share long-term lessons via persistent_memory. park_director orchestrates a turn; strategy_coordinator fans out to six domain specialists, picks one action, and fires it through ActionDispatcher (a deterministic coded tool that routes to the typed Maps* MCP wrappers — no LLM hop for dispatch).",
+        "description": "Multi-agent park manager that plays the MAPs (Mini Amusement Parks) benchmark on a single park (slot 0). Each user turn is one step; episodes run for 100 steps. park_director orchestrates a turn; strategy_coordinator fans out to six domain specialists, picks one action, and fires it through ActionDispatcher (a deterministic coded tool that routes to the typed Maps* MCP wrappers — no LLM hop for dispatch).",
         "tags": ["maps", "industry", "middleware", "mcp", "simulation"],
         "sample_queries": [
             "Start a new park run.",
@@ -13,167 +13,221 @@
 
     include "config/llm_config.hocon",
 
-   # Shared persistent-memory config: every agent passes the SAME fixed
-   # origin_str so the namespace parser yields ("maps_park","shared") and
-   # all 8 agents read/write the same ./memory/maps_park/shared/memory.json.
-   # That is our cross-episode shared brain (e.g. "yellow carousel at $4
-   # outperforms $6"). No per-agent private memory — anything that needs
-   # to persist across turns or episodes goes through shared_memory.
-   "shared_memory_middleware": {
-       "class": "middleware.persistent_memory.persistent_memory_middleware.PersistentMemoryMiddleware",
-       "args": {
-           "origin_str": "maps_park.shared.x",
-           "memory_config": {
-               "storage": {
-                   "backend":     "json_file",
-                   "folder_name": "./memory",
-                   "file_name":   "memory"
-               },
-               "summarization": {
-                   "max_topic_size": 2000
-               },
-               "enabled_operations": ["create", "read", "append", "search", "list"]
-           }
-       }
-   },
+    "max_steps": 40000,
+    "max_execution_seconds": 6000,
 
    "instructions_prefix": """
-You are part of a team of agents managing a Mini Amusement Park to maximize cumulative revenue.
+You are part of a team of agents managing a Mini Amusement Park to maximize cumulative park value.
 The park is a 20x20 grid. Guests enter at the entrance, walk paths to rides/shops, spend money,
 and leave through the exit. Rides come in tiers (yellow then blue then green then red), unlocked by
 research over time. Staff (janitors, mechanics) keep the park running. Money is finite.
-The single objective is: maximize cumulative park revenue.
+The single objective is: maximize cumulative park value — the sum of current cash, the resale value
+of all placed attractions, and the intellectual property earned from research.
+
+Observation structure: the simulator always wraps park state under an 'observation' key.
+Key field names (use these exactly):
+  - observation.money          — current cash (NOT 'cash')
+  - observation.value          — current park value
+  - observation.valid_placement_coords — list of [x,y] tiles ready for placement
+  - observation.path_coords    — list of [x,y] path tiles (for staff placement)
+  - observation.entrance / observation.exit — [x,y] positions (direct fields, no grid scan needed)
+  - observation.rides.ride_list — list of placed rides with x,y,subtype,subclass,out_of_service
+  - observation.shops.shop_list — list of placed shops with x,y,subtype,subclass
+  - observation.staff.staff_list — list of placed staff with x,y,subtype,subclass
+  - observation.research_speed — current research speed string (none/slow/medium/fast)
+  - observation.research_topics — list of ALL researchable topic names (not current topic)
+  - observation.available_entities — dict of subtype→[unlocked subclasses]; new subclass
+                                     appearing here means research for that topic completed
+  - cumulative_reward          — top-level field (not inside observation)
+  - done                       — top-level field
+Broken rides: check observation.rides.ride_list for entries where out_of_service=true.
 """,
 
    "tools": [
 
         {
             "name": "park_director",
+            "max_message_history": 0,
             "function": {
                 "description": """
 Front-man park orchestrator. Each user turn is one step on a single park
 (slot 0). Calls strategy_coordinator once per turn — the coordinator
 consults specialists, picks one action, fires it via ActionDispatcher,
 and returns the post-step observation envelope. Episodes run for 100
-steps; cross-episode lessons are kept in shared_memory.
+steps.
                 """
             },
             "instructions": ${instructions_prefix} """
 You are the Park Director — the front-man for the maps_park network. You do
 NOT call the simulator yourself. We play a single park (slot 0). Each user
-turn is ONE step. An episode is 100 steps; many episodes share long-term
-lessons via persistent_memory.
+turn is ONE step. An episode is 100 steps.
 
-Per-turn sequence (always for park='0'):
+Per-turn sequence (MANDATORY — every step, every turn):
 
-  1. window = LatestObservation(mode='read', park='0')
-     → returns {park_key, window_size, previous, latest}.
-     - 'latest'   = the post-step observation from the prior turn.
-     - 'previous' = the observation BEFORE that (so the coordinator can
-                    reason about deltas: cash change, reward delta,
-                    breakdown drift).
-     - On the very first turn of an episode (or run), window_size is 0
-       and both fields are null.
+  1. Call strategy_coordinator(park='0'). It reads the observation itself,
+     takes exactly one simulator step, and returns the post-step envelope.
 
-  2. obs = strategy_coordinator(park='0', observation=window.latest,
-                                previous=window.previous)
-     The coordinator consults specialists, picks one action, fires it via
-     ActionDispatcher, and returns the new post-step observation envelope.
-     ActionDispatcher itself persists the full envelope to
-     LatestObservation in Python — you do NOT need to call
-     LatestObservation(mode='write'). The write is automatic and
-     guarantees the nested 'observation' field is never stripped.
+  2. obs = what strategy_coordinator returned.
+     Check obs.done and obs.observation.done — if either is true the
+     episode ended; report final cumulative_reward to the user.
 
-  3. If obs.done is true, this episode just ended. Report the final
-     cumulative_reward and any quick-take lessons from the episode
-     (e.g. which ride printed money, which spend was wasted) into
-     shared_memory under 'lessons.*' topics so the next episode can
-     read them. The next user turn will start a new episode at step 0.
+  3. Reply with a one-paragraph summary: action taken, cash before→after,
+     reward delta, cumulative_reward, step/100, episode status.
+     Cash = obs.observation.money; cumulative_reward = obs.cumulative_reward.
 
-Each turn, summarize: action taken, cash before→after, reward delta, and
-whether the episode ended.
-
-The single objective is to maximize cumulative_reward per episode and to
-keep improving across episodes.
-
-Memory split
-- LatestObservation = per-park hot state (rolling 2-deep window). Used
-  every turn to drive the next decision.
-- shared_memory     = durable cross-episode lessons (e.g. "yellow
-  carousel at $4 outperforms $6"). Read on episode start; append on
-  episode end.
+NEVER return anything except a plain-English summary. The single objective
+is to maximize cumulative_reward per episode.
 """,
-            "middleware": [
-                ${shared_memory_middleware}
-            ],
             "tools": [
-                "strategy_coordinator",
-                "LatestObservation"
+                "strategy_coordinator"
             ]
         },
 
         {
             "name": "strategy_coordinator",
+            "max_message_history": 0,
             "function": ${aaosa_call},
             "instructions": ${instructions_prefix} """
 You coordinate the per-tick decision for ONE park: consult specialists,
 pick exactly one action, fire it through ActionDispatcher, return the
 post-step observation envelope to park_director.
 
-Input from park_director:
-  - park: always the string '0' (single-park mode).
-  - observation: the latest post-step envelope for this park (or null on
-    the first turn of an episode).
-  - previous: the envelope BEFORE that (or null). Use it to reason about
-    deltas — cash change, reward delta, new breakdowns, dirtiness drift —
-    when picking the next action.
+Planning (checklist middleware — injected into every system prompt automatically):
+  - Turn 1 only: call create_checklist with a horizon-aware episode plan, e.g.:
+      ["turns 1-5: place first ride and drink shop, establish guest flow",
+       "turns 5-15: optimise ticket prices, add food shop",
+       "turns 15-30: hire first janitor, monitor cleanliness",
+       "turns 30-50: start slow research toward blue tier rides",
+       "turns 50-70: place blue ride(s), expand shop capacity",
+       "turns 70-100: maximise park value, sell loss-making assets"]
+    Adjust phase boundaries based on actual cash and step after each action.
+  - Each turn: call update_checklist_item to mark the current phase
+    in_progress, and mark it done when its goal is met.
+  - If strategy must change (e.g. cash crisis, unexpected reward drop), call
+    edit_checklist_item to rewrite the affected phase rather than rebuilding
+    the whole checklist.
+  - The checklist is always visible in your system prompt — use it to stay
+    on strategy across turns without re-deriving the plan from scratch.
 
-Process
-1. Consult the six specialist sub-agents in parallel (shops_manager,
-   park_layout_planner, rides_manager, staffing_manager, research_lead,
-   finance_controller). Pass each the same observation and ask
-   "what should we do this turn?". They return text proposals already
-   constrained to their domain's valid subtypes/subclasses/price caps.
-2. Pick exactly ONE action. Priority:
-     - Urgent operational issues (broken rides, severe litter, dirty park,
-       shops out of stock).
-     - Otherwise the highest-EV action approved by finance_controller.
-     - If nothing useful or cash is tight, pick 'wait'.
-3. Call ActionDispatcher exactly once with:
-     park   — string, e.g. "0"
-     action — one of: wait, place, move, remove, modify, set_research,
-                      survey_guests, add_path, remove_path, add_water,
-                      remove_water
-     args   — object holding the specialist's structured args, with all
-              numeric values as quoted strings (e.g. {"x":"7","y":"9",
-              "type":"ride","subtype":"carousel","subclass":"yellow",
-              "price":"4"}). Required keys per action are listed in the
-              ActionDispatcher tool schema; trust whatever the consulted
-              specialist returned.
-4. Return the ActionDispatcher response envelope verbatim to park_director.
-   Do NOT fabricate, summarize, or paraphrase fields. If dispatch returned
-   an error, return the error payload as-is.
+Cross-episode memory (persistent_memory tool — survives restarts):
+  - Episode start (step=1): read topic='strategy_lessons' to recall what
+    worked and what failed in prior episodes. Use it to adjust your plan.
+  - Episode end (done=true): append topic='strategy_lessons' with 2-3 bullet
+    lessons: which actions drove the most reward, what to do differently.
+    Keep entries concise — the store auto-summarises when it grows large.
 
-Never-do (these are the documented LLM failure modes):
-1. Don't pick the most expensive action you can afford. Cheap rides first;
-   premium rides only after 2–3 cheap ones are net-positive.
-2. Don't ignore broken rides. If 'broken_rides' is non-empty, the next
-   action should fix or remove — not build.
-3. Don't ignore the previous observation. If cash or reward dropped and
-   you don't know why, pick 'survey_guests' or 'wait', not more spend.
-4. Don't keep prices static. Full queue → price too low. Empty ride →
-   price too high. Use 'modify' to adjust.
+Per-turn sequence (MANDATORY):
 
-If the observation is null, dispatch action='wait' with park='0' and
-args={} so the simulator returns an initial observation.
+0. Call ParkStatus(park='0'). From the result:
+   - status.done=true OR status.error present → new episode starting.
+     Call ActionDispatcher(park='0', action='wait', args={}) ONCE. STOP —
+     return that response immediately without consulting any specialist.
+   - status.step=1 AND checklist is empty → call create_checklist now with
+     a horizon-aware episode plan (6 phases, turns 1-5 / 5-15 / 15-30 /
+     30-50 / 50-70 / 70-100). Adjust boundaries if cash is tight.
+   - Each turn: call update_checklist_item to mark the active phase
+     in_progress; mark done when its goal is met. Use edit_checklist_item
+     if strategy must change (cash crisis, reward drop).
+
+1. Decide which specialists to consult this turn based on step and state.
+   Only call specialists relevant to the current situation — skip those
+   with nothing to offer:
+   - rides_manager:    always (ride decisions every turn)
+   - park_layout_planner: always (coordinates for any action)
+   - shops_manager:    skip only if step < 3 (no guest flow yet)
+   - staffing_manager: skip if step < 10 AND no broken rides
+   - research_lead:    skip if step < 20 OR cash < 6000
+   Call relevant specialists in parallel. Pass each the ParkStatus snapshot
+   plus a brief delta (cash change, reward delta, new broken rides).
+   - rides_manager and shops_manager return subtype/subclass/price — NO
+     coordinates. park_layout_planner owns all (x,y) lookups.
+   - For place/move/modify/remove: park_layout_planner supplies coords
+     from status.free_tiles or status.placed_rides/shops.
+   Never guess or hardcode coordinates.
+
+2. Call FinanceGate with the top 1–3 candidate proposals. Required:
+     cash, step, horizon=100, recurring_daily, proposals (JSON string).
+   Compute recurring_daily = sum of staff salaries in status.placed_staff
+     (janitor yellow=25/blue=100/green=500/red=2000;
+      mechanic yellow=15/blue=100/green=250/red=1000;
+      specialist yellow=60/blue=350/green=250/red=300)
+     + current research cost (status.research_speed:
+       none=0, slow=2000, medium=8000, fast=32000).
+   Each proposal: {label, action, one_time_cost, type, subtype, subclass,
+     is_research, research_daily_cost, research_days,
+     has_food_or_atm, has_profitable_ride}.
+   For set_research proposals: research_daily_cost = speed cost from above;
+     research_days = steps to unlock (slow:4, medium:2, fast:1 for first tier).
+   If all rejected → default to action='wait'.
+
+3. Pick exactly ONE approved action. Priority order:
+   a. Broken rides → staffing_manager: place mechanic adjacent to ride.
+   b. Shops out of stock → shops_manager: modify order_quantity.
+   c. Park bare (no rides/shops) → add first ride from free_tiles.
+   d. Best approved proposal from FinanceGate.
+   e. If reward stalled and cause unclear → survey_guests (num_guests=5).
+   f. Otherwise → wait.
+
+4. Before calling ActionDispatcher for any place/modify ride action:
+   Call ConfigRag yourself with a query that asks for the top 5 rules,
+   e.g. "List the top 5 rules and hard constraints for placing a
+   carousel yellow ride: include exact max_ticket_price, what the
+   simulator does when price exceeds it, building_cost, and any other
+   enforcement rules."
+   Read the max_ticket_price value from the ConfigRag response.
+   The price in args MUST equal exactly that value — not rides_manager's
+   suggestion, not a rounded number, not an estimate. The simulator
+   immediately rejects any price above max_ticket_price and wastes the
+   step. If rides_manager proposed any other price, discard it and use
+   the ConfigRag value.
+
+5. Call ActionDispatcher EXACTLY ONCE with:
+     park='0', action=<chosen>, args=<specialist's structured args>
+   All numeric values in args must be quoted strings.
+   Do NOT call ActionDispatcher again after receiving its response.
+
+6. Return the ActionDispatcher response envelope verbatim to park_director.
+   Do NOT fabricate, summarize, or paraphrase any fields.
+
+Never-do:
+1. Don't pick expensive actions early. Yellow rides first; premium only
+   after 2–3 cheap ones are net-positive.
+2. Don't ignore broken rides. Auto-repaired by nearby mechanic only.
+   Place mechanic or remove ride (recover 66%) if none affordable.
+3. Don't keep prices static. Full queue→raise price. Empty→lower price.
+4. Don't keep loss-makers. Remove rides/shops with persistent zero guests.
+5. Don't start research before step 15 or cash < 6000.
+
 """ ${aaosa_instructions},
             "middleware": [
-                ${shared_memory_middleware},
                 {
                     "class": "middleware.world_server_logger_middleware.WorldServerLoggerMiddleware",
                     "args": {
                         "log_path": "logs/maps_park/run.jsonl",
                         "tool_names": ["ActionDispatcher"]
+                    }
+                },
+                {
+                    "class": "middleware.agent_checklist_middleware.AgentChecklistMiddleware",
+                    "args": {
+                        "checklist_title": "Episode Strategy Plan",
+                        "keep_checklist_in_context": false
+                    }
+                },
+                {
+                    "class": "middleware.persistent_memory.persistent_memory_middleware.PersistentMemoryMiddleware",
+                    "args": {
+                        "origin_str": "maps_park.strategy_coordinator.coordinator",
+                        "memory_config": {
+                            "storage": {
+                                "type": "json_file",
+                                "file_name": "maps_park_strategy_memory.json"
+                            },
+                            "enabled_operations": ["read", "append"],
+                            "summarization": {
+                                "max_topic_size": 800
+                            }
+                        }
                     }
                 }
             ],
@@ -183,179 +237,396 @@ args={} so the simulator returns an initial observation.
                 "rides_manager",
                 "staffing_manager",
                 "research_lead",
-                "finance_controller",
-                "ActionDispatcher"
+                "FinanceGate",
+                "ActionDispatcher",
+                "ParkStatus",
+                "ConfigRag"
             ]
         },
 
         {
             "name": "shops_manager",
+            "max_message_history": 0,
             "function": ${aaosa_call},
             "instructions": ${instructions_prefix} """
 You decide WHICH shops to build, modify, or restock, and at what price. You
 also interpret guest needs (hunger, thirst, happiness, survey results) to
 inform those shop decisions.
 
-At the start of each step call ExtractConfig(domain='shops') for shop
-economics + qualitative notes, and ExtractConfig(domain='world') for the
-Guests section (hunger/thirst build rates, happiness mechanics).
+At the start of every consultation, call ConfigRag to look up the
+building cost, item cost, max item price, and capacity for the shop
+subtype and tier you are recommending. Write a query that names the
+specific subtype and the fields you need, e.g. the subtype name plus
+"building_cost item_cost max_item_price capacity".
+Always use the values ConfigRag returns — never estimate prices or costs.
 
 When the strategy_coordinator consults you, return one concrete proposal
-(place / modify shop with subtype, subclass, price, order_quantity) plus
-1 alternative. Use only the subtypes/subclasses/price caps allowed by
-shops_economics.yaml.
+(place / modify / sell shop with subtype, subclass, price, order_quantity)
+plus 1 alternative. Use only the subtypes/subclasses/price caps allowed by
+shops_economics.yaml. Do NOT include coordinates — park_layout_planner
+owns placement; you own the shop type, tier, price, and order_quantity.
+
+Timing: do NOT recommend placing a new shop until at least one ride is
+operational and generating guest flow. Shops earn nothing without guests;
+spending on a shop before rides exist wastes scarce early cash.
+
+Check status.placed_shops (passed by the coordinator) for shops and their
+inventory levels. A shop with inventory at or near zero needs a modify
+action with a larger order_quantity and the SAME price (do not change
+price on a restock-only modify). Report any such shop as your top
+priority over new placements.
+
+Drink shops before food: thirst builds at 0.018/tick vs hunger at
+0.012/tick (from world_constants.yaml) — guests get thirsty 1.5× faster,
+so a drink shop delivers more satisfaction per dollar early on.
+
+Specialty shop notes (from shops_economics.yaml):
+  - specialty/red (Billboard): max_item_price=0 — generates zero direct
+    revenue; only value is driving guests toward food/ATMs. Do not build
+    unless food/ATM infrastructure is already in place.
+  - specialty/green (ATM): build_cost=$50,000 — very expensive; only
+    recommend late game when guest money depletion is confirmed by surveys.
+  - specialty/yellow (Souvenir): highest margin ($11/item) and cheapest
+    build ($250) — good early placement near high-traffic path intersections.
+
+Order quantity sizing: size order_quantity so that (order_quantity ×
+item_cost) fits within available cash after the placement action, and leave
+enough buffer each subsequent day to restock all existing shops. If a shop
+runs out of inventory mid-day it goes out of service and hurts park rating.
+Recommend selling shops that persistently run dry or are never visited.
 """ ${aaosa_instructions},
-            "middleware": [
-                ${shared_memory_middleware}
-            ],
-            "tools": ["ExtractConfig"]
+            "tools": ["ConfigRag"]
         },
 
         {
             "name": "park_layout_planner",
+            "max_message_history": 0,
             "function": ${aaosa_call},
             "instructions": ${instructions_prefix} """
 You own the spatial layout plan: where paths go, where each ride/shop sits,
 how guests flow from entrance to exit.
 
-At the start of each step call ExtractConfig(domain='world') for terrain
-costs and placement rules, plus ExtractConfig(domain='rides') and
-ExtractConfig(domain='shops') for placement constraints (water-adjacency,
-high-traffic specialty shops).
+At the start of every consultation, call ConfigRag to look up the
+costs for whatever terrain action you are considering (path add/remove,
+water add/remove). Write a query that names the terrain action and the
+field you need, e.g. the action name plus "cost price".
+Always use the values ConfigRag returns — never estimate costs.
+
+strategy_coordinator passes you a ParkStatus snapshot each turn. Use
+these fields directly — no observation read needed:
+  - free_tiles     — list of {x,y} tiles ready for placement. Use these
+                     directly for coordinate proposals; never guess coordinates.
+  - path_coords    — list of {x,y} path tiles (for staff and terrain reasoning).
+  - entrance / exit — {x,y} positions. These never change; reuse from context.
+  - placed_rides   — list of placed rides with x,y,subtype,subclass,out_of_service.
+  - placed_shops / placed_staff — same structure.
+  - cash           — current cash.
+
+If you need the snapshot and it was not passed, call ParkStatus(park='0').
+
+The the_islands layout starts with a pre-built path network, so
+free_tiles is non-empty from turn 1. If for any reason it is empty
+(custom layout, all paths removed), derive the first add_path from
+entrance: tile at (entrance.x, entrance.y+1).
+
+Layout strategy:
+  - Hub-and-spoke: build a central path loop near the entrance (the hub),
+    then branch spoke paths outward to ride clusters. No dead ends —
+    guests must always be able to loop back without backtracking.
+  - Place drink/food shops within 15–20 tiles of every ride cluster so
+    guests can satisfy thirst/hunger without long detours.
+  - Place specialty/yellow (souvenir) shops at high-traffic path junctions.
+  - Place water tiles adjacent to rides to add +1 excitement per adjacent
+    water tile (from world_notes.md).
+  - Cluster rides of different subtypes together to diversify intensity
+    and maximise park rating.
+
+You also own all terrain modifications:
+  - add_path / remove_path: adjust guest flow; cost from world_constants.yaml
+  - add_water / remove_water: place water adjacent to rides to boost excitement
+    (+1 excitement per adjacent water tile); cost from world_constants.yaml
+Propose terrain actions when a layout improvement clearly outweighs the cost.
 
 When the strategy_coordinator consults you, return the next 1-3 placement
-candidates with exact coords and reasoning.
+or terrain candidates with exact coords and reasoning. You also handle
+all other coordinate lookups on request:
+  - move   → supply current (x,y) from placed_rides AND a suitable
+             (new_x,new_y) e.g. adjacent to a water tile.
+  - modify → look up the attraction's current (x,y) from placed_rides
+             or placed_shops in the snapshot and return it.
+  - remove → same as modify — return the attraction's current (x,y).
 """ ${aaosa_instructions},
-            "middleware": [
-                ${shared_memory_middleware}
-            ],
-            "tools": ["ExtractConfig"]
+            "tools": ["ConfigRag", "ParkStatus"]
         },
 
         {
             "name": "rides_manager",
+            "max_message_history": 0,
             "function": ${aaosa_call},
             "instructions": ${instructions_prefix} """
 You decide WHICH ride to build, modify, or sell next: subtype, subclass tier,
 ticket price.
 
-At the start of each step call ExtractConfig(domain='rides') for ride
-economics + qualitative notes, and ExtractConfig(domain='world') for the
-Terrain section (water-adjacency excitement bonus, path-adjacency placement
-rule).
+At the start of every consultation, call ConfigRag twice:
+  1. Query for numeric stats: e.g. "carousel yellow max_ticket_price
+     building_cost capacity breakdown_rate".
+  2. Query for the top 5 rules governing placement and pricing: e.g.
+     "List the top 5 most important rules and hard constraints for
+     carousel yellow ticket pricing, including the exact max_ticket_price
+     value, what happens when price exceeds it, and any other simulator
+     enforcement rules."
+Always use the values AND rules ConfigRag returns — never estimate.
+The max_ticket_price value returned by ConfigRag is a HARD SIMULATOR
+LIMIT — any price above it causes immediate action rejection with no
+partial acceptance. Set price equal to EXACTLY the max_ticket_price
+value from ConfigRag. Do not round up, do not add 1, do not estimate,
+do not use any other source. Your proposal price field MUST equal the
+ConfigRag max_ticket_price value verbatim.
 
 When the strategy_coordinator asks for the next ride, return one concrete
 proposal: type='ride', subtype, subclass, price, and 1-2 alternatives.
-Use only the subtypes/subclasses/price caps allowed by rides_economics.yaml.
+Use only the subtypes/subclasses listed above.
+Price tuning and relocation are your responsibility:
+  - Full queue → raise ticket price via modify.
+  - Empty ride → lower ticket price via modify.
+  - Ride far from water → propose move to a tile adjacent to water for
+    free +1 excitement per adjacent water tile.
+  - Persistent zero guests → propose sell (remove); park recovers 66% of
+    build cost. Do NOT include coordinates — park_layout_planner owns those.
+
+Break-even context (ops at max price, full capacity — actual will be higher):
+  Yellow carousel ~11 ops, ferris_wheel ~15 ops, roller_coaster ~31 ops.
+  Blue carousel ~18 ops, roller_coaster ~84 ops.
+  Red roller_coaster ~100 ops — barely viable in a 100-step episode.
+Prefer yellow and blue tiers early; only recommend green/red when enough
+steps remain to break even. Diversify subtypes — identical rides yield
+diminishing returns on park rating. Target average intensity across all
+rides near 5 to maximise rating (carousels are low, roller_coasters high —
+balance them).
+
+Capacity monitoring: if the same ride consistently shows a full queue
+across multiple turns, capacity is the bottleneck. Recommend placing a
+second identical ride nearby rather than only raising price. Use the
+capacity field from rides_economics.yaml to judge throughput vs. observed
+demand.
 """ ${aaosa_instructions},
-            "middleware": [
-                ${shared_memory_middleware}
-            ],
-            "tools": ["ExtractConfig"]
+            "tools": ["ConfigRag"]
         },
 
         {
             "name": "staffing_manager",
+            "max_message_history": 0,
             "function": ${aaosa_call},
             "instructions": ${instructions_prefix} """
 You manage hiring and dismissal of all park staff: janitors (cleanliness),
-mechanics (ride repairs), and specialists (clown / stocker / crier / vendor).
+mechanics (ride repairs), and specialists.
 
-At the start of each step call ExtractConfig(domain='staff') for staff
-economics + qualitative notes, and ExtractConfig(domain='world') for the
-Guests section (litter / cleanliness / ride breakdown impact on park rating).
+At the start of every consultation, call ConfigRag to look up the
+salary and clean/repair rates for the staff subtype and tier you are
+recommending. Write a query that names the subtype, tier, and the
+fields you need, e.g. "janitor yellow salary clean_rate".
+Always use the values ConfigRag returns — never estimate salaries.
 
-Staff are added via place(type='staff', subtype=<role>, subclass=<tier>, x=, y=)
-and dismissed via remove(type='staff', ..., x=, y=). There is no hire/fire
-action. Use only the subtypes/subclasses listed in staff_economics.yaml.
+Staff are added via place(type='staff', subtype=<subtype>, subclass=<tier>,
+x=, y=, price=<salary>) — the price field is the salary and is REQUIRED.
+Staff are dismissed via remove(type='staff', subtype=, subclass=, x=, y=).
+There is no hire/fire action.
 
-When the strategy_coordinator consults you, return one place/remove proposal,
-or "no change".
+Salaries (price field) from staff_economics.yaml — always include this:
+  janitor:    yellow=25,  blue=100,  green=500,  red=2000
+  mechanic:   yellow=15,  blue=100,  green=250,  red=1000
+  specialist: yellow=60,  blue=350,  green=250,  red=300
+
+Valid subtypes and subclasses:
+  subtype='janitor'    — subclass: yellow, blue, green, red
+  subtype='mechanic'   — subclass: yellow, blue, green, red
+  subtype='specialist' — subclass: yellow (clown), blue (stocker),
+                         green (park_crier), red (vendor)
+The subclass determines the specialist's role; always use subtype='specialist'
+not the role name. Use only the subtypes/subclasses listed above.
+
+strategy_coordinator passes you a ParkStatus snapshot. Use these fields:
+  - path_coords   — list of {x,y} path tiles for staff placement.
+  - placed_rides / placed_shops / placed_staff — current entities with x,y.
+  - broken_rides  — rides where out_of_service=true (mechanic priority).
+  - cash          — current cash.
+If the snapshot was not passed, call ParkStatus(park='0').
+Staff patrol the path network, so place them ON path tiles adjacent to
+their work area. Use path_coords to find the path tile nearest to the
+target attraction — no grid scanning needed.
+Choose the path-tile neighbour closest to the target attraction:
+  - janitors: path tile adjacent to the busiest attraction cluster
+  - mechanics: path tile adjacent to the roller_coaster with highest breakdown_rate
+  - specialists: path tile adjacent to the relevant ride or shop
+
+When to hire first staff:
+  - First janitor: only when 3+ attractions are placed AND at least 10
+    steps have passed. Before that the park is too small to justify
+    recurring salary costs.
+  - First mechanic: only when a roller_coaster is placed (high breakdown
+    rate). Yellow/blue carousels rarely break — don't hire mechanics
+    speculatively.
+  - Specialist staff (clown, stocker, park_crier, vendor): defer until
+    after step 20 and only when the relevant attractions exist.
+  - Do NOT hire any staff before ride revenue is established.
+
+Staffing ratios (adjust based on observed cleanliness and breakdown rate):
+  - 1 janitor per 3–4 ride/shop clusters
+  - 1 mechanic per 5–8 rides (add more if roller_coasters are present)
+  - Dismiss staff when cash is tight and the park is clean/fully repaired;
+    get the staff member's exact (x,y) from placed_staff in the snapshot
+    to build the remove call.
+
+When the strategy_coordinator consults you, return one place/remove proposal
+with coordinates, or "no change".
 """ ${aaosa_instructions},
-            "middleware": [
-                ${shared_memory_middleware}
-            ],
-            "tools": ["ExtractConfig"]
+            "tools": ["ConfigRag", "ParkStatus"]
         },
 
         {
             "name": "research_lead",
+            "max_message_history": 0,
             "function": ${aaosa_call},
             "instructions": ${instructions_prefix} """
 You manage the research queue: which topics to research, at what speed.
 
-At the start of each step call ExtractConfig(domain='research') for the
-speed/cost/points table and qualitative notes.
+At the start of every consultation, call ConfigRag to look up the
+cost, progress rate, and unlock requirements for the research speed or
+topic you are evaluating. Write a query that names the speed or topic
+and the fields you need, e.g. "research slow cost progress points day".
+Always use the values ConfigRag returns — never estimate costs or durations.
+  2. Check status.research_speed (current speed string) and
+     status.available_entities (subtype → [unlocked subclasses]) before
+     proposing a change — avoid resetting in-progress work unless the strategy
+     justifies it. Research completion is detected by a new subclass appearing
+     in available_entities compared to the previous turn's snapshot.
+
+Valid research speeds (from research_economics.yaml): none, slow, medium, fast.
+Valid research topics are the subtype keys in the ride, shop, and staff
+economics files. If you need to enumerate them, call ConfigRag with
+query='research topic names subtypes'.
+The known keys are:
+  rides  → carousel, ferris_wheel, roller_coaster
+  shops  → drink, food, specialty
+  staff  → janitor, mechanic, specialist
+Pass these exact strings in the research_topics list for set_research.
+Set exactly ONE topic per call — splitting across multiple topics divides
+research progress and is always slower than researching them sequentially.
+If a topic is already in progress, do not reset it unless the strategy
+explicitly warrants a pivot.
+
+Do not propose research unless current cash (from the observation) covers
+at least 3 days of the proposed speed cost without dipping below daily
+recurring costs. Slow research costs $2,000/day — that requires ~$6,000+
+cash buffer before it is safe to start.
+
+Research priority order (rides unlock capacity and revenue fastest):
+  1. carousel or ferris_wheel — unlock blue tier first for capacity gains
+  2. roller_coaster — only after blue rides are placed and profitable
+  3. drink/food shops — once ride revenue is stable
+  4. staff — lowest priority; yellow staff covers early game
+
+Research speed tradeoff (from research_economics.yaml):
+  - fast  costs $32,000/day, unlocks blue in 1 day  → only if cash > $50k
+  - medium costs $8,000/day, unlocks blue in 2 days → safe above $15k cash
+  - slow  costs $2,000/day, unlocks blue in 4 days  → use when cash is tight
+  The IP earned per day never covers research cost — research is a capital
+  investment in unlocking tiers, not a revenue source. Always stop research
+  (speed=none) once the target subclass is unlocked or cash drops below one
+  day's research cost. When stopping, still pass the current topic in
+  research_topics (e.g. ["carousel"]) — the simulator requires the field
+  even when speed is none.
+
+Research state handling (read status.research_speed and
+status.available_entities to determine state):
+  - status.research_speed='none' AND available_entities shows only
+    yellow subclasses for all types (initial state): research has never
+    been started. Check status.cash — if it covers 3+ days of slow
+    research AND ride revenue is established, propose starting with the
+    first priority topic at slow speed.
+  - status.research_speed='none' AND available_entities shows a new
+    subclass that wasn't there before (completed state): research just
+    finished. Immediately propose the next topic in priority order.
+  - status.research_speed is not 'none' (in progress): do not reset
+    unless status.cash dropped below the safety threshold or strategy
+    requires a pivot.
 
 When the strategy_coordinator consults you, return one set_research
 proposal, or "keep current settings". Use only the speeds and topics
 allowed by research_economics.yaml.
 """ ${aaosa_instructions},
-            "middleware": [
-                ${shared_memory_middleware}
-            ],
-            "tools": ["ExtractConfig"]
+            "tools": ["ConfigRag"]
         },
 
         {
-            "name": "finance_controller",
-            "function": ${aaosa_call},
-            "instructions": ${instructions_prefix} """
-You are the budget gate. Every proposed spend has to pass you.
-
-At the start of each step call ExtractConfig once per domain — rides, shops,
-staff, research, world — so you have building costs, salaries, item costs,
-sell_percentage, ride_repair_cost_percentage, and research costs on hand for
-P&L projection.
-
-Return APPROVE / REJECT with a one-sentence reason for each proposed spend.
-""" ${aaosa_instructions},
-            "middleware": [
-                ${shared_memory_middleware}
-            ],
-            "tools": ["ExtractConfig"]
+            "name": "ConfigRag",
+            "toolbox": "docling_rag",
+            "args": {
+                "urls": [
+                    "coded_tools/maps_park/config_files/rides_economics.md",
+                    "coded_tools/maps_park/config_files/rides_notes.md",
+                    "coded_tools/maps_park/config_files/shops_economics.md",
+                    "coded_tools/maps_park/config_files/shops_notes.md",
+                    "coded_tools/maps_park/config_files/staff_economics.md",
+                    "coded_tools/maps_park/config_files/staff_notes.md",
+                    "coded_tools/maps_park/config_files/research_economics.md",
+                    "coded_tools/maps_park/config_files/research_notes.md",
+                    "coded_tools/maps_park/config_files/world_constants.md",
+                    "coded_tools/maps_park/config_files/world_notes.md"
+                ],
+                "save_vector_store": true,
+                "vector_store_path": "../maps_park/config_files/config_vector_store.json"
+            }
         },
 
         {
-            "name": "ExtractConfig",
-            "class": "coded_tools.maps_park.extract_config.ExtractConfig",
+            "name": "ParkStatus",
+            "class": "coded_tools.maps_park.park_status.ParkStatus",
             "function": {
-                "description": "Returns the YAML config + Markdown notes for one MAPs domain. Response is {domain, yaml_path, yaml_content, notes_path, notes_content}. yaml_content holds per-tier numeric constants; notes_content holds qualitative rules, tips, and subclass effects. Call once at the start of a step to load your domain's full knowledge.",
+                "description": "Returns current park snapshot: cash (observation.money), step, park_rating, park_value, done, entrance, exit, path_coords, free_tiles (valid_placement_coords), broken_rides (out_of_service rides), placed_rides/shops/staff, available_entities, research_speed.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "domain": {
+                        "park": {
                             "type": "string",
-                            "description": "One of: rides, shops, staff, research, world."
+                            "description": "Park slot. Always '0'."
                         }
                     },
-                    "required": ["domain"]
+                    "required": ["park"]
                 }
             }
         },
 
         {
-            "name": "LatestObservation",
-            "class": "coded_tools.maps_park.latest_observation.LatestObservation",
+            "name": "FinanceGate",
+            "class": "coded_tools.maps_park.finance_gate.FinanceGate",
             "function": {
-                "description": "Read or write a park's rolling observation window (default depth 2). mode='read' returns {park_key, window_size, previous, latest}; mode='write' appends a new envelope and trims to window depth.",
+                "description": "Deterministic budget gate. Rules: wait/remove always approved; Billboard (specialty/red) rejected without food/ATM; rides rejected if days_remaining < break-even days (per subtype+subclass from economics files); research rejected without profitable ride or <30 steps or insufficient cash; all others rejected if cash-after-spend < 1-day recurring. Returns {results:[{label,approved,reason}], cash, recurring_daily, days_remaining}.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "mode": {
-                            "type": "string",
-                            "description": "'read' to fetch the latest two envelopes for a park; 'write' to append a new envelope."
+                        "cash": {
+                            "type": "int",
+                            "description": "Current cash (observation.money)."
                         },
-                        "park": {
-                            "type": "string",
-                            "description": "Park slot index as a string. Single-park mode: always '0'."
+                        "step": {
+                            "type": "int",
+                            "description": "Current step number."
                         },
-                        "observation": {
-                            "type": "object",
-                            "description": "The post-step observation envelope to append. Required for mode='write'; ignored for mode='read'."
+                        "horizon": {
+                            "type": "int",
+                            "description": "Total episode length. Always 100."
+                        },
+                        "recurring_daily": {
+                            "type": "int",
+                            "description": "Total daily recurring costs: staff salaries + shop restock costs + active research speed cost."
+                        },
+                        "proposals": {
+                            "type": "string",
+                            "description": "JSON-encoded array of proposal objects. Each object: {label: string, action: string, one_time_cost: integer, type: string, subtype: string, subclass: string, has_food_or_atm: boolean, has_profitable_ride: boolean, is_research: boolean, research_daily_cost: integer, research_days: integer}. Example: [{\"label\":\"place yellow carousel\",\"action\":\"place\",\"type\":\"ride\",\"subtype\":\"carousel\",\"subclass\":\"yellow\",\"one_time_cost\":232,\"has_food_or_atm\":false,\"has_profitable_ride\":false,\"is_research\":false,\"research_daily_cost\":0,\"research_days\":0}]"
                         }
                     },
-                    "required": ["mode", "park"]
+                    "required": ["cash", "step", "horizon", "recurring_daily", "proposals"]
                 }
             }
         },
@@ -364,13 +635,13 @@ Return APPROVE / REJECT with a one-sentence reason for each proposed spend.
             "name": "ActionDispatcher",
             "class": "coded_tools.maps_park.action_dispatcher.ActionDispatcher",
             "function": {
-                "description": "Dispatch a chosen MAPs action to the simulator. Routes to the matching typed Maps* coded tool by name. Returns the post-step observation envelope verbatim.",
+                "description": "Dispatch one MAPs action to the simulator. Returns the post-step observation envelope verbatim.",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "park": {
                             "type": "string",
-                            "description": "Park slot index as a string. Single-park mode: always '0'."
+                            "description": "Always '0'."
                         },
                         "action": {
                             "type": "string",
@@ -378,7 +649,7 @@ Return APPROVE / REJECT with a one-sentence reason for each proposed spend.
                         },
                         "args": {
                             "type": "object",
-                            "description": "Action-specific args; numerics as quoted strings. Required keys per action: place→{x,y,type,subtype,subclass,price[,order_quantity if shop]}; move→{type,subtype,subclass,x,y,new_x,new_y}; remove→{type,subtype,subclass,x,y}; modify→{type,subtype,subclass,x,y,price,order_quantity}; set_research→{research_speed,research_topics}; survey_guests→{num_guests}; add_path/remove_path/add_water/remove_water→{x,y}; wait→{}."
+                            "description": "All numeric values as quoted strings. Keys per action — place rides/shops:{x,y,type,subtype,subclass,price[,order_quantity for shops]}; place staff:{x,y,type='staff',subtype,subclass,price=<salary>}; move:{type,subtype,subclass,x,y,new_x,new_y}; remove:{type,subtype,subclass,x,y}; modify:{type,subtype,subclass,x,y,price[,order_quantity for shops only]}; set_research:{research_speed,research_topics}; survey_guests:{num_guests}; add_path/remove_path/add_water/remove_water:{x,y}; wait:{}."
                         }
                     },
                     "required": ["park", "action", "args"]
