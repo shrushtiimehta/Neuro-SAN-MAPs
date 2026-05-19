@@ -42,10 +42,42 @@ Prerequisites (run these first in separate shells):
 import argparse
 import json
 import os
+import re
 import time
+
+
+def _extract_claimed_step(response: str | None) -> int | None:
+    """Pull an integer step number from the agent's response, if it claims one."""
+    if not response:
+        return None
+    match = re.search(r"step\s*[:=]?\s*(\d+)\s*(?:/\s*\d+)?", response, re.IGNORECASE)
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except (TypeError, ValueError):
+        return None
 
 from neuro_san.client.agent_session_factory import AgentSessionFactory
 from neuro_san.client.streaming_input_processor import StreamingInputProcessor
+
+
+def _bootstrap_env_and_plugins() -> None:
+    try:
+        from dotenv import load_dotenv
+        load_dotenv()
+    except ImportError:
+        pass
+
+    if os.getenv("LANGFUSE_ENABLED", "").lower() in ("true", "1", "yes"):
+        try:
+            from plugins.langfuse.langfuse_plugin import LangfusePlugin
+            LangfusePlugin().do_initialize()
+            import atexit
+            from langfuse import get_client
+            atexit.register(lambda: get_client().flush())
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            print(f"[langfuse] init failed: {exc}")
 
 DEFAULT_AGENT = "industry/maps_park"
 DEFAULT_HOST = "localhost"
@@ -102,6 +134,8 @@ def read_last_verified(log_path: str) -> dict | None:
 
 
 def main():
+    _bootstrap_env_and_plugins()
+
     parser = argparse.ArgumentParser(description="maps_park loop runner")
     parser.add_argument("--agent", default=DEFAULT_AGENT)
     parser.add_argument("--host", default=DEFAULT_HOST)
@@ -113,6 +147,7 @@ def main():
     args = parser.parse_args()
 
     log_path = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", "logs", "maps_park", "run.jsonl"))
+    turns_path = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", "logs", "maps_park", "turns.jsonl"))
     obs_file = os.path.join(os.path.dirname(__file__), "..", "..", "memory", "maps_park", "latest_observations.json")
     obs_path = os.path.normpath(obs_file)
     if os.path.exists(obs_path):
@@ -123,6 +158,8 @@ def main():
 
     user_input = "Start the run. Take one action on park 0."
     turn = 0
+    prior_verified_step = None
+    stall_count = 0
     try:
         while True:
             turn += 1
@@ -131,11 +168,13 @@ def main():
             print(response or "(no response)")
             if tokens:
                 total = tokens.get("total_tokens", "?")
-                cost = tokens.get("total_cost", "?")
+                cost = tokens.get("total_cost")
                 prompt = tokens.get("prompt_tokens", "?")
                 completion = tokens.get("completion_tokens", "?")
-                print(f"[tokens] total={total}  prompt={prompt}  completion={completion}  cost=${cost:.4f}")
+                cost_str = f"${cost:.4f}" if isinstance(cost, (int, float)) else "?"
+                print(f"[tokens] total={total}  prompt={prompt}  completion={completion}  cost={cost_str}")
             verified = read_last_verified(log_path)
+            stalled = False
             if verified and verified.get("step") is not None:
                 v_step  = verified.get("step", "?")
                 v_cash  = verified.get("cash", "?")
@@ -146,8 +185,42 @@ def main():
                 print(f"[verified] step={v_step}/100  action={v_act}  cash=${v_cash}"
                       f"  reward={v_rew}  cumulative={v_cum}"
                       + ("  EPISODE DONE" if v_done else ""))
+                if prior_verified_step is not None and v_step == prior_verified_step:
+                    stalled = True
+                    stall_count += 1
+                    print(f"[validator] STALL: simulator step did not advance "
+                          f"(still {v_step}). Agent likely skipped ActionDispatcher. "
+                          f"Consecutive stalls={stall_count}")
+                else:
+                    stall_count = 0
+                prior_verified_step = v_step
             else:
-                print("[verified] no ground-truth row yet (run.jsonl empty or fields null)")
+                print("[validator] no ground-truth row yet (run.jsonl empty or fields null)")
+
+            agent_claimed_step = _extract_claimed_step(response)
+            if (verified and agent_claimed_step is not None
+                    and verified.get("step") is not None
+                    and agent_claimed_step != verified.get("step")):
+                print(f"[validator] HALLUCINATION: agent claimed step="
+                      f"{agent_claimed_step} but simulator reports "
+                      f"step={verified.get('step')}.")
+
+            if stall_count >= 3:
+                print(f"\n[validator] aborting: {stall_count} consecutive stalls. "
+                      f"The agent has stopped firing ActionDispatcher.")
+                break
+
+            turn_record = {
+                "wall_time": time.time(),
+                "turn": turn,
+                "response": response,
+                "tokens": tokens,
+                "verified": verified,
+            }
+            with open(turns_path, "a", encoding="utf-8") as fh:
+                fh.write(json.dumps(turn_record, default=str) + "\n")
+                fh.flush()
+
             user_input = "Take one action on park 0."
             if args.max_turns and turn >= args.max_turns:
                 print(f"\nReached max_turns={args.max_turns}; stopping.")

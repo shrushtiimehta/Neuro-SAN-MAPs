@@ -8,10 +8,34 @@
 set -euo pipefail
 
 MAPS_REPO="${MAPS_REPO:-$HOME/MAPs}"
-OPEN_GRIDWORLD="${OPEN_GRIDWORLD:-/tmp/open_gridworld}"
+OPEN_GRIDWORLD="${OPEN_GRIDWORLD:-$HOME/open_gridworld}"
 STUDIO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 LOG_DIR="$STUDIO_DIR/logs/maps_park"
-mkdir -p "$LOG_DIR"
+MEMORY_DIR="$STUDIO_DIR/memory/maps_park"
+mkdir -p "$LOG_DIR" "$MEMORY_DIR"
+
+# Rotate prior-run artifacts in place by appending a timestamp suffix so
+# each run starts with empty log + observation files. strategy_memory.json
+# is preserved (lessons must survive across runs).
+RUN_TS="$(date +%Y%m%d-%H%M%S)"
+ROTATE_FILES=(
+    "$LOG_DIR/run.jsonl"
+    "$LOG_DIR/turns.jsonl"
+    "$LOG_DIR/studio.log"
+    "$LOG_DIR/maps_mcp.log"
+    "$LOG_DIR/maps_node.log"
+    "$MEMORY_DIR/latest_observations.json"
+)
+rotated=0
+for f in "${ROTATE_FILES[@]}"; do
+    if [[ -s "$f" ]]; then
+        mv "$f" "$f.$RUN_TS"
+        rotated=$((rotated + 1))
+    fi
+done
+if [[ $rotated -gt 0 ]]; then
+    echo "Rotated $rotated prior-run file(s) with suffix .$RUN_TS"
+fi
 
 export AGENT_MANIFEST_FILE="$STUDIO_DIR/registries/manifest.hocon"
 export AGENT_TOOL_PATH="$STUDIO_DIR/coded_tools"

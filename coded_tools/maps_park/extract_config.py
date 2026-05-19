@@ -20,7 +20,7 @@ Inspired by the airline_policy ``ExtractDocs`` pattern. A specialist agent
 calls this tool with a ``domain`` argument and gets back BOTH:
 
 1. ``yaml_content`` — the economic constants for that domain
-   (rides_economics.yaml, shops_economics.yaml, etc.) including the
+   (rides_economics.md, shops_economics.md, etc.) including the
    field-meaning glossary at the top of the file.
 2. ``notes_content`` — the qualitative game-mechanics notes for the same
    domain (rides_notes.md, shops_notes.md, etc.).
@@ -46,11 +46,11 @@ class ExtractConfig(CodedTool):
 
         # Numeric / structured config (per-tier costs, rates, capacities, ...).
         self.yaml_paths: dict[str, str] = {
-            "rides":    f"{config_dir}/rides_economics.yaml",
-            "shops":    f"{config_dir}/shops_economics.yaml",
-            "staff":    f"{config_dir}/staff_economics.yaml",
-            "research": f"{config_dir}/research_economics.yaml",
-            "world":    f"{config_dir}/world_constants.yaml",
+            "rides":    f"{config_dir}/rides_economics.md",
+            "shops":    f"{config_dir}/shops_economics.md",
+            "staff":    f"{config_dir}/staff_economics.md",
+            "research": f"{config_dir}/research_economics.md",
+            "world":    f"{config_dir}/world_constants.md",
         }
 
         # Qualitative game-mechanics notes (rules, tips, subclass effects).

@@ -1,0 +1,20 @@
+# Extra dependencies required to run the maps_park demo.
+# These are pulled in by the MAPs benchmark (~/MAPs) and the open_gridworld
+# MCP wrapper (~/open_gridworld/maps_mcp_server.py).
+#
+# Install on top of the base requirements:
+#   pip install -r requirements.txt -r requirements-maps.txt
+
+gymnasium
+matplotlib
+seaborn
+pygame
+pyperclip
+python-socketio
+line-profiler
+llm_model_cost
+pyyaml
+websocket-client
+
+# Observability (used when LANGFUSE_ENABLED=true)
+langfuse==3.14.2
