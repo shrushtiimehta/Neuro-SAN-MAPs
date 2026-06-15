@@ -17,7 +17,7 @@
 Overlay metrics from multiple maps_park runs on the same dashboard as
 plot_run.py, but with one line per run instead of one line per park.
 
-Picks up the live run.jsonl plus every rotated run.jsonl.<timestamp> file
+Picks up every per-episode run log (run.ep<NNN>.jsonl) and overlays them
 in logs/maps_park/ and plots them together.
 
 Usage:
@@ -31,6 +31,7 @@ from __future__ import annotations
 import argparse
 import glob
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -55,14 +56,18 @@ def load(path: str) -> list[dict]:
 
 
 def discover(run_dir: str) -> list[str]:
-    return sorted(glob.glob(str(Path(run_dir) / "run.jsonl*")))
+    """Per-episode run logs (run.ep<NNN>.jsonl), sorted by episode number."""
+    files = glob.glob(str(Path(run_dir) / "run.ep*.jsonl"))
+    return sorted(
+        files,
+        key=lambda p: int(re.search(r"run\.ep(\d+)\.jsonl$", Path(p).name).group(1)),
+    )
 
 
 def label_for(path: str) -> str:
     name = Path(path).name
-    if name == "run.jsonl":
-        return "current"
-    return name[len("run.jsonl."):] if name.startswith("run.jsonl.") else name
+    match = re.search(r"run\.ep(\d+)\.jsonl$", name)
+    return f"ep{int(match.group(1))}" if match else name
 
 
 def col(rows: list[dict], key: str) -> list:
@@ -126,9 +131,9 @@ def plot(file_to_rows: dict[str, list[dict]], out_path: str) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("files", nargs="*",
-                        help="Explicit run.jsonl files (overrides --dir discovery)")
+                        help="Explicit run.ep*.jsonl files (overrides --dir discovery)")
     parser.add_argument("--dir", default=DEFAULT_DIR,
-                        help=f"Directory to scan for run.jsonl* (default: {DEFAULT_DIR})")
+                        help=f"Directory to scan for run.ep*.jsonl (default: {DEFAULT_DIR})")
     parser.add_argument("--out", default=None,
                         help="Output PNG path (default: <dir>/compare.png)")
     args = parser.parse_args()

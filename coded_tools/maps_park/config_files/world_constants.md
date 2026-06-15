@@ -1,5 +1,3 @@
-# See world_notes.md for qualitative mechanics and field meanings.
-
 # Park geometry and timing
 park_size: 20
 ticks_per_day: 500

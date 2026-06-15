@@ -30,8 +30,8 @@ langchain-anthropic>=0.3.13 installed in your virtual environment.
 
 _Example Usage in Neuro San Studio_:
 
-- [anthropic\_web_search.hocon](../coded_tools/tools/anthropic_web_search.py),
-- available as a tool in [toolbox_info.hocon](../toolbox/toolbox_info.hocon)
+- [anthropic\_web_search.hocon](../neuro_san_studio/coded_tools/anthropic_web_search.py),
+- available as a tool in [toolbox_info.hocon](../neuro_san_studio/toolbox/toolbox_info.hocon)
 
 ## Brave Search
 
@@ -60,7 +60,7 @@ _Example Usage in Neuro San Studio:_
 
 - [brave\_search.hocon](../registries/tools/brave_search.hocon),
 - [real\_estate.hocon](../registries/industry/real_estate.hocon),
-- available as a tool in [toolbox\_info.hocon](../toolbox/toolbox_info.hocon)
+- available as a tool in [toolbox\_info.hocon](../neuro_san_studio/toolbox/toolbox_info.hocon)
 
 ## Dux Distributed Global Search (DDGS)
 
@@ -90,7 +90,7 @@ _Example Usage in Neuro San Studio_:
 - [carmax.hocon](../registries/industry/carmax.hocon),
 - [expedia.hocon](../registries/industry/expedia.hocon),
 - [LinkedInJobSeekerSupportNetwork.hocon](../registries/industry/LinkedInJobSeekerSupportNetwork.hocon),
-- available as a tool in [toolbox\_info.hocon](../toolbox/toolbox_info.hocon)
+- available as a tool in [toolbox\_info.hocon](../neuro_san_studio/toolbox/toolbox_info.hocon)
 
 ## Google Custom Search Engine
 
@@ -121,7 +121,7 @@ To use this search tool, you must
 _Example Usage in Neuro San Studio_:
 
 - [google\_search.hocon](../registries/tools/google_search.hocon),
-- available as a tool in [toolbox\_info.hocon](../toolbox/toolbox_info.hocon)
+- available as a tool in [toolbox\_info.hocon](../neuro_san_studio/toolbox/toolbox_info.hocon)
 
 ## Google Serper
 
@@ -139,7 +139,7 @@ key, set it using the SERPER\_API\_KEY environment variable.
 
 _Example Usage in Neuro San Studio_:
 
-- Available as a tool in [toolbox\_info.hocon](../toolbox/toolbox_info.hocon)
+- Available as a tool in [toolbox\_info.hocon](../neuro_san_studio/toolbox/toolbox_info.hocon)
 
 ## OpenAI Search
 
@@ -158,7 +158,7 @@ virtual environment.
 _Example Usage in Neuro San Studio:_
 
 - [openai\_web\_search.hocon](../registries/tools/openai_web_search.hocon),
-- available as a tool in [toolbox\_info.hocon](../toolbox/toolbox_info.hocon)
+- available as a tool in [toolbox\_info.hocon](../neuro_san_studio/toolbox/toolbox_info.hocon)
 
 ## Tavily Search
 
@@ -177,7 +177,7 @@ in your virtual environment.
 
 _Example Usage in Neuro San Studio_:
 
-- Available as a tool in [toolbox\_info.hocon](../toolbox/toolbox_info.hocon)
+- Available as a tool in [toolbox\_info.hocon](../neuro_san_studio/toolbox/toolbox_info.hocon)
 
 ## You.com Search
 
@@ -192,6 +192,12 @@ via the Model Context Protocol (MCP), exposing three tools through a single MCP 
 - **`you-research`** (Research API) — A separate API that provides synthesized, citation-backed answers with
   configurable effort levels: `lite`, `standard`, `deep`, `exhaustive`, and `frontier`. Higher effort levels use more
   sources and deeper reasoning but take longer. Pricing: starting at ~$6.50 per 1,000 calls, varying by effort level.
+
+_Free Tier (No Credentials Required):_
+
+You.com also exposes a free profile of `you-search` that requires no API key. Append `?profile=free` to the MCP
+server URL — `https://api.you.com/mcp?profile=free` — to use it without authentication. This profile is limited
+to `you-search`; `you-contents` and `you-research` are not available on the free tier.
 
 _Getting a Free API Key:_
 
@@ -212,13 +218,17 @@ _Getting a Paid API Key:_
 _MCP Configuration:_
 
 You.com is integrated as an MCP server. To enable it, uncomment the You.com section in
-[mcp\_info.hocon](../mcp/mcp_info.hocon)
+[mcp\_info.hocon](../neuro_san_studio/mcp/mcp_info.hocon)
 and set the `YDC_API_KEY` environment variable.
+
+To use the no-credentials free tier instead, use `https://api.you.com/mcp?profile=free` as the MCP server URL and
+omit the `Authorization` header — see the commented "free tier" example in
+[mcp\_info.hocon](../neuro_san_studio/mcp/mcp_info.hocon). Only `you-search` is available on this profile.
 
 _Example Usage in Neuro San Studio:_
 
 - [you\_search.hocon](../registries/tools/you_search.hocon),
-- see also [MCP server configuration](../mcp/mcp_info.hocon)
+- see also [MCP server configuration](../neuro_san_studio/mcp/mcp_info.hocon)
 
 ## Comparison of Search Tools
 

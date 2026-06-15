@@ -1,0 +1,314 @@
+{
+  "park_0": [
+    {
+      "park_index": 0,
+      "episode": 0,
+      "step": 1,
+      "horizon": 100,
+      "reward": -46.0,
+      "cumulative_reward": -46.0,
+      "error": null,
+      "done": false,
+      "observation": {
+        "step": 1,
+        "horizon": 100,
+        "money": 289,
+        "value": 454,
+        "park_rating": 10.8,
+        "available_entities": {
+          "carousel": [
+            "yellow"
+          ],
+          "ferris_wheel": [
+            "yellow"
+          ],
+          "roller_coaster": [
+            "yellow"
+          ],
+          "drink": [
+            "yellow"
+          ],
+          "food": [
+            "yellow"
+          ],
+          "specialty": [
+            "yellow"
+          ],
+          "janitor": [
+            "yellow"
+          ],
+          "mechanic": [
+            "yellow"
+          ],
+          "specialist": [
+            "yellow"
+          ]
+        },
+        "research_speed": "none",
+        "research_topics": [
+          "carousel",
+          "ferris_wheel",
+          "roller_coaster",
+          "drink",
+          "food",
+          "specialty",
+          "janitor",
+          "mechanic",
+          "specialist"
+        ],
+        "research_operating_cost": 0,
+        "entrance": [
+          9,
+          0
+        ],
+        "exit": [
+          10,
+          19
+        ],
+        "valid_placement_coords": [
+          [
+            7,
+            8
+          ],
+          [
+            7,
+            9
+          ],
+          [
+            7,
+            10
+          ],
+          [
+            7,
+            11
+          ],
+          [
+            8,
+            7
+          ],
+          [
+            8,
+            12
+          ],
+          [
+            9,
+            10
+          ],
+          [
+            9,
+            12
+          ],
+          [
+            10,
+            7
+          ],
+          [
+            10,
+            9
+          ],
+          [
+            10,
+            10
+          ],
+          [
+            11,
+            7
+          ],
+          [
+            11,
+            12
+          ],
+          [
+            12,
+            8
+          ],
+          [
+            12,
+            9
+          ],
+          [
+            12,
+            10
+          ],
+          [
+            12,
+            11
+          ]
+        ],
+        "path_coords": [
+          [
+            8,
+            8
+          ],
+          [
+            8,
+            9
+          ],
+          [
+            8,
+            10
+          ],
+          [
+            8,
+            11
+          ],
+          [
+            9,
+            1
+          ],
+          [
+            9,
+            2
+          ],
+          [
+            9,
+            3
+          ],
+          [
+            9,
+            4
+          ],
+          [
+            9,
+            5
+          ],
+          [
+            9,
+            6
+          ],
+          [
+            9,
+            7
+          ],
+          [
+            9,
+            8
+          ],
+          [
+            9,
+            11
+          ],
+          [
+            10,
+            8
+          ],
+          [
+            10,
+            11
+          ],
+          [
+            10,
+            12
+          ],
+          [
+            10,
+            13
+          ],
+          [
+            10,
+            14
+          ],
+          [
+            10,
+            15
+          ],
+          [
+            10,
+            16
+          ],
+          [
+            10,
+            17
+          ],
+          [
+            10,
+            18
+          ],
+          [
+            11,
+            8
+          ],
+          [
+            11,
+            9
+          ],
+          [
+            11,
+            10
+          ],
+          [
+            11,
+            11
+          ]
+        ],
+        "rides": {
+          "total_rides": 1,
+          "min_uptime": 1.0,
+          "total_operating_cost": 13,
+          "total_revenue_generated": 52,
+          "total_excitement": 0.8,
+          "avg_intensity": 1.0,
+          "total_capacity": 6,
+          "ride_list": [
+            {
+              "subtype": "carousel",
+              "subclass": "yellow",
+              "x": 9,
+              "y": 9,
+              "out_of_service": false,
+              "uptime": 1.0,
+              "cleanliness": 0.92,
+              "ticket_price": 4,
+              "operating_cost": 13,
+              "revenue_generated": 52,
+              "capacity": 6,
+              "intensity": 1,
+              "excitement": 1,
+              "guests_entertained": 13,
+              "times_operated": 13,
+              "cost_per_operation": 1,
+              "avg_wait_time": 13.0,
+              "avg_guests_per_operation": 1.0,
+              "breakdown_rate": 0.001
+            }
+          ]
+        },
+        "shops": {
+          "total_shops": 0,
+          "total_revenue_generated": 0,
+          "total_operating_cost": 0,
+          "min_uptime": 1.0,
+          "shop_list": []
+        },
+        "staff": {
+          "total_janitors": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "total_mechanics": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "total_specialists": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "total_salary_paid": 0,
+          "total_operating_cost": 0,
+          "staff_list": []
+        },
+        "min_cleanliness": 0.92,
+        "guest_survey_results": {
+          "age_of_results": 1,
+          "list_of_results": []
+        }
+      }
+    }
+  ]
+}

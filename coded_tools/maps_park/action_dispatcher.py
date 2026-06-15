@@ -30,14 +30,10 @@ from neuro_san.interfaces.coded_tool import CodedTool
 
 from coded_tools.maps_park.latest_observation import LatestObservation
 from coded_tools.maps_park.maps_action_base import MapsActionBase
-from coded_tools.maps_park.maps_add_path import MapsAddPath
-from coded_tools.maps_park.maps_add_water import MapsAddWater
 from coded_tools.maps_park.maps_modify import MapsModify
 from coded_tools.maps_park.maps_move import MapsMove
 from coded_tools.maps_park.maps_place import MapsPlace
 from coded_tools.maps_park.maps_remove import MapsRemove
-from coded_tools.maps_park.maps_remove_path import MapsRemovePath
-from coded_tools.maps_park.maps_remove_water import MapsRemoveWater
 from coded_tools.maps_park.maps_set_research import MapsSetResearch
 from coded_tools.maps_park.maps_survey_guests import MapsSurveyGuests
 from coded_tools.maps_park.maps_wait import MapsWait
@@ -46,6 +42,9 @@ from coded_tools.maps_park.maps_wait import MapsWait
 class ActionDispatcher(CodedTool):
     """Map an action name + args dict to the matching typed Maps* tool."""
 
+    # Only the actions available in easy/medium difficulty (MAPs
+    # ACTIONS_BY_DIFFICULTY). The hard-only terraform actions (add_path,
+    # remove_path, add_water, remove_water) are intentionally not exposed here.
     ACTION_TABLE: ClassVar[dict[str, type[MapsActionBase]]] = {
         "wait": MapsWait,
         "place": MapsPlace,
@@ -54,18 +53,12 @@ class ActionDispatcher(CodedTool):
         "modify": MapsModify,
         "set_research": MapsSetResearch,
         "survey_guests": MapsSurveyGuests,
-        "add_path": MapsAddPath,
-        "remove_path": MapsRemovePath,
-        "add_water": MapsAddWater,
-        "remove_water": MapsRemoveWater,
     }
 
     async def async_invoke(
         self, args: dict[str, Any], sly_data: dict[str, Any]
     ) -> dict[str, Any] | str:
-        park = args.get("park")
-        if park is None:
-            return {"error": "park is required (slot 0..4)"}
+        park = args.get("park", 0)
 
         action = args.get("action")
         if not isinstance(action, str) or not action:
@@ -87,6 +80,24 @@ class ActionDispatcher(CodedTool):
         merged: dict[str, Any] = {"park": park, **action_args}
         tool = tool_cls()
         response = await tool.async_invoke(merged, sly_data)
+
+        # Normalize the special episode_complete envelope MAPs returns when a
+        # horizon is reached. It uses a different shape (final_step/total_reward
+        # /new_park_observation, no top-level done/step/observation), which
+        # otherwise causes ParkStatus to report done=false and skip the
+        # episode_closer flow. We graft the standard fields onto it so
+        # memory_keeper.preflight triggers end-of-episode bookkeeping.
+        if isinstance(response, dict) and response.get("episode_complete"):
+            new_obs = response.get("new_park_observation") or {}
+            response = {
+                **response,
+                "episode": response.get("completed_episode"),
+                "step": response.get("final_step"),
+                "horizon": new_obs.get("horizon"),
+                "cumulative_reward": response.get("total_reward"),
+                "done": True,
+                "observation": new_obs,
+            }
 
         # Persist the full envelope verbatim. We do this here — not in
         # park_director's instructions — because routing the write through

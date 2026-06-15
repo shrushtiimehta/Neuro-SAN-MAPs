@@ -27,7 +27,7 @@ Anything the agent needs across turns must therefore live in:
   - the system prompt (static instructions),
   - the checklist (AgentChecklistMiddleware),
   - persistent memory (PersistentMemoryMiddleware) — read at episode start,
-  - tool calls within the current turn (ParkStatus, ExtractConfig, etc.).
+  - tool calls within the current turn (ParkStatus, read_file, etc.).
 """
 
 from logging import getLogger

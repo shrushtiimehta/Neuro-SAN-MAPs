@@ -18,4 +18,5 @@
     # AgentChecklistMiddleware-backed plan, advising a director that posts one
     # action per turn to the maps_mcp_server (see apps/maps_park/).
     "industry/maps_park.hocon": true,
+    "industry/maps_park_consultant.hocon": true,
 }

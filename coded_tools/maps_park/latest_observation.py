@@ -14,24 +14,24 @@
 #
 # END COPYRIGHT
 """
-Per-park rolling observation window.
+Per-park latest-observation cache.
 
-Keeps the last N post-step observation envelopes for each of the 5 parks in
-a small JSON file, separate from the larger persistent_memory blob. Default
-window is 2 — that's enough for the agent to reason about deltas (cash
-before/after, reward delta, broken-ride drift) without paying the cost of
-shipping the whole episode history.
+Keeps the freshest post-step observation envelope per park in a small JSON
+file. The window machinery (older entries) exists for backwards-compat but
+defaults to 1 — no current caller consumes the prior observation, so only
+the latest is retained.
 
-File path:  ./memory/maps_park/latest_observations.json
+File path:  ./coded_tools/maps_park/state/latest_observations.json
             (override with MAPS_LATEST_OBS_PATH env var)
-Window:     last 2 observations per park (override with
-            MAPS_OBS_WINDOW env var)
-File shape: {"park_0": [obs_n_minus_1, obs_n], "park_1": [...], ...}
+Window:     last 1 observation per park (override with MAPS_OBS_WINDOW
+            env var; values >1 will store additional history but it is
+            currently dead data)
+File shape: {"park_0": [obs_n], "park_1": [...], ...}
 
-park_director reads its park's window at turn start, passes the trailing
-observation (and optionally the prior one for delta reasoning) to
-strategy_coordinator, then writes the newly returned envelope back here
-after each ActionDispatcher call.
+ActionDispatcher writes the post-step envelope after each simulator step.
+ParkStatus reshapes the latest entry into the snapshot agents read each
+turn. WorldServerLoggerMiddleware also tails the latest entry for the
+run.jsonl log.
 """
 
 from __future__ import annotations
@@ -43,15 +43,17 @@ from typing import ClassVar
 
 from neuro_san.interfaces.coded_tool import CodedTool
 
+from coded_tools.common.file_io import FileIO
+
 
 class LatestObservation(CodedTool):
     """Read or append-write the rolling observation window for one park."""
 
     DEFAULT_PATH: ClassVar[str] = os.environ.get(
         "MAPS_LATEST_OBS_PATH",
-        "./memory/maps_park/latest_observations.json",
+        "./coded_tools/maps_park/state/latest_observations.json",
     )
-    DEFAULT_WINDOW: ClassVar[int] = int(os.environ.get("MAPS_OBS_WINDOW", "2"))
+    DEFAULT_WINDOW: ClassVar[int] = int(os.environ.get("MAPS_OBS_WINDOW", "1"))
 
     async def async_invoke(
         self, args: dict[str, Any], sly_data: dict[str, Any]
@@ -60,9 +62,7 @@ class LatestObservation(CodedTool):
         if mode not in {"read", "write"}:
             return {"error": f"mode must be 'read' or 'write', got {mode!r}"}
 
-        park = args.get("park")
-        if park is None:
-            return {"error": "park is required (slot 0..4)"}
+        park = args.get("park", 0)
         try:
             park_idx = int(park)
         except (TypeError, ValueError):
@@ -109,9 +109,7 @@ class LatestObservation(CodedTool):
         data[park_key] = trimmed
 
         path = self._path()
-        directory = os.path.dirname(path)
-        if directory:
-            os.makedirs(directory, exist_ok=True)
+        FileIO.ensure_parent(path)
         try:
             with open(path, "w", encoding="utf-8") as fh:
                 json.dump(data, fh, indent=2)

@@ -24,14 +24,17 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import glob
 import json
+import os
+import re
 import sys
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 
 
-DEFAULT_LOG = "logs/maps_park/run.jsonl"
+DEFAULT_LOG = "logs/maps_park"  # dir of per-episode run.ep*.jsonl (or a single .jsonl file)
 
 
 def load(path: str) -> list[dict]:
@@ -48,12 +51,30 @@ def load(path: str) -> list[dict]:
     return rows
 
 
+def load_path(path: str) -> list[dict]:
+    """Load rows from a single file, or from all per-episode files in a dir.
+
+    Per-episode files (run.ep<NNN>.jsonl) are concatenated in episode order
+    so the dashboard shows the whole training run in sequence.
+    """
+    if os.path.isdir(path):
+        files = sorted(
+            glob.glob(os.path.join(path, "run.ep*.jsonl")),
+            key=lambda p: int(re.search(r"run\.ep(\d+)\.jsonl$", os.path.basename(p)).group(1)),
+        )
+        rows: list[dict] = []
+        for f in files:
+            rows.extend(load(f))
+        return rows
+    return load(path)
+
+
 def split_by_park(rows: list[dict]) -> dict[int, list[dict]]:
+    # The `park` field was dropped from run logs (single park, always 0);
+    # default any missing park to 0 so legacy and new rows both group.
     by_park: dict[int, list[dict]] = {}
     for row in rows:
-        park = row.get("park")
-        if park is None:
-            continue
+        park = row.get("park", 0)
         by_park.setdefault(park, []).append(row)
     return by_park
 
@@ -135,10 +156,10 @@ def main() -> None:
     args = parser.parse_args()
 
     if not Path(args.log_path).exists():
-        print(f"Log file not found: {args.log_path}", file=sys.stderr)
+        print(f"Log path not found: {args.log_path}", file=sys.stderr)
         sys.exit(1)
 
-    rows = load(args.log_path)
+    rows = load_path(args.log_path)
     plot(rows, args.out)
 
 

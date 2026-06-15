@@ -67,9 +67,7 @@ class MapsActionBase(CodedTool):
         if not self.ACTION_NAME:
             return {"error": f"{self.__class__.__name__} did not set ACTION_NAME"}
 
-        park = args.get("park")
-        if park is None:
-            return {"error": "park is required (slot 0..4)"}
+        park = args.get("park", 0)
         try:
             park = self._coerce_int(park)
         except (TypeError, ValueError):

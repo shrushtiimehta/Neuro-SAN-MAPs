@@ -1,15 +1,12 @@
-# See research_notes.md for qualitative mechanics and field meanings.
+| speed | speed_progress | speed_cost |
+|---|---|---|
+| none | 0 | 0 |
+| slow | 25 | 2000 |
+| medium | 50 | 8000 |
+| fast | 100 | 32000 |
 
-research speed_progress none: 0
-research speed_progress slow: 25
-research speed_progress medium: 50
-research speed_progress fast: 100
-
-research speed_cost none: 0
-research speed_cost slow: 2000
-research speed_cost medium: 8000
-research speed_cost fast: 32000
-
-research points_required blue: 100
-research points_required green: 200
-research points_required red: 400
+| tier | points_required |
+|---|---|
+| blue | 100 |
+| green | 200 |
+| red | 400 |

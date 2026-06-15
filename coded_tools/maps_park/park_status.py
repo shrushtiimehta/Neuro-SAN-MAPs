@@ -65,6 +65,7 @@ class ParkStatus(CodedTool):
         obs = envelope.get("observation") or {}
 
         return {
+            "episode":           envelope.get("episode"),
             "cash":              obs.get("money"),
             "step":              obs.get("step") or envelope.get("step"),
             "park_rating":       obs.get("park_rating"),

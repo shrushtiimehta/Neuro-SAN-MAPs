@@ -73,6 +73,8 @@
     - [AAOSA](#aaosa)
     - [External Agent Networks](#external-agent-networks)
     - [Memory](#memory)
+      - [Chat Context](#chat-context)
+      - [Persistent Memory](#persistent-memory)
   - [Connect with other agent frameworks](#connect-with-other-agent-frameworks)
   - [Plugins](#plugins)
   - [Test](#test)
@@ -291,6 +293,9 @@ You can specify it at two levels:
 - **Network-level**: Applies to all agents in the file.
 - **Agent-level**: Overrides the network-level configuration for a specific agent.
 
+For a full working example of per-agent configuration using different Anthropic models, see the
+[Book Recommender with Multiple LLM Configs](examples/basic/book_recommender_multiple_llm_configs.md) example.
+
 Neuro-SAN includes several predefined LLM providers and models. To use one of these, set the `model_name` key to
 the name of the model you want. In addition, model-specific parameters (such as `temperature`, `max_tokens`, etc.)
 can be set alongside `model_name`.
@@ -482,7 +487,21 @@ To find which models are available in your region, refer to the official AWS doc
 
 ### Gemini
 
-To use Gemini models, set the `GOOGLE_API_KEY` environment variable to your Google Gemini API key
+To use Gemini models:
+
+1. Confirm that `langchain-google-genai` is installed:
+
+    ```bash
+    pip show langchain-google-genai
+    ```
+
+2. If not installed, install it:
+
+    ```bash
+    pip install langchain-google-genai
+    ```
+
+3. Set the `GOOGLE_API_KEY` environment variable to your Google Gemini API key
 and specify which model to use in the `model_name` field of the `llm_config` section of an agent network hocon file:
 
 ```hocon
@@ -743,7 +762,7 @@ Simply set the `MODEL_NAME` environment variable before starting the server:
 >
 > ```bash
 > export MODEL_NAME="claude-3-7-sonnet"
-> python -m run
+> python -m neuro_san_studio run
 > ```
 
 ### See also
@@ -1332,7 +1351,7 @@ following methods.
    - If authentication headers are defined in both sly_data, and `MCP_SERVERS_INFO_FILE` then sly_data takes precedence.
    - Tool filtering from `MCP_SERVERS_INFO_FILE` is applied only if no tool filtering is defined
     directly in the agent network HOCON configuration.
-   - For example, see [mcp_info.hocon](../mcp/mcp_info.hocon)
+   - For example, see [mcp_info.hocon](../neuro_san_studio/mcp/mcp_info.hocon)
 
 ### Examples
 
@@ -1596,8 +1615,9 @@ Note:
 - All console logs are color-coded and pretty-formatted using the rich based log bridge plugin.
 - Enable or disable rich logs via setting an env variable `LOGBRIDGE_ENABLED` on terminal or in your .env file.
   By default the value is set to `true`.
-- Any updates to console logs can be managed via this plugin at `plugins/log_bridge/`.
-- Use the `log_cfg` dict located at `plugins/log_bridge/process_log_bridge.py` to configure the formatting of logs.
+- Any updates to console logs can be managed via this plugin at `neuro_san_studio/plugins/log_bridge/`.
+- Use the `log_cfg` dict located at `neuro_san_studio/plugins/log_bridge/process_log_bridge.py`
+  to configure the formatting of logs.
 
 ## Debugging
 
@@ -1617,9 +1637,11 @@ Furthermore, please install the build requirements in your virtual environment v
     pytest.set_trace()
     ```
 
-3. Start the client and server via `python3 -m run`, select `music_nerd_pro` agent network, and ask a question like
-`Where was John Lennon born?`. The code execution stops at the line where you added `pytest.set_trace` statement. You
-can step through the code, view variable values, etc. by typing commands in the terminal. For all the debugger options,
+3. Start the client and server via `python -m neuro_san_studio run`,
+select `music_nerd_pro` agent network, and ask a question like
+`Where was John Lennon born?`. The code execution stops at the line where you added
+`pytest.set_trace` statement. You can step through the code, view variable values,
+etc. by typing commands in the terminal. For all the debugger options,
 please refer to pdb [documentation](https://docs.python.org/3/library/pdb.html)
 
 ## Advanced
@@ -1653,7 +1675,6 @@ Look at [../registries/basic/smart_home.hocon](../registries/basic/smart_home.ho
 
 - aaosa_instructions
 - aaosa_call
-- aaosa_command
 
 ### External Agent Networks
 
@@ -1681,7 +1702,85 @@ Look at [Consumer Decision Assistant](examples/industry/consumer_decision_assist
 
 ### Memory
 
-TBD
+#### Chat Context
+
+**Chat context** is the in-session message history between the user and the
+agent. It is managed automatically by the framework and resets when the session
+ends.
+
+#### Persistent Memory
+
+**Persistent memory** is storage that survives across sessions. The agent
+explicitly reads and writes it via the `PersistentMemoryMiddleware`. It holds
+user-facing information — personal details, preferences, and facts the user has
+shared. It is not for internal LLM state such as LLM call results, pass/fail
+outcomes, or execution traces.
+
+Three storage backends are available. The two file-backed backends are
+intended for developers running an agent locally on their own machine; the
+`mem0` backend is intended for shared or production deployments where each
+end user must see only their own memories.
+
+- **`json_file`** (default) — stores all topics for an agent in a single
+  `memory.json` file on the developer's local disk, scoped per
+  `(network, agent)`.
+- **`markdown_file`** — stores each topic as a separate `.md` file on the
+  developer's local disk, under the same `(network, agent)` scope.
+- **`mem0`** — stores topics as memory entries in the [Mem0](https://mem0.ai)
+  cloud and partitions them by `(user_id, network, agent)`, so different end
+  users talking to the same agent see different sets of memories.
+
+The middleware exposes six operations (`create`, `read`, `append`, `delete`,
+`search`, `list`). Each operation is committed as soon as the LLM call
+returns; there is no end-of-turn flush, and a crash mid-turn loses at most
+the in-flight call. Topic summarization is off by default — opt in by
+adding a `summarization` block to `memory_config`.
+
+Minimal configuration — only `class` is required, and the backend defaults
+to `json_file`. To use `markdown_file` or `mem0`, set the backend explicitly.
+
+See the [file-backed configuration reference](./examples/tools/persistent_memory_local.md#configuration)
+and the [Mem0 configuration reference](./examples/tools/persistent_memory_mem0.md#configuration)
+for all available options.
+
+File-backed (default — `json_file`):
+
+```hocon
+"middleware": [
+    {
+        "class": "middleware.persistent_memory.persistent_memory_middleware.PersistentMemoryMiddleware"  # (required)
+    }
+]
+```
+
+Mem0 cloud backend — `sly_data: true` is required so the framework can
+forward `user_id` per request:
+
+```hocon
+"middleware": [
+    {
+        "class": "middleware.persistent_memory.persistent_memory_middleware.PersistentMemoryMiddleware",
+        "args": {
+            "sly_data": true,
+            "memory_config": {
+                "storage": { "backend": "mem0" }
+            }
+        }
+    }
+]
+```
+
+For a complete walkthrough of the file-backed backends — including HOCON
+configuration, a sample conversation, backend trade-offs, summarizer tuning,
+and debugging tips — see the
+[Persistent Memory (Local) documentation](./examples/tools/persistent_memory_local.md). A minimal
+working network is available at
+[persistent_memory_local.hocon](../registries/tools/persistent_memory_local.hocon).
+
+For the cloud-hosted variant with per-user scoping, see the
+[Persistent Memory (Mem0) documentation](./examples/tools/persistent_memory_mem0.md) and its
+reference network at
+[persistent_memory_mem0.hocon](../registries/tools/persistent_memory_mem0.hocon).
 
 ## Connect with other agent frameworks
 
@@ -1715,7 +1814,7 @@ make test
 or
 
 ```bash
-python -m pytest tests/ -v --cov=coded_tools,run.py -m "not integration"
+python -m pytest tests/ -v --cov=coded_tools --cov=neuro_san_studio -m "not integration"
 ```
 
 ### Integration Test
