@@ -1,0 +1,162 @@
+{
+  "step": 13,
+  "cash": 233,
+  "placed_rides": [
+    {
+      "subtype": "carousel",
+      "subclass": "yellow",
+      "x": 9,
+      "y": 9,
+      "out_of_service": false,
+      "uptime": 1.0,
+      "cleanliness": 0.87,
+      "ticket_price": 4,
+      "operating_cost": 3,
+      "revenue_generated": 12,
+      "capacity": 6,
+      "intensity": 1,
+      "excitement": 1,
+      "guests_entertained": 3,
+      "times_operated": 3,
+      "cost_per_operation": 1,
+      "avg_wait_time": 13.0,
+      "avg_guests_per_operation": 1.0,
+      "breakdown_rate": 0.001
+    },
+    {
+      "subtype": "carousel",
+      "subclass": "yellow",
+      "x": 9,
+      "y": 10,
+      "out_of_service": false,
+      "uptime": 1.0,
+      "cleanliness": 0.87,
+      "ticket_price": 4,
+      "operating_cost": 2,
+      "revenue_generated": 8,
+      "capacity": 6,
+      "intensity": 1,
+      "excitement": 1,
+      "guests_entertained": 2,
+      "times_operated": 2,
+      "cost_per_operation": 1,
+      "avg_wait_time": 13.0,
+      "avg_guests_per_operation": 1.0,
+      "breakdown_rate": 0.001
+    },
+    {
+      "subtype": "carousel",
+      "subclass": "yellow",
+      "x": 10,
+      "y": 7,
+      "out_of_service": false,
+      "uptime": 1.0,
+      "cleanliness": 0.86,
+      "ticket_price": 4,
+      "operating_cost": 14,
+      "revenue_generated": 76,
+      "capacity": 6,
+      "intensity": 1,
+      "excitement": 2,
+      "guests_entertained": 18,
+      "times_operated": 14,
+      "cost_per_operation": 1,
+      "avg_wait_time": 9.85,
+      "avg_guests_per_operation": 1.29,
+      "breakdown_rate": 0.001
+    },
+    {
+      "subtype": "carousel",
+      "subclass": "yellow",
+      "x": 10,
+      "y": 10,
+      "out_of_service": false,
+      "uptime": 1.0,
+      "cleanliness": 0.87,
+      "ticket_price": 4,
+      "operating_cost": 1,
+      "revenue_generated": 4,
+      "capacity": 6,
+      "intensity": 1,
+      "excitement": 1,
+      "guests_entertained": 1,
+      "times_operated": 1,
+      "cost_per_operation": 1,
+      "avg_wait_time": 13.0,
+      "avg_guests_per_operation": 1.0,
+      "breakdown_rate": 0.001
+    },
+    {
+      "subtype": "carousel",
+      "subclass": "yellow",
+      "x": 11,
+      "y": 7,
+      "out_of_service": false,
+      "uptime": 1.0,
+      "cleanliness": 0.84,
+      "ticket_price": 4,
+      "operating_cost": 4,
+      "revenue_generated": 20,
+      "capacity": 6,
+      "intensity": 1,
+      "excitement": 2,
+      "guests_entertained": 4,
+      "times_operated": 4,
+      "cost_per_operation": 1,
+      "avg_wait_time": 10.5,
+      "avg_guests_per_operation": 1.0,
+      "breakdown_rate": 0.001
+    },
+    {
+      "subtype": "carousel",
+      "subclass": "yellow",
+      "x": 11,
+      "y": 12,
+      "out_of_service": false,
+      "uptime": 1.0,
+      "cleanliness": 0.85,
+      "ticket_price": 4,
+      "operating_cost": 4,
+      "revenue_generated": 16,
+      "capacity": 6,
+      "intensity": 1,
+      "excitement": 2,
+      "guests_entertained": 4,
+      "times_operated": 4,
+      "cost_per_operation": 1,
+      "avg_wait_time": 13.0,
+      "avg_guests_per_operation": 1.0,
+      "breakdown_rate": 0.001
+    }
+  ],
+  "available_entities": {
+    "carousel": [
+      "yellow"
+    ],
+    "ferris_wheel": [
+      "yellow"
+    ],
+    "roller_coaster": [
+      "yellow"
+    ],
+    "drink": [
+      "yellow"
+    ],
+    "food": [
+      "yellow"
+    ],
+    "specialty": [
+      "yellow"
+    ],
+    "janitor": [
+      "yellow"
+    ],
+    "mechanic": [
+      "yellow"
+    ],
+    "specialist": [
+      "yellow"
+    ]
+  },
+  "broken_rides": []
+}

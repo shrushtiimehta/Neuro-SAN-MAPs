@@ -1,44 +1,20 @@
-# playbook_coordinator
-
-Strategy_coordinator's rules of thumb: specialist gating, field
-ownership, action priority, and always-on safety rules.
-
-## Specialist gating
-strategy_coordinator consults these in parallel each turn:
-- rides_manager:        always
-- park_layout_planner:  always
-- shops_manager:        skip only if step < 3
-- staffing_manager:     skip if step < 10 AND no broken rides
-- research_lead:        skip unless cash ≥ 5000 AND ≥ 1 operational ride;
-                        once affordable, consult regardless of step (research
-                        is the tier-unlock lever - yellow-only caps capacity
-                        AND rating).
-
 ## Field ownership
-- rides_manager / shops_manager return subtype/subclass/price (no coords)
-- park_layout_planner owns all (x,y) lookups; never guess coordinates
+- rides_manager / shops_manager / staff_manager return subtype/subclass/price but NO coordinates of placement.
+- park_layout_planner manages ALL the (x,y) placement selection; NEVER guess coordinates.
 
-## Action priority order
-Applied after FinanceGate. Override the proposer's ranking only when a
-higher-priority condition in the snapshot demands it:
-1. Broken rides in snapshot -> place mechanic adjacent to the broken ride
-2. Shops out of stock -> modify order_quantity
-2.5. 2nd janitor: hire when min_cleanliness ≤ 0.80 for 2+ consecutive turns
-   AND ≥ 2 rides operational (cleanliness < 0.8 starts a rating penalty;
-   janitor is cheap). Full rule in staffing_manager.
-3. Park is bare (no rides AND no shops) -> first ride placement
-3.5. EARLY RAMP (step ≤ 15): if free_tiles > 0 and an approved place exists,
-   prefer it over any ticket-price `modify` - fast capacity funds everything
-   downstream. Target ~6-8 rides + 1 drink + 1 food shop by step 15.
-4. Best approved proposal from FinanceGate
-5. Reward stalled and root cause unclear -> survey_guests(num_guests=5)
-6. Otherwise -> wait
+## Decision-making based on:
+- Each episode has 100 steps and we would like to reach at least $1,000,000 in cumulative rewards by the end of the 100 steps. Make sure you efficiently use each and every step properly to reach your goal.
+- Always think in terms of long-term park value, not short-term cash. Prioritize investments that compound. Example: A ride that costs $10,000 today but earns $2,000/day pays back in 5 days and compounds for the rest of the episode — that is always better than hoarding cash. When choosing between two approved actions, prefer the one with the larger long-term return, even if it costs more upfront — provided you have cash / FinanceGate approved it and the episode has sufficient runway to recoup the cost.
+- Research is a long-term investment: unlocking blue/green/red tiers enables higher-capacity and higher-excitement rides that dramatically increase park value. Start research as early as financially viable, not as a last resort.
+- Every action must have a clear payoff rationale: what does this build/hire/research earn, and when does it break even? Also if in the last turn a certain set of rides/shops are resulting in profit try to build those again(research is still top priority).
+- Avoid purely defensive actions (waiting, minor price tweaks) unless all productive investments are genuinely exhausted. Idle steps are permanently lost value.
 
 ## Safety rules (always)
-- price arg for any ride placement MUST equal max_ticket_price exactly
+- ActionDispatcher fires exactly once per step.
 - Always pass research_topics field for set_research even when speed=none
-- ActionDispatcher fires exactly once per turn -- including for 'wait'
 - All numeric values in ActionDispatcher args MUST be quoted strings
 
 ## Learned rules
-Confirmed hypotheses get folded above with a "(learned ep<N>)" tag.
+
+## Learned rules (promoted from prior runs)
+When num_shops exceeds num_rides by more than 3, prioritize placing a new ride over adding another shop of an already-present subtype, to prevent diminishing returns from shop saturation and compound ride-driven rating growth. (learned ep0)

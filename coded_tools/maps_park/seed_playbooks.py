@@ -14,7 +14,7 @@
 #
 # END COPYRIGHT
 """
-SeedPlaybooks: copy the seven config_files strategy seeds into the seven
+SeedPlaybooks: copy the six config_files strategy seeds into the six
 state/playbook_*.md files (deterministic file mechanics, not LLM logic).
 
 Each playbook starts as a verbatim copy of its config seed; the consultant
@@ -51,13 +51,12 @@ class SeedPlaybooks(CodedTool):
     # playbook name -> config seed filename. Mirrors the seed_playbook_* ->
     # playbook_* map in the agent HOCONs' state_read/state_write config.
     PLAYBOOKS: ClassVar[dict[str, str]] = {
-        "playbook_director":    "director_strategy.md",
         "playbook_coordinator": "coordinator_strategy.md",
         "playbook_rides":       "rides_strategy.md",
         "playbook_shops":       "shops_strategy.md",
         "playbook_staff":       "staff_strategy.md",
         "playbook_research":    "research_strategy.md",
-        "playbook_layout":      "world_strategy.md",
+        "playbook_layout":      "layout_strategy.md",
     }
 
     def __init__(self) -> None:

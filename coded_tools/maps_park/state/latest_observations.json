@@ -3,18 +3,13 @@
     {
       "park_index": 0,
       "episode": 0,
-      "step": 1,
-      "horizon": 100,
-      "reward": -46.0,
-      "cumulative_reward": -46.0,
-      "error": null,
-      "done": false,
+      "step": 0,
       "observation": {
-        "step": 1,
+        "step": 0,
         "horizon": 100,
-        "money": 289,
-        "value": 454,
-        "park_rating": 10.8,
+        "money": 500,
+        "value": 500,
+        "park_rating": 20.0,
         "available_entities": {
           "carousel": [
             "yellow"
@@ -89,6 +84,10 @@
           [
             8,
             12
+          ],
+          [
+            9,
+            9
           ],
           [
             9,
@@ -242,36 +241,14 @@
           ]
         ],
         "rides": {
-          "total_rides": 1,
+          "total_rides": 0,
           "min_uptime": 1.0,
-          "total_operating_cost": 13,
-          "total_revenue_generated": 52,
-          "total_excitement": 0.8,
-          "avg_intensity": 1.0,
-          "total_capacity": 6,
-          "ride_list": [
-            {
-              "subtype": "carousel",
-              "subclass": "yellow",
-              "x": 9,
-              "y": 9,
-              "out_of_service": false,
-              "uptime": 1.0,
-              "cleanliness": 0.92,
-              "ticket_price": 4,
-              "operating_cost": 13,
-              "revenue_generated": 52,
-              "capacity": 6,
-              "intensity": 1,
-              "excitement": 1,
-              "guests_entertained": 13,
-              "times_operated": 13,
-              "cost_per_operation": 1,
-              "avg_wait_time": 13.0,
-              "avg_guests_per_operation": 1.0,
-              "breakdown_rate": 0.001
-            }
-          ]
+          "total_operating_cost": 0,
+          "total_revenue_generated": 0,
+          "total_excitement": 0.0,
+          "avg_intensity": 0.0,
+          "total_capacity": 0,
+          "ride_list": []
         },
         "shops": {
           "total_shops": 0,
@@ -303,12 +280,13 @@
           "total_operating_cost": 0,
           "staff_list": []
         },
-        "min_cleanliness": 0.92,
+        "min_cleanliness": 1.0,
         "guest_survey_results": {
-          "age_of_results": 1,
+          "age_of_results": 0,
           "list_of_results": []
         }
-      }
+      },
+      "message": "Initial observation for park slot 0. No action taken yet."
     }
   ]
 }

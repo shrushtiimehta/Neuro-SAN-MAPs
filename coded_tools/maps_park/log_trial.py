@@ -20,7 +20,7 @@ lines to trial_strategies + trial_strategies_criteria, atomically.
 This replaces the hand-rolled "read the file, count the lines whose id
 starts with t<episode>_, increment, then format the criteria line"
 procedure that was duplicated across consultant_director (periodic),
-episode_closer, and memory_keeper. The LLM only supplies the suggestion
+episode_closer, and parkstatus_reader. The LLM only supplies the suggestion
 fields; the deterministic id-minting and exact line formatting happen here.
 
 Files written (one appended line each):

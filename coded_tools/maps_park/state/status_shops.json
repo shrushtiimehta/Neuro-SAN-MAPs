@@ -1,0 +1,69 @@
+{
+  "step": 13,
+  "cash": 233,
+  "placed_shops": [
+    {
+      "subtype": "food",
+      "subclass": "yellow",
+      "x": 8,
+      "y": 7,
+      "item_price": 5,
+      "item_cost": 1,
+      "operating_cost": 48,
+      "uptime": 1.0,
+      "number_of_restocks": 0,
+      "order_quantity": 60,
+      "inventory": 37,
+      "revenue_generated": 55,
+      "cleanliness": 0.87,
+      "guests_served": 11,
+      "out_of_service": false
+    },
+    {
+      "subtype": "drink",
+      "subclass": "yellow",
+      "x": 10,
+      "y": 9,
+      "item_price": 3,
+      "item_cost": 0,
+      "operating_cost": 0,
+      "uptime": 1.0,
+      "number_of_restocks": 0,
+      "order_quantity": 90,
+      "inventory": 70,
+      "revenue_generated": 60,
+      "cleanliness": 0.87,
+      "guests_served": 20,
+      "out_of_service": false
+    }
+  ],
+  "available_entities": {
+    "carousel": [
+      "yellow"
+    ],
+    "ferris_wheel": [
+      "yellow"
+    ],
+    "roller_coaster": [
+      "yellow"
+    ],
+    "drink": [
+      "yellow"
+    ],
+    "food": [
+      "yellow"
+    ],
+    "specialty": [
+      "yellow"
+    ],
+    "janitor": [
+      "yellow"
+    ],
+    "mechanic": [
+      "yellow"
+    ],
+    "specialist": [
+      "yellow"
+    ]
+  }
+}

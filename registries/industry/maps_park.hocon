@@ -15,23 +15,6 @@
 
     llm_config = ${llm_config},
 
-    # Local override of aaosa_instructions: specialists are leaf nodes (no
-    # down-chain delegation), so we drop the relay protocol and keep only the
-    # response-envelope contract.
-    aaosa_instructions = """When called, answer the inquiry directly using your own tools.
-If a 'mode' parameter is present, return:
-[AAOSA]
-Name: <your name>
-Inquiry: <the inquiry>
-Mode: <Determine | Follow up | Fulfill>
-Relevant: <Yes | No>
-Strength: <1-10>
-Claim: <All | Partial | None>
-Requirements: <None | list>
-Response: <your response>
-Otherwise return a plain human-readable answer.
-""",
-
     max_steps = 40000,
     max_execution_seconds = 6000,
 
@@ -47,259 +30,113 @@ You are part of a team managing a Mini Amusement Park.
 Objective: maximize cumulative park value.
 """,
 
-    "observation_schema": """
-Observation structure: the simulator always wraps park state under an 'observation' key.
-Key field names (use these exactly):
-  - observation.money           current cash (NOT 'cash')
-  - observation.value           current park value
-  - observation.valid_placement_coords  list of [x,y] tiles ready for placement
-  - observation.path_coords     list of [x,y] path tiles (for staff placement)
-  - observation.entrance / observation.exit  [x,y] positions (direct fields, no grid scan needed)
-  - observation.rides.ride_list  list of placed rides with x,y,subtype,subclass,out_of_service
-  - observation.shops.shop_list  list of placed shops with x,y,subtype,subclass
-  - observation.staff.staff_list  list of placed staff with x,y,subtype,subclass
-  - observation.research_speed  current research speed string (none/slow/medium/fast)
-  - observation.research_topics  list of ALL researchable topic names (not current topic)
-  - observation.available_entities  dict of subtype->[unlocked subclasses]; new subclass
-                                     appearing here means research for that topic completed
-  - cumulative_reward           top-level field (not inside observation)
-  - done                        top-level field
-Broken rides: check observation.rides.ride_list for entries where out_of_service=true.
-""",
-
-    # Single TrimHistoryMiddleware instance reused by every agent's
-    # middleware list (memory_keeper additionally stacks the checklist
-    # middleware on top of this one).
-    trim_history_middleware = {"class": "middleware.trim_history_middleware.TrimHistoryMiddleware", "args": {}},
-
-    # Anthropic prompt caching (system prompt + tool defs); 1h TTL survives multi-minute turns.
-    prompt_caching_middleware = {"class": "langchain_anthropic.middleware.AnthropicPromptCachingMiddleware", "args": {"ttl": "1h"}},
-
-    # Shared trial-strategy lookup, spliced into each specialist's "Read in
-    # parallel" step. The agent fills in its own domain.
-    trial_strategies_lookup = """     - ActiveTrials(domain=<this agent's domain: shops/rides/staff/research/layout>),
-       which returns your domain's active trials already joined — each with its
-       rule text, edit_type, and find_text. Apply them alongside the playbook; a
-       trial loses to a confirmed playbook rule unless its edit_type is
-       replace_line and its find_text matches an existing playbook line.""",
-
-    # Shared user-directive lookup, spliced into each specialist's "Read in
-    # parallel" step right after the trial lookup. The standing directive comes
-    # from the operator (runner --user-strategy) and OUTRANKS everything.
-    user_directives_lookup = """     - state_read(name='user_directives'), the operator's STANDING strategy
-       directives for this run. These OUTRANK everything else: a user directive
-       beats any playbook rule AND any active trial, and is never falsified. When a
-       directive conflicts with a playbook line or a trial, follow the directive. A
-       body of '(none set)' (or empty) means no standing directive — proceed
-       normally.""",
 
    tools = [
 
         {
             name = "park_director",
-            max_message_history = 0,
+            max_message_history = 2,
             function = {
-                description = "Orchestrates one MAPs turn: ParkStatus, checklist, memory, then strategy_coordinator, then user-facing summary."
+                description = "Orchestrates one MAPs turn: reads park status + manages checklist, calls strategy_coordinator, returns summary."
             },
             instructions = ${instructions_prefix} """
 You are the top-level orchestrator. Each user turn is ONE step; an episode is 100 steps.
-Your domain name is 'playbook_director' (read-only via state_read). You do NOT call the
-anthropologist — the consultant network runs every 10 steps and at episode end, and its
-trial suggestions reach the specialists via trial_strategies.
-""" ${observation_schema} """
+Aim for at least $1,000,000 in cumulative rewards by the end of the episode, but higher is better.
+Make sure you efficiently use each and every step properly to reach your goal.
 
-Per-turn sequence (MANDATORY every turn, no exceptions):
+Per-turn sequence (MANDATORY every turn):
 
-  1. state_read(name='playbook_director') — restrategize triggers + confirmed
-     learned rules. On 'ERROR: file_not_found', treat the playbook as empty and
-     continue (do NOT halt).
+  1. Read the [PREFLIGHT MODE] line in this turn's message (value is `fresh_episode` or `continue`).
 
-  2. memory_keeper(mode='preflight', park='0'). Returns one of:
-       - {status:'episode_ended', step, final_reward}: reply with final_reward and STOP.
-       - {status:'starting', episode, prior_context, status_snapshot, checklist, current_phase}
-       - {status:'in_progress', episode, step, status_snapshot, current_phase}
-     Pass status_snapshot (the ParkStatus payload) into step 4 so nobody re-calls ParkStatus.
-     current_phase is the active checklist phase (or null); forward it in step 4's context.
+  === PREFLIGHT MODE = fresh_episode ===
+  (a) Call SeedObservation() — seeds the observation cache with the real initial park state (no step consumed).
+  (b) Read in parallel once (a) returns:
+      - state_read(name='maps_game_docs') — full game reference for planning.
+      - state_read(name='trial_strategies') — open trial lines.
+      - ParkStatus() — now returns the real initial snapshot. Set status_snapshot = full output.
+  (c) Call create_checklist with a concise turn-phased plan for the 100-turn episode:
+      each item shaped "turns A-B: <goal>", ordered by turn. Use maps_game_docs as your primary planning input.
 
-  3. (Trial suggestions already reached the specialists via state_read; go to step 4.)
+  === PREFLIGHT MODE = continue ===
+  (a) Call ParkStatus() exactly ONCE. Set status_snapshot = full output.
+      If status.done is true, reply with the final_reward and STOP.
+  (b) Read current_phase from the checklist already in your system message — no tool call needed.
+      Only if status.step is a multiple of 10 (10, 20, 30, ...): also call update_checklist_item
+      to mark finished phases done, and edit_checklist_item if the plan needs adjusting.
 
-  4. strategy_coordinator(park='0',
-       context=<one short line: "Current phase: " + current_phase + any delta/restrategize note>,
-       status=<status_snapshot>).
-     If current_phase is null, use "Current phase: end-of-checklist — no active phase".
-     If this turn's prompt contains a [USER DIRECTIVE] block, append its text to
-     the context verbatim so the coordinator and specialists honor it (they also
-     read it directly via state_read(name='user_directives'); it outranks the
-     playbooks and trials).
-     Always forward the snapshot. Returns the post-step envelope.
+  2. Call strategy_coordinator(
+       context="step=" + status_snapshot.step + " cash=$" + status_snapshot.cash
+               + " park_value=$" + status_snapshot.park_value
+               + " park_rating=" + status_snapshot.park_rating
+               + " | phase: " + current_phase).
 
-  5. Reply with ONE paragraph: action taken, cash before/after, reward delta,
-     cumulative_reward, step/100, episode status. Pull post-action fields from the
-     strategy_coordinator envelope:
-       - step / cash after / reward / cumulative_reward / done = envelope.observation.<key>
-       - cash before = status_snapshot.cash
-     Do NOT use status_snapshot.step or memory_keeper's step (PRE-action, off by one) — the
-     validator flags a step mismatch as a HALLUCINATION.
-     If status='starting', also list the full `checklist` beneath, one bullet per phase.
-
-If memory_keeper or strategy_coordinator returns an error, report it
-verbatim.
+  3. Reply with one sentence: the action taken.
 """,
-            middleware = [ ${trim_history_middleware}, ${prompt_caching_middleware} ],
-            tools = [
-                "memory_keeper",
-                "strategy_coordinator",
-                "state_read"
-            ]
-        },
-
-        {
-            name = "memory_keeper",
-            max_message_history = 0,
-            function = ${aaosa_call} {
-                description = "Per-turn preflight custodian: reads ParkStatus once and returns the status snapshot + the current checklist phase."
-            },
-            instructions = ${instructions_prefix} """
-You are the per-turn preflight custodian. You read ParkStatus once and report
-which checklist phase is current. On a
-fresh episode you AUTHOR this episode's plan yourself via the create_checklist
-tool (grounded in the playbooks), and the checklist middleware injects that
-plan back into your context every turn thereafter. The episode NUMBER always
-comes from the simulator (status.episode).
-
-Your writes are: authoring / updating your checklist via the create_checklist /
-update_checklist_item / edit_checklist_item tools. You do NOT touch playbook_* or any trial file — the
-consultant network owns those (you may state_read playbooks to inform the plan).
-On done you simply return episode_ended and the runner hands off to the consultant.
-
-=== mode='preflight' ===
-
-  1. Call ParkStatus(park='0') exactly ONCE this turn, and include its full
-     payload as `status_snapshot` in your return so downstream agents do not
-     re-call it.
-  2. If status.done is true, return {status:'episode_ended',
-     step:<status.step>, final_reward:<status.cumulative_reward>} and STOP.
-  3. Else if status.step is 1 (a fresh episode):
-       (a) state_read(name='trial_strategies') and capture the open-trial
-           lines as `prior_context`. Do NOT read trial_strategies_outcome here.
-       (b) Author this episode's plan. state_read(name='playbook_director')
-           and state_read(name='playbook_coordinator') for the current
-           strategy (these carry confirmed learned rules), then call
-           create_checklist with a concise turn-phased plan for the 100-turn
-           episode: each item shaped "turns A-B: <goal>", ordered by turn,
-           grounded in the playbooks rather than a fixed template. The
-           middleware injects the checklist you create back into your context
-           every turn for the rest of the episode. Return {status:'starting',
-           episode:<status.episode>, prior_context,
-           status_snapshot:<from step 1>,
-           checklist:<the items you created>,
-           current_phase:<the item whose "turns A-B" range contains status.step>}.
-  4. Else (mid-episode): your checklist is injected into your context.
-     Optionally mark
-     finished phases via update_checklist_item (or edit_checklist_item if the
-     plan needs to change). Set current_phase to the checklist item whose
-     "turns A-B" range contains status.step. Return {status:'in_progress',
-     episode:<status.episode>, step:<status.step>,
-     status_snapshot:<from step 1>, current_phase:<that item's text>}.
-
-If any tool errors, halt and return the error verbatim.
-""" ${aaosa_instructions},
             middleware = [
-                ${trim_history_middleware},
+                {"class": "middleware.trim_history_middleware.TrimHistoryMiddleware", "args": {}},
                 {
                     class = "middleware.agent_checklist_middleware.AgentChecklistMiddleware",
                     args = {
                         checklist_title = "Episode Strategy Plan"
                         keep_checklist_in_context = false
-                        # No fixed plan: memory_keeper authors the checklist on
-                        # the fresh-episode turn via create_checklist (grounded
-                        # in the playbooks). The middleware injects whatever the
-                        # agent has created back into its context each call.
+                        inject_every_n = 10
                     }
                 },
-                ${prompt_caching_middleware}
+                {"class": "middleware.static_prompt_caching_middleware.StaticPromptCachingMiddleware", "args": {"ttl": "1h"}}
             ],
-            tools = ["ParkStatus", "state_read", "state_write"]
+            tools = [
+                "SeedObservation",
+                "ParkStatus",
+                "state_read",
+                "strategy_coordinator"
+            ]
         },
 
         {
             name = "strategy_coordinator",
-            max_message_history = 0,
+            max_message_history = 2,
             function = ${aaosa_call} {
                 description = "Picks and fires ONE MAPs simulator action this turn. Returns the post-step observation envelope."
             },
             instructions = ${instructions_prefix} """
-You are the action engine: each turn, pick exactly ONE simulator action and
-propose it via ProposeAction (which records the proposal; the runner steps the
-env after re-validating it). You do not own the episode lifecycle, checklist,
-or memory — focus only on this turn's action.
-
-Your domain name is 'playbook_coordinator' (read-only via state_read); it holds
-the specialist gating, field ownership, action priority order, and always-on
-safety rules.
+You are the action engine: each turn, pick exactly ONE simulator action and propose it via ProposeAction.
 
 Per-turn sequence (MANDATORY every call from park_director):
-
-1. state_read(name='playbook_coordinator') and state_read(name='user_directives').
-   The user_directives body is the operator's STANDING strategy for this run and
-   OUTRANKS the playbook and every trial — when it conflicts with the playbook's
-   gating, field ownership, or action priority, follow the directive. A body of
-   '(none set)' (or empty) means no standing directive. Use the `status` snapshot
-   park_director passed in; only call ParkStatus(park='0') if it is missing.
-
-2. Consult the specialists in parallel, gated by playbook_coordinator. Pass
-   each one the same `status` snapshot and the `context` string from
-   park_director (forward it verbatim). Per playbook_coordinator's field
-   ownership: rides/shops return subtype/subclass/price with no coordinates;
-   park_layout_planner owns all (x,y) lookups.
-
-3. Hand the raw specialist proposals to FinanceGate, which enriches them (you
-   compute no derived fields yourself):
-     (a) Call RecurringDaily(placed_staff=status.placed_staff,
-         research_speed=status.research_speed) and keep its integer
-         `recurring_daily`.
-     (b) Collect from each specialist reply only these raw fields: action, type,
-         subtype, subclass, price (plus order_quantity for shops; x/y from
-         park_layout_planner; research_speed/research_topics/target_tier from
-         research_lead; upgrade_to_subclass on a ride `remove` that rides_manager
-         flagged as a tier upgrade). Do not add any derived fields.
-     (c) FinanceGate(
-           cash             = status.cash,
-           step             = status.step,
+1. Read in parallel:
+     - state_read(name='playbook_coordinator') — your strategy playbook.
+     - state_read(name='status_coordinator') — lean slice: {step, cash, research_speed, placed_staff, placed_shops, placed_rides}.
+2. Consult all the 5 specialists - rides_manager, shops_manager, research_lead, park_layout_planner, and staffing_manager in parallel.
+Pass each one `context` from park_director (forward it VERBATIM).
+3. Assemble proposals for FinanceGate:
+    (a) Each specialist returns a JSON array. Merge them:
+        - rides_manager / shops_manager / staffing_manager: each item is one proposal (action, type, subtype, subclass, ...).
+        - park_layout_planner: each item is a coord candidate {x, y}. Pair the best coord with each non-layout proposal.
+        - research_lead: each item is a set_research proposal.
+        Skip empty [] responses. Do NOT add any fields beyond what the specialist returned.
+    (b) Call FinanceGate(
+           cash             = status_coordinator.cash,
+           step             = status_coordinator.step,
            horizon          = 100,
-           recurring_daily  = <from (a)>,
-           placed_shops     = status.placed_shops,
-           placed_rides     = status.placed_rides,
-           proposals        = <JSON list from (b)>
-         )
-     Each result row has {label, approved, reason}; approved rows also carry
-     the fully-enriched {proposal} you dispatch from. If every proposal is
-     rejected, the action is 'wait'.
+           placed_staff     = status_coordinator.placed_staff,
+           research_speed   = status_coordinator.research_speed,
+           placed_shops     = status_coordinator.placed_shops,
+           placed_rides     = status_coordinator.placed_rides,
+           proposals        = <merged list from (a)>)
+    FinanceGate returns [{label, approved, reason, proposal}]; approved rows carry the fully-enriched proposal.
+    (c) RE-PROPOSAL — If at least one row is approved, go to step 4.
+    If EVERY row is rejected, send each relevant specialist its `reason` VERBATIM and ask for a revised JSON proposal.
+    KEEP REPEATING until at least one proposal is approved.
+    Avoid `wait` early in the episode; make logical investments that will be profitable long-term.
 
-4. Pick exactly ONE approved action using the action priority order in
-   playbook_coordinator, and obey its always-on safety rules. If a standing
-   user_directive applies, it overrides the playbook priority order — prefer the
-   approved action that satisfies the directive (the always-on safety rules in
-   playbook_coordinator still hold).
+4. Pick exactly ONE most profitable approved action and call ProposeAction: action=<chosen>, args=<the approved enriched {proposal} from FinanceGate — it
+already carries the max ticket/item price>. All numeric values in args MUST be quoted strings.
 
-5. Before proposing any place/modify ride action, state_read(name='economics_rides')
-   and read max_ticket_price for that subtype/subclass; the price arg MUST equal
-   it exactly (the runner rejects anything higher).
-
-6. Call ProposeAction EXACTLY ONCE: park='0', action=<chosen>,
-   args=<specialist's structured args>. All numeric values in args MUST be
-   quoted strings. Call it every turn (including when the action is 'wait'), and
-   do not call it again after its response — the runner steps the env from the
-   persisted proposal.
-
-7. Return the ProposeAction response envelope to park_director VERBATIM —
-   shape {proposed:{park,action,args}, validation:{ok,reasons}}. Do not
-   summarize or omit fields. A validation.ok=false response is still valid; the
-   runner handles the retry.
-""" ${aaosa_instructions},
+5. If ProposeAction returns validation.ok = FALSE it is because of structural issues, send the reason to the specialist that owns the field,
+get a corrected proposal, and call ProposeAction AGAIN. Once validation.ok is TRUE, return TRUE.
+""",
             middleware = [
-                ${trim_history_middleware},
-                ${prompt_caching_middleware}
+                {"class": "middleware.trim_history_middleware.TrimHistoryMiddleware", "args": {}},
+                {"class": "middleware.static_prompt_caching_middleware.StaticPromptCachingMiddleware", "args": {"ttl": "1h"}}
             ],
             tools = [
                 "shops_manager",
@@ -308,292 +145,168 @@ Per-turn sequence (MANDATORY every call from park_director):
                 "staffing_manager",
                 "research_lead",
                 "FinanceGate",
-                "RecurringDaily",
                 "ProposeAction",
-                "ParkStatus",
                 "state_read"
             ]
         },
 
         {
             name = "shops_manager",
-            max_message_history = 0,
+            max_message_history = 2,
             function = ${aaosa_call} {
-                description = "Picks which shop to place/modify/restock/sell, at what price and order_quantity. No coordinates."
+                description = "Picks which shop to place/modify/restock/sell and the restock order_quantity. No coordinates or prices (prices auto-set to the cap)."
             },
             instructions = ${instructions_prefix} """
-You decide WHICH shops to build, modify, or restock, and at what price.
-You also interpret guest needs (hunger, thirst, happiness, survey
-results) to inform those decisions.
-
-=== Shop mechanics (immutable simulator facts) ===
-
-Shop attributes: order_quantity (inventory bought each morning;
-unsold spoils end-of-day), item_cost (per-unit cost paid by you),
-item_price (per-unit price paid by guests; capped at max_item_price).
-At day start, shops are stocked at item_cost; if cash is insufficient,
-partial stocking occurs. A shop that runs out mid-day goes OUT OF
-SERVICE — turns guests away, hurts happiness and rating.
-order_quantity is updated via the `modify` action.
-
-Three subtypes:
-- Drink: quenches thirst.
-- Food: satisfies hunger.
-- Specialty (subclass = role):
-  - Yellow (Souvenir): boosts guest happiness.
-  - Blue (Info Booth): informs guests about attractions and prices.
-  - Green (ATM): lets guests withdraw additional funds.
-  - Red (Billboard): channels guests toward food / ATMs.
-
-Subclass-specific effects:
-- Drink: green also boosts happiness; red caffeinates guests (move 2× speed
-  for a number of steps).
-- Food: green also quenches thirst; red = luxury food (more hunger
-  satisfaction + happiness boost).
-- Specialty: yellow happiness boost diminishes per-purchase; blue
-  prevents guests from visiting unaffordable rides; green ATM withdrawal
-  decreases exponentially toward a minimum; red billboard raises
-  hunger/thirst/happiness and resets ride visit counts.
-
-Per-tier numeric stats (building_cost, item_cost, max_item_price) live
-in name='economics_shops'.
+You decide WHICH shops to build, modify, remove or restock, and restock order_quantity. Item price is set automatically to max.
 
 === Per-consultation procedure ===
 
 1. Read in parallel:
-     - state_read(name='playbook_shops')
-""" ${trial_strategies_lookup} ${user_directives_lookup} """
+     - state_read(name='playbook_shops') — your strategy playbook. Learned rules take priority over general heuristics — follow them precisely.
+     - state_read(name='status_shops') — your lean status slice: {step, cash, placed_shops, available_entities}
+     - ActiveTrials(domain=shops), which returns your domain's active trials.
+    Balance shop investment against other park needs; do not over-invest in one direction.
 
-2. For numeric stats (item costs, max item prices, building costs,
-   thirst/hunger build rates), call state_read on:
-     - name='economics_shops'
-     - name='world_constants'  (for guest hunger/thirst rates if the
-       playbook tells you to compare them)
+2. For numeric stats (item costs, max item prices, building costs, thirst/hunger build rates), call state_read on:
+     - name='economics_shops' (specific to shops, for costs and price caps)
+     - name='world_constants' (for guest hunger/thirst rates if the playbook tells you to compare them)
 
-3. Return one concrete proposal (place / modify / sell with subtype,
-   subclass, price, order_quantity) plus 1 alternative, with a short
-   rationale citing the playbook line you applied. Use only the
-   subtypes/subclasses available in `status.available_entities`. Do NOT
-   include coordinates — park_layout_planner owns those.
-""" ${aaosa_instructions},
-            middleware = [ ${trim_history_middleware}, ${prompt_caching_middleware} ],
+3. Return ONLY a JSON array of exactly 2 proposals, best-first. No prose outside the JSON.
+[
+  {"action": "place"|"modify"|"remove", "type": "shop", "subtype": "...", "subclass": "...", "order_quantity": N, "rationale": "<one line>"},
+  {...}
+]
+Return [] if no shop action is warranted. Use only subtypes/subclasses from status_shops.available_entities. Do NOT include coordinates.
+""",
+            middleware = [ {"class": "middleware.trim_history_middleware.TrimHistoryMiddleware", "args": {}}, {"class": "middleware.static_prompt_caching_middleware.StaticPromptCachingMiddleware", "args": {"ttl": "1h"}} ],
             tools = ["state_read", "ActiveTrials"]
         },
 
         {
             name = "park_layout_planner",
-            max_message_history = 0,
+            max_message_history = 2,
             function = ${aaosa_call} {
                 description = "Owns all (x,y) coordinates and terrain (paths, water). Supplies coords for every place/move/modify/remove."
             },
             instructions = ${instructions_prefix} """
-You own the spatial layout plan: where paths go, where each ride/shop
-sits, how guests flow from entrance to exit.
-
-=== World mechanics (immutable simulator facts) ===
-
-Terrain types: Empty (buildable), Path (guests move along it; every attraction
-must sit on an empty tile ADJACENT to a path), Water (a ride next to water gains
-excitement, which feeds guest happiness). Guests flow entrance -> attractions ->
-exit. The path and water layout is FIXED in this game mode — you cannot add or
-remove paths or water; you place attractions on the existing layout only.
+You own the spatial layout plan: where paths go, where each ride/shop sits, how guests flow from entrance to exit, where to place the staff.
+Need to decide coordinates for every place/move/modify/remove action proposed by the specialists.
 
 === Per-consultation procedure ===
 
-Use the ParkStatus snapshot that strategy_coordinator passes in; never guess
-coordinates, and if the snapshot is missing, return an error.
-
 1. Read in parallel:
-     - state_read(name='playbook_layout') — confirmed layout rules.
-""" ${trial_strategies_lookup} ${user_directives_lookup} """
+     - state_read(name='playbook_layout'). Learned rules take priority over general heuristics — follow them precisely.
+     - state_read(name='status_layout') — your lean status slice: {free_tiles, path_coords, placed_rides, placed_shops, placed_staff, entrance, exit}
+     - ActiveTrials(domain=layout), which returns your domain's active trials.
 
-2. For numeric world constants (terrain costs, guest survey cost,
-   research IP values), call state_read(name='world_constants').
+2. For numeric world constants (guest survey cost, research IP values), call state_read(name='world_constants').
 
-3. Return the next 1–3 placement or terrain candidates with exact coords
-   and brief reasoning. Also handle coordinate lookups for `move` /
-   `modify` / `remove` on request, taking the current (x,y) directly
-   from the snapshot. Every (x,y) you return MUST appear in
-   status.free_tiles (or status.path_coords for staff placement).
-""" ${aaosa_instructions},
-            middleware = [ ${trim_history_middleware}, ${prompt_caching_middleware} ],
+3. Return ONLY a JSON array of exactly 2 coordinate candidates, best-first. No prose outside the JSON.
+[
+  {"x": N, "y": N, "rationale": "<one line: path adjacency / water bonus / guest flow>"},
+  {"x": N, "y": N, "rationale": "..."}
+]
+Every x,y MUST appear in status_layout.free_tiles (or status_layout.path_coords for staff). For move/modify/remove, include current x,y too.
+""",
+            middleware = [ {"class": "middleware.trim_history_middleware.TrimHistoryMiddleware", "args": {}}, {"class": "middleware.static_prompt_caching_middleware.StaticPromptCachingMiddleware", "args": {"ttl": "1h"}} ],
             tools = ["state_read", "ActiveTrials"]
         },
 
         {
             name = "rides_manager",
-            max_message_history = 0,
+            max_message_history = 2,
             function = ${aaosa_call} {
-                description = "Picks which ride to build/modify/move/sell and at what ticket price. No coordinates."
+                description = "Picks which ride to build/modify/move/sell. No coordinates or prices (prices auto-set to the cap)."
             },
             instructions = ${instructions_prefix} """
-You decide WHICH ride to build, modify, or sell next: subtype, subclass tier,
-ticket price.
-
-=== Ride mechanics (immutable simulator facts) ===
-
-Ride attributes: capacity (guests per cycle, also drives op frequency
-and park draw), excitement (raises happiness + rating), intensity
-(per-ride score; influences which guests choose it), ticket price
-(hard-capped at `max_ticket_price`; simulator rejects any higher
-price outright), cost_per_operation (deducted each cycle).
-
-Cycle behaviour: rides operate only when guests have boarded; they
-wait a few turns to fill up (longer for higher capacity). Rides can
-break down — broken rides turn guests away and hurt rating; mechanics
-repair them. Repair cost is a fraction of building cost.
-
-Three subtypes:
-- Carousels: cheapest to build/operate, rarely break, low excitement/capacity.
-- Ferris Wheels: intermediate, highest capacity.
-- Roller Coasters: expensive, highest excitement/intensity, frequent breakdowns.
-
-Per-tier numeric stats (building_cost, capacity, max_ticket_price,
-excitement, intensity, breakdown_rate) live in name='economics_rides'.
+You decide WHICH ride to build, modify, or sell next: subtype and subclass tier. Ticket price is always set to max.
 
 === Per-consultation procedure ===
 
 1. Read in parallel:
-     - state_read(name='playbook_rides') — confirmed rules of thumb.
-""" ${trial_strategies_lookup} ${user_directives_lookup} """
+     - state_read(name='playbook_rides'). Learned rules take priority over general heuristics — follow them precisely.
+     - state_read(name='status_rides') — your lean status slice: {step, cash, placed_rides, available_entities, broken_rides}
+     - ActiveTrials(domain=rides), which returns your domain's active trials.
+    Balance ride investment against overall park needs; never skip a step that an active trial requires.
 
-2. For numeric stats call state_read(name='economics_rides'). Always
-   use values from this file — never estimate.
+2. For numeric stats call state_read(name='economics_rides'). Always use values from this file — never estimate.
 
-3. Inspect `status.available_entities` (subtype -> [unlocked subclasses]) and
-   compare it to the rides already placed in the snapshot. When a better tier
-   (yellow < blue < green < red) has been unlocked but you still have yellow
-   rides on the map, propose UPGRADING one: emit a `remove` of the yellow ride
-   that ALSO carries `upgrade_to_subclass=<the better tier>`. This signals an
-   upgrade so the park earns more from higher capacity and better intensity;
-   FinanceGate then approves the remove ONLY if the replacement tier still
-   clears break-even and fits cash after the refund, and the coordinator places
-   the better tier on the freed plot on a following turn.
-   IMPORTANT — a `remove` refunds only ~0.66x the original build cost and the
-   replacement ride burns another ~34% of its cost permanently, so an upgrade
-   only pays when enough days remain for the better ride's extra operating
-   profit to repay that rebuild tax. FinanceGate enforces that runway/affordability
-   check via the `upgrade_to_subclass` field — without it a bare `remove` would
-   be approved unconditionally and could strand an empty plot. Don't churn rides
-   that are already a non-yellow tier.
+3. Compare `status_rides.available_entities` to your placed rides. If a better tier (yellow<blue<green<red) is
+unlocked while a lower-tier ride is still up, propose an UPGRADE: a `remove` of that ride carrying
+`upgrade_to_subclass=<better tier>`. That field is REQUIRED — without it the remove is a plain teardown that
+can strand the plot. FinanceGate does the refund/cost math and approves only if the upgrade pays off over the
+days left (upgrades are taxed, so they rarely pay off late-game); the coordinator places the new tier next turn.
 
-4. Return one concrete proposal: type='ride' (a `place`, or a `remove` of a
-   yellow to be upgraded carrying `upgrade_to_subclass`), subtype, subclass,
-   price, plus 1-2 alternatives (the alternatives may be cheaper fallback
-   tiers), with a short rationale citing the playbook line you applied. Use only
-   subtypes/subclasses available in `status.available_entities`. No coordinates
-   — park_layout_planner owns those.
-""" ${aaosa_instructions},
-            middleware = [ ${trim_history_middleware}, ${prompt_caching_middleware} ],
+4. Return ONLY a JSON array of exactly 2 proposals, best-first. No prose outside the JSON.
+[
+  {"action": "place"|"remove", "type": "ride", "subtype": "...", "subclass": "...", "upgrade_to_subclass": "..." (only on upgrade removes), "rationale": "<one line>"},
+  {...}
+]
+Use only subtypes/subclasses from status_rides.available_entities. No coordinates.
+""",
+            middleware = [ {"class": "middleware.trim_history_middleware.TrimHistoryMiddleware", "args": {}}, {"class": "middleware.static_prompt_caching_middleware.StaticPromptCachingMiddleware", "args": {"ttl": "1h"}} ],
             tools = ["state_read", "ActiveTrials"]
         },
 
         {
             name = "staffing_manager",
-            max_message_history = 0,
+            max_message_history = 2,
             function = ${aaosa_call} {
                 description = "Picks staff to hire (janitor/mechanic/specialist) or dismiss, with salary and path-adjacent (x,y)."
             },
             instructions = ${instructions_prefix} """
-You manage hiring and dismissal of all park staff: janitors
-(cleanliness), mechanics (ride repairs), and specialists.
-
-=== Staff mechanics (immutable simulator facts) ===
-
-All staff have a daily salary; some have per-action operating costs.
-Multiple staff can occupy the same tile.
-
-Three subtypes:
-- Janitors: walk to dirty tiles and clean up to a per-class threshold.
-- Mechanics: walk to broken rides and repair them. Time/cost scales
-  with ride building_cost.
-- Specialists (role = subclass):
-  - Yellow (Clown): boosts waiting-line happiness.
-  - Blue (Stocker): restocks shops below threshold.
-  - Green (Park Crier): informs guests of out-of-service / dirty /
-    wait-time conditions.
-  - Red (Vendor): serves food/drink to waiting guests. No extra cost,
-    no extra profit.
-
-Subclass tier perks (apply to janitor and mechanic):
-- Blue / Green / Red move at 2× speed.
-- Red janitors do preventative cleaning (above the normal max).
-- Red mechanics do preventative maintenance (partial repair pre-breakdown).
-
-Action API: hire = `place(type='staff', subtype, subclass, x, y,
-price=<salary>)`; dismiss = `remove(type='staff', subtype, subclass,
-x, y)`. For specialists ALWAYS use subtype='specialist' (subclass
-carries the role).
-
-Per-tier numeric stats (salary, clean_rate, repair_rate, etc.) live in
-name='economics_staff'.
+You manage hiring and dismissal of all park staff: janitors (cleanliness), mechanics (ride repairs), and specialists.
 
 === Per-consultation procedure ===
 
-Use the ParkStatus snapshot that strategy_coordinator passes in; if it is
-missing, return an error.
-
 1. Read in parallel:
-     - state_read(name='playbook_staff') — confirmed staff rules.
-""" ${trial_strategies_lookup} ${user_directives_lookup} """
+     - state_read(name='playbook_staff'). Learned rules take priority over general heuristics — follow them precisely.
+     - state_read(name='status_staff') — your lean status slice: {step, cash, placed_staff, placed_rides, broken_rides}
+     - ActiveTrials(domain=staff), which returns your domain's active trials.
+    Keep staffing balanced; do not over-hire or under-hire in a way that wastes a turn.
 
-2. For salary and numeric stats, call state_read(name='economics_staff').
-   The `price` field on a place action equals the salary from this file.
-   Never hardcode or estimate.
+2. To compare tiers (clean_rate, repair_rate, salary cost), call state_read(name='economics_staff').
+You do NOT set price — it is filled with the salary automatically.
 
-3. Return exactly ONE place/remove proposal with coordinates and a
-   short rationale, or the literal string "no change".
-""" ${aaosa_instructions},
-            middleware = [ ${trim_history_middleware}, ${prompt_caching_middleware} ],
+3. Return ONLY a JSON array of up to 2 proposals, best-first. No prose outside the JSON.
+[
+  {"action": "place"|"remove", "type": "staff", "subtype": "...", "subclass": "...", "rationale": "<one line>"},
+  {...}
+]
+Return [] if no staff change is needed.
+""",
+            middleware = [ {"class": "middleware.trim_history_middleware.TrimHistoryMiddleware", "args": {}}, {"class": "middleware.static_prompt_caching_middleware.StaticPromptCachingMiddleware", "args": {"ttl": "1h"}} ],
             tools = ["state_read", "ActiveTrials"]
         },
 
         {
             name = "research_lead",
-            max_message_history = 0,
+            max_message_history = 2,
             function = ${aaosa_call} {
                 description = "Picks research topic and speed (none/slow/medium/fast)."
             },
             instructions = ${instructions_prefix} """
 You manage the research queue: which topics to research, at what speed.
 
-=== Research mechanics (immutable simulator facts) ===
-
-Every ride, shop, and staff subtype has four subclasses ordered by
-price: yellow (cheapest) < blue < green < red. The park starts with
-yellow unlocked only; research unlocks the rest in order blue → green
-→ red per topic.
-
-Action API: `set_research(research_speed, research_topics)` where
-research_speed ∈ {none, slow, medium, fast} and research_topics is a
-list of subtype names (e.g. ["carousel"]). The simulator requires
-research_topics even when speed=none. Research continues daily until
-settings change, funds run out, or all chosen topics complete; if
-funds run out OR all topics complete, speed automatically reverts to
-none and progress is paused (not lost).
-
-IP value: each research point is worth `research_value_per_point` from
-world_constants, adding to park value daily proportional to speed.
-
-Per-tier numeric stats (speed_cost, speed_progress, points_required)
-live in name='economics_research'.
-
 === Per-consultation procedure ===
 
 1. Read in parallel:
-     - state_read(name='playbook_research') — confirmed research rules.
-""" ${trial_strategies_lookup} ${user_directives_lookup} """
+     - state_read(name='playbook_research'). Learned rules take priority over general heuristics — follow them precisely.
+     - state_read(name='status_research') — your lean status slice: {step, cash, research_speed, available_entities}
+     - ActiveTrials(domain=research), which returns your domain's active trials.
+    Maintain a balanced research pace; do not stall on a speed lower than cash supports.
 
-2. For numeric values (speed_cost, speed_progress, points_required),
-   call state_read(name='economics_research'). Never hardcode estimates.
+2. For numeric values (speed_cost, speed_progress, points_required), call state_read(name='economics_research').
+Never hardcode estimates.
 
-3. Return EXACTLY ONE set_research proposal with research_speed,
-   research_topics, and target_tier (one of blue/green/red), plus a
-   short rationale. Do NOT compute research_daily_cost or
-   research_days yourself — FinanceGate fills those in. Or return the
-   literal string "keep current settings" if no change.
-""" ${aaosa_instructions},
-            middleware = [ ${trim_history_middleware}, ${prompt_caching_middleware} ],
+3. Return ONLY a JSON array of up to 2 proposals, best-first. No prose outside the JSON.
+[
+  {"action": "set_research", "research_speed": "...", "research_topics": [...], "target_tier": "...", "rationale": "<one line>"},
+  {...}
+]
+Return [] if no change is needed. Do NOT compute research_daily_cost or research_days — FinanceGate fills those in.
+""",
+            middleware = [ {"class": "middleware.trim_history_middleware.TrimHistoryMiddleware", "args": {}}, {"class": "middleware.static_prompt_caching_middleware.StaticPromptCachingMiddleware", "args": {"ttl": "1h"}} ],
             tools = ["state_read", "ActiveTrials"]
         },
 
@@ -601,16 +314,31 @@ live in name='economics_research'.
             name = "ParkStatus",
             class = "coded_tools.maps_park.park_status.ParkStatus",
             function = {
-                description = "Returns current park snapshot: episode (the simulator's 0-based episode counter), cash (observation.money), step, park_rating, park_value, done, entrance, exit, path_coords, free_tiles (valid_placement_coords), broken_rides (out_of_service rides), placed_rides/shops/staff, available_entities, research_speed.",
+                description = "Returns full park snapshot (cash, step, park_rating, park_value, done, free_tiles, path_coords, placed_rides/shops/staff, broken_rides, available_entities, research_speed) and writes per-specialist status slices to state/.",
                 parameters = {
                     type = "object",
                     properties = {
                         park = {
                             type = "string",
-                            description = "Park slot. Always '0'."
+                            description = "Optional. Park slot — always '0'; defaults to '0' if omitted."
                         }
                     },
-                    required = ["park"]
+                    required = []
+                }
+            }
+        },
+
+        {
+            name = "SeedObservation",
+            class = "coded_tools.maps_park.seed_observation.SeedObservation",
+            function = {
+                description = "Fetches the initial (step 0) park observation from the simulator WITHOUT stepping and writes it to the observation cache. Call once on fresh_episode so ParkStatus works on turn 1 without wasting a wait. Returns {status:'ok', park, step}.",
+                parameters = {
+                    type = "object",
+                    properties = {
+                        park = { type = "int", description = "Park slot. Always 0; defaults to 0 if omitted." }
+                    },
+                    required = []
                 }
             }
         },
@@ -619,7 +347,7 @@ live in name='economics_research'.
             name = "FinanceGate",
             class = "coded_tools.maps_park.finance_gate.FinanceGate",
             function = {
-                description = "Deterministic budget gate + proposal builder. Takes raw specialist proposals (just action/type/subtype/subclass/price/etc.) plus the current placed_shops and placed_rides lists, and: (1) ENRICHES each proposal with derived fields (one_time_cost from economics files, is_research, has_food_or_atm scan, has_profitable_ride scan, research_days ceil division, auto-generated label), (2) EVALUATES against the standard rules (wait auto-approves; a plain remove auto-approves, but an upgrade-intent remove — one carrying upgrade_to_subclass — is approved only if the replacement tier clears break-even and fits cash after the 66% refund; Billboard rejected w/o food/ATM; rides rejected if days_remaining < break-even; research rejected w/o profitable ride or <30 days or insufficient cash; everything else rejected if cash-after-spend < 1-day recurring). Returns {results:[{label,approved,reason,proposal:<enriched>}], cash, recurring_daily, days_remaining, has_food_or_atm, has_profitable_ride}.",
+                description = "Budget gate: computes daily operating cost, enriches each proposal with derived fields, and approves/rejects against deterministic rules. Returns {results:[{label, approved, reason, proposal}], cash, daily_operating_cost, days_remaining}.",
                 parameters = {
                     type = "object",
                     properties = {
@@ -635,9 +363,14 @@ live in name='economics_research'.
                             type = "int",
                             description = "Total episode length. Always 100."
                         },
-                        recurring_daily = {
-                            type = "int",
-                            description = "Integer from RecurringDaily(...).recurring_daily — do not compute by hand."
+                        placed_staff = {
+                            type = "array",
+                            items = { type = "object" },
+                            description = "Pass status.placed_staff verbatim — list of {subtype, subclass, ...}. FinanceGate sums their salaries into the daily operating cost (no separate tool)."
+                        }
+                        research_speed = {
+                            type = "string",
+                            description = "Pass status.research_speed verbatim (none/slow/medium/fast). Its speed cost is added to the daily operating cost."
                         }
                         placed_shops = {
                             type = "array",
@@ -654,7 +387,7 @@ live in name='economics_research'.
                             description = "JSON-encoded array of RAW proposal objects from the specialists. Each may have just {action, type, subtype, subclass, price, order_quantity, x, y, research_speed, research_topics, target_tier, upgrade_to_subclass}; all derived fields (one_time_cost, is_research, has_food_or_atm, has_profitable_ride, research_daily_cost, research_days, upgrade_to_cost, current_tier_refund, label) are filled in by this tool. upgrade_to_subclass on a ride `remove` marks a tier upgrade and gates the remove on the replacement being affordable in time. Example: [{\"action\":\"place\",\"type\":\"ride\",\"subtype\":\"carousel\",\"subclass\":\"yellow\",\"price\":4}]"
                         }
                     },
-                    required = ["cash", "step", "horizon", "recurring_daily", "placed_shops", "placed_rides", "proposals"]
+                    required = ["cash", "step", "horizon", "placed_staff", "research_speed", "placed_shops", "placed_rides", "proposals"]
                 }
             }
         },
@@ -663,35 +396,12 @@ live in name='economics_research'.
             name = "ActiveTrials",
             class = "coded_tools.maps_park.active_trials.ActiveTrials",
             function = {
-                description = "Return the active trials joined across trial_strategies (rule body) and trial_strategies_criteria (metadata), optionally filtered to one domain. Pass domain=<your domain> to get just your trials. Returns {domain, count, trials:[{trial_id, rule, domain, section, edit_type, find_text, step_start, ep, success_criterion, failure_criterion, rationale}]}.",
+                description = "Returns active trial rules for a domain (rides/shops/staff/research/layout/coordinator). Pass domain=<your domain> to filter. Returns {domain, count, trials:[{trial_id, rule, edit_type, find_text, ...}]}.",
                 parameters = {
                     type = "object",
                     properties = {
-                        domain = { type = "string", description = "Filter to one domain (rides/shops/staff/research/layout/director/coordinator). Omit for all active trials." }
+                        domain = { type = "string", description = "Filter to one domain (rides/shops/staff/research/layout/coordinator). Omit for all active trials." }
                     }
-                }
-            }
-        },
-
-        {
-            name = "RecurringDaily",
-            class = "coded_tools.maps_park.recurring_daily.RecurringDaily",
-            function = {
-                description = "Compute the integer recurring_daily cost (staff salaries + research speed_cost) used by FinanceGate. Replaces LLM-side arithmetic — reads salaries from economics_staff and speed_cost from economics_research and sums them. Returns {recurring_daily, staff_breakdown, staff_subtotal, research_speed, research_speed_cost}.",
-                parameters = {
-                    type = "object",
-                    properties = {
-                        placed_staff = {
-                            type = "array",
-                            items = { type = "object" },
-                            description = "Pass status.placed_staff verbatim — list of objects each with at least {subtype, subclass}."
-                        }
-                        research_speed = {
-                            type = "string",
-                            description = "Pass status.research_speed verbatim. One of: none, slow, medium, fast."
-                        }
-                    },
-                    required = ["placed_staff", "research_speed"]
                 }
             }
         },
@@ -715,80 +425,38 @@ live in name='economics_research'.
             args = {
                 name_map = {
                     # State files (mutable runtime)
-                    # user_directives is operator-owned (runner --user-strategy); read-only
-                    # to agents (intentionally NOT in the state_write name_map) so it is
-                    # never falsified or edited by the network.
-                    user_directives      = "coded_tools/maps_park/state/user_directives.md"
                     trial_strategies     = "coded_tools/maps_park/state/trial_strategies.md"
                     trial_strategies_outcome = "coded_tools/maps_park/state/trial_strategies_outcome.md"
                     trial_strategies_criteria = "coded_tools/maps_park/state/trial_strategies_criteria.md"
                     last_reward          = "coded_tools/maps_park/state/last_reward.md"
-                    playbook_director    = "coded_tools/maps_park/state/playbook_director.md"
                     playbook_coordinator = "coded_tools/maps_park/state/playbook_coordinator.md"
                     playbook_rides       = "coded_tools/maps_park/state/playbook_rides.md"
                     playbook_shops       = "coded_tools/maps_park/state/playbook_shops.md"
                     playbook_staff       = "coded_tools/maps_park/state/playbook_staff.md"
                     playbook_research    = "coded_tools/maps_park/state/playbook_research.md"
                     playbook_layout      = "coded_tools/maps_park/state/playbook_layout.md"
+                    # Game reference (read once on fresh_episode for checklist planning)
+                    maps_game_docs       = "coded_tools/maps_park/config_files/maps_game_docs.md"
                     # Read-only economics references (numeric tables)
                     economics_rides      = "coded_tools/maps_park/config_files/rides_economics.md"
                     economics_shops      = "coded_tools/maps_park/config_files/shops_economics.md"
                     economics_staff      = "coded_tools/maps_park/config_files/staff_economics.md"
                     economics_research   = "coded_tools/maps_park/config_files/research_economics.md"
                     world_constants      = "coded_tools/maps_park/config_files/world_constants.md"
-                    # Seed sources (consumed once on episode 1 by curator.seed and memory_keeper)
-                    seed_playbook_director    = "coded_tools/maps_park/config_files/director_strategy.md"
+                    # Per-specialist status slices (written each turn by SpecialistSnapshots)
+                    status_rides         = "coded_tools/maps_park/state/status_rides.json"
+                    status_shops         = "coded_tools/maps_park/state/status_shops.json"
+                    status_research      = "coded_tools/maps_park/state/status_research.json"
+                    status_staff         = "coded_tools/maps_park/state/status_staff.json"
+                    status_layout        = "coded_tools/maps_park/state/status_layout.json"
+                    status_coordinator   = "coded_tools/maps_park/state/status_coordinator.json"
+                    # Seed sources (consumed once on episode 1 by curator.seed and parkstatus_reader)
                     seed_playbook_coordinator = "coded_tools/maps_park/config_files/coordinator_strategy.md"
                     seed_playbook_rides       = "coded_tools/maps_park/config_files/rides_strategy.md"
                     seed_playbook_shops       = "coded_tools/maps_park/config_files/shops_strategy.md"
                     seed_playbook_staff       = "coded_tools/maps_park/config_files/staff_strategy.md"
                     seed_playbook_research    = "coded_tools/maps_park/config_files/research_strategy.md"
-                    seed_playbook_layout      = "coded_tools/maps_park/config_files/world_strategy.md"
-                }
-            }
-        },
-
-        {
-            name = "state_write",
-            class = "coded_tools.file_management.state_write.StateWrite",
-            function = {
-                description = "Write content to a state file by its logical NAME. mode='overwrite' (default) replaces the body; mode='append' appends. Writable names: trial_strategies, trial_strategies_criteria, trial_strategies_outcome, playbook_<domain>. last_reward is NOT writable here — it is managed exclusively by the advance_episode Python tool at episode end. Seed and economics names are also not writable.",
-                parameters = {
-                    type = "object",
-                    properties = {
-                        name = {
-                            type = "string",
-                            description = "Logical state name from the operator-configured name_map."
-                        },
-                        content = {
-                            type = "string",
-                            description = "Text body to write."
-                        },
-                        mode = {
-                            type = "string",
-                            description = "'overwrite' (default) or 'append'."
-                        }
-                    },
-                    required = ["name", "content"]
-                }
-            },
-            args = {
-                # last_reward is intentionally OMITTED here. It is written
-                # only by the advance_episode Python coded tool (at episode
-                # end). Agents can read it via state_read but must not write
-                # to it — earlier mis-writes corrupted the file with
-                # turn-shaped data while episodes were still in progress.
-                name_map = {
-                    trial_strategies     = "coded_tools/maps_park/state/trial_strategies.md"
-                    trial_strategies_outcome = "coded_tools/maps_park/state/trial_strategies_outcome.md"
-                    trial_strategies_criteria = "coded_tools/maps_park/state/trial_strategies_criteria.md"
-                    playbook_director    = "coded_tools/maps_park/state/playbook_director.md"
-                    playbook_coordinator = "coded_tools/maps_park/state/playbook_coordinator.md"
-                    playbook_rides       = "coded_tools/maps_park/state/playbook_rides.md"
-                    playbook_shops       = "coded_tools/maps_park/state/playbook_shops.md"
-                    playbook_staff       = "coded_tools/maps_park/state/playbook_staff.md"
-                    playbook_research    = "coded_tools/maps_park/state/playbook_research.md"
-                    playbook_layout      = "coded_tools/maps_park/state/playbook_layout.md"
+                    seed_playbook_layout      = "coded_tools/maps_park/config_files/layout_strategy.md"
                 }
             }
         },
@@ -797,14 +465,10 @@ live in name='economics_research'.
             name = "ProposeAction",
             class = "coded_tools.maps_park.propose_action.ProposeAction",
             function = {
-                description = "Propose ONE MAPs action without committing to the simulator. Runs cheap deterministic validation (action-name, price-cap, place-bounds, basic cash check) and persists the proposal to coded_tools/maps_park/state/proposed_action.json so the external runner can read it. Returns {proposed:{park,action,args}, validation:{ok,reasons}}. The runner is the single source of truth for actually stepping the env; if validation.ok=false, the runner will re-prompt with the rejection reasons. Same argument shape as ActionDispatcher.",
+                description = "Validates and persists ONE proposed action (structural checks only — price cap, placement bounds, action name). Returns {proposed:{park,action,args}, validation:{ok,reasons}}. Runner reads the persisted proposal to step the env.",
                 parameters = {
                     type = "object",
                     properties = {
-                        park = {
-                            type = "string",
-                            description = "Always '0'."
-                        },
                         action = {
                             type = "string",
                             description = "One of: wait, place, move, remove, modify, set_research, survey_guests."
@@ -814,7 +478,7 @@ live in name='economics_research'.
                             description = "All numeric values as quoted strings. Same key layout per action as ActionDispatcher."
                         }
                     },
-                    required = ["park", "action", "args"]
+                    required = ["action", "args"]
                 }
             }
         }

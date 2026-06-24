@@ -1,15 +1,31 @@
 # research_lead - policy
 
-- **One topic per call:** research sequentially (parallel topics are slower). Don't reset an in-progress topic unless pivoting.
-- **Cash floor:** do not propose research unless current cash covers at least 3 days of the proposed `speed_cost` without dipping below daily recurring costs.
-- **Priority order (rides unlock capacity and revenue fastest):**
-  1. carousel or ferris_wheel - unlock blue tier first for capacity gains
-  2. roller_coaster - only after blue rides are placed and profitable
-  3. drink/food shops - once ride revenue is stable
-  4. staff - lowest priority; yellow staff covers early game
-- **Speed tradeoff:** do NOT compute days/cost yourself - FinanceGate enriches every set_research proposal with `research_days` (= ceil(points_required / speed_progress)) and checks affordability against current cash + recurring_daily. Your job is to PICK speed + target_tier wisely against remaining horizon. IP earned per day never covers research cost - research is a capital investment in unlocking tiers, not a revenue source.
-- **Stopping:** stop research (speed=none) once the target subclass is unlocked or cash drops below one day's research cost. When stopping, still pass the current topic in `research_topics` (e.g. `["carousel"]`) - the simulator requires the field even when speed is none.
-- **State handling** (read `status.research_speed` and `status.available_entities`):
-  - speed='none' AND only yellow unlocked everywhere (initial): research has never started - the single highest-leverage move, since yellow-only caps BOTH capacity and rating (see rides playbook for the intensity penalty). As soon as cash ≥ 8000 AND ≥ 1 ride is profitable, START slow research on carousel or ferris_wheel, target_tier=blue. Do NOT keep deferring for "more revenue first" - that is exactly why prior episodes never unlocked a tier and plateaued.
-  - speed='none' AND a new subclass appeared vs. prior turn (completed): research just finished. Immediately propose the next topic in priority order.
-  - speed != 'none' (in progress): do not reset unless cash dropped below the safety threshold or strategy requires a pivot.
+## Research mechanics
+Every ride, shop, and staff subtype has four subclasses: yellow < blue < green < red. The park starts with yellow only; research unlocks the rest in order blue → green → red per topic.
+
+Action API: `set_research(research_speed, research_topics)` where `research_speed` ∈ {none, slow, medium, fast} and `research_topics` is a list of subtype names (e.g. `["carousel"]`). The simulator requires `research_topics` even when speed=none. Research continues daily until settings change, funds run out, or all chosen topics complete; if funds run out or all topics complete, speed automatically reverts to none and progress is paused (not lost).
+
+Speed costs and IP value per day:
+- slow: costs $2000/day, adds $1500/day to park value.
+- medium: costs $8000/day, adds $3000/day to park value.
+- fast: costs $32000/day, adds $6000/day to park value.
+
+Higher speed finishes a tier in fewer days but costs more per research point (fast ≈ 2× medium ≈ 4× slow). Pick higher speed only when unlocking earlier earns back the extra cost over remaining days.
+
+## Why research matters (the goal)
+Research earns NOTHING directly (IP per day never covers its cost), yet it is the HIGHEST-LEVERAGE action in the game. A yellow-only fleet caps BOTH capacity and park_rating. Reward COMPOUNDS when due to research and higher tier building increases the capacity and rating of the rides/shop/staff. GOAL: unlock blue->green->red as EARLY as affordable so the high-reward late-game engine runs for more of the episode. Never defer it for "more revenue first." But keep it BALANCED - never sink so much into research that cash can't cover daily operating costs and keep building; running out of money stalls the whole park.
+
+- Research one topic at a time (sequential is faster). Don't reset an in-progress topic unless pivoting.
+- Don't propose research unless cash covers at least 3 days of `speed_cost` above daily recurring costs.
+- Don't compute days/cost yourself — FinanceGate fills in `research_days` and checks affordability. Pick speed + target_tier wisely against remaining steps.
+- Stop (speed=none) once the target subclass unlocks or cash drops below one day's research cost. Always pass `research_topics` even when speed=none.
+- State handling:
+  - only yellow unlocked: start slow research on rides.
+  - new subclass just appeared: research finished; immediately propose the next priority topic.
+  - speed != none (in progress): don't reset unless cash fell below the safety threshold or strategy requires a pivot.
+
+## Learned rules
+
+## Learned rules (promoted from prior runs)
+Activate research at 'slow' speed as soon as a ride and at least one shop are placed, and sustain it without reverting to 'none' until a non-yellow-tier asset is confirmed unlocked — early, uninterrupted research compounds across the episode by enabling higher-tier rides and shops that outperform any individual yellow-tier placement. (learned ep1)
+As soon as cash covers ≥3 days of slow research cost, set slow research to break the all-yellow ceiling.

@@ -1,68 +1,67 @@
-- OUTCOME ep=0 trial_id=t0_1 domain=staff outcome=confirmed note='First janitor at s24 raised num_staff 0->1 and min_cleanliness 0.25->0.85; park_rating 5.0->5.95(s24)->14.39(s25)->21.35(s26), >5.0+0.05 within 12 turns.'
-- OUTCOME ep=0 trial_id=t0_2 domain=rides outcome=confirmed note='After s10 no ride/shop placement at cash<$100 returned <=-40: s27 specialty cash266, s31 ferris cash270, s34 specialty cash329, s42 ferris cash172. Success met, failure not tripped.'
-- OUTCOME ep=0 trial_id=t0_3 domain=staff outcome=confirmed note='Next janitor after s20 at s24 used salary price=25, num_staff 0->1, reward +5. Success met within 5 turns.'
-- OUTCOME ep=0 trial_id=t0_4 domain=rides outcome=inconclusive note='First non-carousel ride after s20 = ferris_wheel s31 reward -52 (not >35); no 3rd+ identical placement exceeded 2nd within horizon, failure not tripped.'
-- OUTCOME ep=0 trial_id=t0_5 domain=shops outcome=falsified note='After s30 shop modify at min_cleanliness>=0.80 returned <=7: s35 drink (0.85) reward -4 -> failure tripped.'
-- OUTCOME ep=0 trial_id=t0_6 domain=shops outcome=not_applied note='No specialty placement after s40 (s27/s34 earlier; s39/s43 removes). No applied specialty place in horizon.'
-- OUTCOME ep=0 trial_id=t0_7 domain=coordinator outcome=confirmed note='Qualifying waits (cleanliness>=0.80 AND uptime>=0.97) after s40 = s97 (0.82/0.98) +770 and s98 (0.82/1.0) +610, both >50. Failure not tripped.'
-- OUTCOME ep=0 trial_id=t0_8 domain=rides outcome=falsified note='3rd+ ferris_wheel after s50: s59 ferris +515 >= +60 -> failure tripped.'
-- OUTCOME ep=0 trial_id=t0_9 domain=research outcome=not_applied note='No research started at described trigger (plateau 19-26 band, all-yellow); rating already 30+ by s64; set_research s74/s80 not a carousel/ferris blue start under trigger.'
-- OUTCOME ep=0 trial_id=t0_10 domain=staff outcome=confirmed note='Coaster s62 dropped cleanliness to 0.65; janitor added s63 (staff 2->3); cleanliness recovered 0.80(s63) held >=0.78, rating 24.36(s62)->30.78(s63)->32.31(s64).'
-- OUTCOME ep=0 trial_id=t0_11 domain=rides outcome=falsified note='After s60 spaced coaster s62 (prior RC s58, 4 turns apart) returned -9 <= +60 -> failure tripped.'
-- OUTCOME ep=0 trial_id=t0_12 domain=shops outcome=falsified note='After s70 with rides>=10/staff>=3, drink modify s77 returned -917 <= 474 -> failure tripped.'
-- OUTCOME ep=0 trial_id=t0_13 domain=research outcome=falsified note='research_speed slow->none at s80 (cash 9298) with no tier unlocked -> failure tripped.'
-- OUTCOME ep=0 trial_id=t0_14 domain=shops outcome=falsified note='After s80 drink modify s89 at cleanliness 0.72 (<0.78) returned +1047 (>800) -> failure tripped.'
-- OUTCOME ep=0 trial_id=t0_15 domain=coordinator outcome=falsified note='After s90 carousel-blue modify s94 (rides>=13/staff>=3/cleanliness 0.80) returned +680 <= 700 -> failure tripped.'
-- OUTCOME ep=1 trial_id=t0_4 domain=research outcome=falsified note='research_speed non-none s45(slow) -> none s58 with no blue unlock; same abort s79,s89 — failure tripped.'
-- OUTCOME ep=1 trial_id=t0_6 domain=shops outcome=confirmed note='no specialty placed at cash<$500; only specialty s34 at cash 2697 reward +523 > -38; success met.'
-- OUTCOME ep=1 trial_id=t0_9 domain=research outcome=inconclusive note='from s50 rating in 30-34 band above 19-26 plateau, trigger never fired; no blue ride placed so rating-rise success unevaluable.'
-- OUTCOME ep=1 trial_id=t0_5 domain=rides outcome=falsified note='num_rides frozen at 12 from s42 to end while cash>2000 (s50-57,s62-74), no ride placed — 8+-turn-flat failure tripped.'
-- OUTCOME ep=1 trial_id=t1_1 domain=rides outcome=not_applied note='horizon s10; no post-place cash<$100 (lowest s19=496), floor never exercised, no contradicting sub-$100 placement.'
-- OUTCOME ep=1 trial_id=t1_2 domain=staff outcome=not_applied note='horizon s10; first janitor s8 (pre-horizon), 2nd janitor s31 at cleanliness 0.75; no janitor hired under <=0.40 trigger in horizon.'
-- OUTCOME ep=1 trial_id=t1_3 domain=staff outcome=confirmed note='s15 ferris dropped uptime 1.0->0.59, s17 0.0; mechanic s18 recovered uptime to 0.98 within 3 turns, hire reward +37>0.'
-- OUTCOME ep=1 trial_id=t1_4 domain=rides outcome=falsified note='2nd ferris placed s19 with uptime not >=0.95 settled and returned -11 (<= -11) — failure tripped.'
-- OUTCOME ep=1 trial_id=t1_5 domain=staff outcome=not_applied note='horizon s30; num_staff 2->3 at s31 but at cleanliness 0.75 via single-turn drop, not the >=0.08-over-2-turns/12+ attractions trigger; no qualifying 2nd-janitor hire.'
-- OUTCOME ep=1 trial_id=t1_6 domain=research outcome=confirmed note='horizon s40; rating flat ~31 all-yellow, cash>=8000 (s40=9143); slow research started s45, speed non-none — success met.'
-- OUTCOME ep=1 trial_id=t1_7 domain=shops outcome=confirmed note='horizon s40; attractions>=15, cash>4000, modify mean >800 (s41 +1294,s43 +1419,s70 +1341,s71 +1260) exceeded ride placement s42 +775; success met.'
-- OUTCOME ep=1 trial_id=t1_8 domain=research outcome=falsified note='horizon s50; redundant set_research persisted s62/s75/s81/s84/s90 — no-redundant-issue success violated.'
-- OUTCOME ep=1 trial_id=t1_9 domain=rides outcome=not_applied note='horizon s60; no blue subclass ever placed (all yellow), place-the-unlock action never fired.'
-- OUTCOME ep=1 trial_id=t1_10 domain=shops outcome=falsified note='horizon s60; drink modified 5 turns s93-97 (3+ consecutive) but none <0 (812-1253) — rotation rule violated and no negative repeat materialized; failure (3+ consecutive) tripped.'
-- OUTCOME ep=1 trial_id=t1_11 domain=research outcome=falsified note='horizon s70; cash dropped below $3000 while research non-none (s88=2497,s89=1618) and research aborted to none s79/s89 with no blue unlock — failure tripped.'
-- OUTCOME ep=1 trial_id=t1_12 domain=coordinator outcome=confirmed note='horizon s70; waits at cleanliness>=0.80 and uptime [0.95,0.97) returned strong rewards (s73 +1210,s86 +522) exceeding contemporaneous modify means; success met.'
-- OUTCOME ep=1 trial_id=t1_13 domain=research outcome=falsified note='horizon s80; research aborts continued (s79 cash 9261, s89) with no blue unlock — failure tripped.'
-- OUTCOME ep=1 trial_id=t1_14 domain=staff outcome=not_applied note='horizon s90; cleanliness fell 0.78->0.65 (-0.13) with one janitor and 18 attractions but num_staff stayed 3 through s100 — 2nd-janitor action never fired.'
-- OUTCOME ep=0 trial_id=t0_9 domain=coordinator outcome=not_applied note='No survey_guests action in applied at any step; survey-gate replace_line rule never produced an action s60-80.'
-- OUTCOME ep=0 trial_id=t1_1 domain=rides outcome=not_applied note='wrong_episode'
-- OUTCOME ep=0 trial_id=t1_2 domain=staff outcome=not_applied note='wrong_episode'
-- OUTCOME ep=0 trial_id=t1_5 domain=staff outcome=inconclusive note='no_report'
-- OUTCOME ep=0 trial_id=t1_9 domain=rides outcome=inconclusive note='no_report'
-- OUTCOME ep=0 trial_id=t1_14 domain=staff outcome=inconclusive note='no_report'
-- OUTCOME ep=0 trial_id=t1_6 domain=research outcome=inconclusive note='no_report'
-- OUTCOME ep=0 trial_id=t1_7 domain=research outcome=inconclusive note='no_report'
-- OUTCOME ep=0 trial_id=t0_2 domain=shops outcome=falsified note='Failure clause tripped: s4 drink at min_cleanliness 0.24/0 janitors returned +23 (positive), s6 food at 0.87 returned +112 — no negative low-cleanliness placement in s4-10 to justify the gate.'
-- OUTCOME ep=0 trial_id=t0_3 domain=staff outcome=not_applied note='rejection_count=0; no 'Invalid location for staff' rejection s20-35; trigger never fired (staff places s22/s30/s41 applied cleanly).'
-- OUTCOME ep=0 trial_id=t0_4 domain=staff outcome=inconclusive note='min_uptime never <0.30 with zero mechanics s20-30 (1.0 at s20, mechanic s22); collapse trigger never met.'
-- OUTCOME ep=0 trial_id=t0_5 domain=research outcome=inconclusive note='First non-none research s38 (slow, cash 5270); no blue subclass appeared and research_speed=none did not hold 15+ turns before s38; trigger window not cleanly satisfied.'
-- OUTCOME ep=0 trial_id=t0_6 domain=staff outcome=confirmed note='s32 cleanliness 0.67 one janitor; fell to 0.54 by s35 before 2nd janitor s36 recovered 0.54->0.84 with rating dip 27.53->20.48 — earlier <=0.70 hire avoids trough.'
-- OUTCOME ep=0 trial_id=t0_7 domain=rides outcome=confirmed note='s44 remove yellow(+535)/s45 place blue(+1444); s56(+2112)/s57 blue(+918); s59(+2136)/s60 blue(+2004) — every redundant-yellow remove >=+535, each blue placement positive.'
-- OUTCOME ep=0 trial_id=t0_8 domain=shops outcome=confirmed note='No two consecutive specialty modifies s50-100 (all drink/food); modifies after non-specialty turns positive (s62 +3648, s84 +9833).'
-- OUTCOME ep=0 trial_id=t0_10 domain=research outcome=falsified note='research_speed toggled non-none->none mid-progress: slow through s64 then none s65/s66 (cash ample), again none from s86; no blue subclass appeared — failure clause tripped.'
-- OUTCOME ep=0 trial_id=t0_11 domain=research outcome=not_applied note='No medium/fast in s70-85 (research_speeds_used=['slow']; s71/s86 used slow/none); medium/fast-late trigger never fired.'
-- OUTCOME ep=0 trial_id=t0_12 domain=research outcome=inconclusive note='set_research s71(+6833)/s86 within window but num_rides not flat-15-with-3-toggles (rides changed s72-83); churn precondition not cleanly met.'
-- OUTCOME ep=0 trial_id=t0_13 domain=shops outcome=not_applied note='rejection_count=0; no 'Invalid item price' rejection s80-100; price-cap trigger never fired.'
-- OUTCOME ep=0 trial_id=t0_14 domain=shops outcome=confirmed note='s80-100 no run of 4+ consecutive identical drink modifies (food interleaved s84/85/87/88/89/91/92/98); no modify <=-5000 — success met, failure not tripped.'
-- OUTCOME ep=0 trial_id=t0_15 domain=shops outcome=confirmed note='s7-10 modifies at cleanliness 0.85-0.86 returned +258/+238/+300/+355 (mean ~+288 >=+200), none <0, while s1 place -46/s4 +23 — modifies dominated.'
-- OUTCOME ep=0 trial_id=t0_16 domain=staff outcome=confirmed note='cleanliness 0.37(s3)->0.24(s4) 0 janitors; first janitor s5 (reward +14 >=0), cleanliness 0.24->0.86 (+0.62 within 3 turns).'
-- OUTCOME ep=0 trial_id=t0_17 domain=rides outcome=confirmed note='s11 ferris(-71) then s12 2nd ferris(-79), two worst rewards s1-20; back-to-back 2nd ferris <0 — failure clause not tripped, rule confirmed.'
-- OUTCOME ep=0 trial_id=t0_18 domain=staff outcome=inconclusive note='s19 roller_coaster no mechanic; mechanic s22 (3 turns later, outside 2-turn window); success condition (hire within 2 turns) not exercised.'
-- OUTCOME ep=0 trial_id=t0_19 domain=staff outcome=confirmed note='cleanliness 0.70(s27)->0.61(s28)->0.60(s29) 1 janitor/12-13 attractions; 2nd janitor s30 recovered 0.60->0.84 (+0.24), hire reward +351 — earlier same-turn <0.70 hire warranted.'
-- OUTCOME ep=0 trial_id=t0_20 domain=rides outcome=inconclusive note='Duplicate yellow rides during decline s24-30 (22.83->16.88) but no brake action exists; rating did not recover attributably to a brake — neither success nor failure cleanly met.'
-- OUTCOME ep=0 trial_id=t0_21 domain=staff outcome=confirmed note='s36-40 ~18 attractions one janitor, cleanliness 0.81(s35)->0.63(s36)->0.36(s37), rating 31.69(s39)->20.37(s40), no 2nd janitor under 16+/<0.65; later 2nd janitor s41(+897, 0.63->0.81) recovered >=0.10 — earlier same-turn hire would hold floor.'
-- OUTCOME ep=0 trial_id=t0_22 domain=shops outcome=confirmed note='s39 drink modify cleanliness 0.63 returned +1835 but identical s40 at 0.63 only +510 while rating crashed 31.69->20.37 (~72% reward drop, 11pt rating) — gate confirmed; no >=+1500 modify under <=0.65 without rating drop.'
-- OUTCOME ep=0 trial_id=t0_23 domain=shops outcome=confirmed note='Food dominates drink s50-65: food s62 +3648/s65 +2768 vs drink s51 +1596/s53 +1989/s55 +1733; food mean exceeds drink mean with food appearing within each drink run.'
-- OUTCOME ep=0 trial_id=t0_24 domain=shops outcome=not_applied note='num_shops stayed at 2 entire episode (no 3rd shop s60-75); place-a-3rd-shop action never fired.'
-- OUTCOME ep=0 trial_id=t0_25 domain=staff outcome=inconclusive note='s58-60 cleanliness bottomed 0.67 with multiple janitors, but no janitor hired s60-70 under oscillation trigger (next s82); hire action not exercised in horizon.'
-- OUTCOME ep=0 trial_id=t0_26 domain=rides outcome=confirmed note='s68 remove yellow(+3611) then s69 place RED returned -1640 with cash 24747->7267 (~$17.5k), only negative placement s40-70 vs positive blue swaps (s45/57/60) — red-tier path confirmed; failure (red >=0) not tripped.'
-- OUTCOME ep=0 trial_id=t0_27 domain=staff outcome=confirmed note='uptime 0.93(s73)->0.50(s74)->0.41(s75), 16 rides one mechanic; 2nd mechanic s75 recovered 0.41->0.96(s76) within 1 turn, hire reward +4499 — success met.'
-- OUTCOME ep=0 trial_id=t0_28 domain=staff outcome=inconclusive note='cleanliness <0.40 at s83(0.35)/s87(0.37), 18 attractions, rating cratered, but num_staff frozen at 8 (no janitor s90-96 under deep-trough trigger); hire action never exercised.'
-- OUTCOME ep=0 trial_id=t0_29 domain=staff outcome=inconclusive note='uptime 0.97(s87)->0.63(s88) (-0.34) two mechanics/16 rides, but no 3rd mechanic s90-95 (num_staff frozen at 8); hire action never applied in horizon.'
+## Episode Summaries
+### ep=1
+## Episode 1 Outcome Summary (reward: 19,495 → 72,184, Δ+52,689 / +270%)
+
+- **CONFIRMED — t0_1 (research domain):** Rule "activate research at 'slow' speed early and sustain it until a non-yellow-tier asset unlocks" is validated. Research set to 'slow' at step 44; blue-tier carousel placed step 70. Promoted to playbook_research. Do NOT re-propose this rule.
+
+- **FALSIFIED — t1_1 (staff domain):** Staff-placement validation trial failed: four consecutive "Invalid location for staff. Must be on a path or in an attraction" rejections at steps 5, 15, 20, 31. The agent repeatedly attempted invalid staff placements; the rule was not internalized. Re-trial logged as t1_1 for episode 2 with tighter mechanic-churn framing.
+
+- **FALSIFIED — t1_2 (shops domain):** Shop-upgrade priority rule failed: shops frozen at 7 from step ~19 onward; cash ranged 8k–49k in steps 80–99 yet no new shop was placed. shop_revenue plateaued at ~1,400–1,629 while expansion was clearly affordable. Do NOT re-propose without a concrete cash-threshold trigger.
+
+- **FALSIFIED — t1_3 (coordinator domain):** Mechanic-churn prevention rule failed: four same-tier mechanic remove→place cycles at steps 83→84, 87→88, 90→91, 96→97 (8 wasted actions); failure criterion was ≤1 such pair. Re-trial logged as t1_1 (staff domain) for episode 2.
+
+- **CRITICAL POSITIVE — late-game modify loop (steps 82–99):** Food/drink `modify` actions drove the highest per-step rewards (+2,826, +2,767, +2,651, +2,557, +2,315, +2,252). This loop only became powerful after roller_coasters (steps 35, 49, 52, 55, 71) and blue-tier carousels (steps 70, 74, 77, 79) raised park throughput. Future episodes should prioritize unlocking blue-tier assets early to extend this window.
+
+- **CRITICAL NEGATIVE — mechanic churn and staff rejections wasted ~12 combined steps** in the 80–100 window, suppressing what could have been an additional 25,000+ reward. Avoid same-tier remove→re-place cycles entirely; never attempt staff placement off-path.
+
+- **KEY PATTERN TO AVOID:** Shop stagnation. With ample cash (8k–49k) and only 7 shops, the agent missed multiple affordable expansions. A cash-threshold rule (e.g., place a new shop when cash > 5,000 and num_shops < 10) should be trialed in episode 2.
+
+### ep=0
+## Episode 0 Outcome Summary (reward=19495.0, prior=0, delta=+19495)
+
+**CONFIRMED (do not re-propose):**
+- **t2_1 [rides]:** Keeping num_rides ≥1 at all times is confirmed safe and profitable — min observed was 2 (s24/s26); park_rating never dropped below 14.63 after ride placements.
+- **t0_1 [coordinator]:** Placing rides when shop-count > ride-count+3 yields positive reward within 5 steps (s29: +259, s34: +281, s37: +181, s40: +136). Rule is stable; do not re-propose.
+- **t0_3 [layout]:** Avoiding tile retries after rejection kept placement failures to ≤2 in steps 61–100 (s73, s98). Confirmed rule in layout playbook; do not re-propose.
+
+**FALSIFIED (do not re-propose):**
+- **t1_2 [shops]:** Hypothesis that shops grow when cash>5000 was falsified — num_shops flat at 12 from s39–s93 (55 steps) with cash repeatedly exceeding 5000 (max 7232 at s80). Root cause likely elsewhere (capacity or logic constraint, not cash).
+- **t0_2 [staff]:** Staff placement strategy generated identical rejections at s15 and s30 ("Invalid location — must be on path or attraction"). Same failure repeated; placement rule is wrong. Do not re-propose without path/attraction pre-check.
+- **t0_4 [rides]:** Remove+place churn (3 pairs: ferris_wheel, mechanic, carousel) in s81–100 with zero `move` actions confirmed as wasteful. Churn incurs ~34% asset haircut; falsified as a viable late-episode tactic.
+
+**NEW TRIAL LOGGED (episode 1):**
+- **t0_1 [research]:** Test activating research at 'slow' speed immediately after first ride+shop pair is placed, and not reverting to 'none'. Episode 0 made two research toggles (s57, s81) both immediately reversed (s83 reset), netting −248 reward and zero tier unlocks — entire episode ran on yellow-only assets despite cash headroom from s29+.
+
+**CRITICAL STEPS TO REPLICATE:**
+- s29, s34, s37, s40: Ride placements under shop>ride+3 imbalance — all profitable, all stabilized rating. Pattern to preserve.
+
+**KEY PATTERNS TO AVOID (episode 1):**
+- Toggling research on then immediately off — costs reward, unlocks nothing.
+- Repeating staff placement in invalid tiles without a path/attraction pre-check.
+- Remove+place asset churn in late steps instead of using `move`.
+
+### ep=1
+- CONFIRMED (staff, t1_1): When min_uptime craters below 0.8 with roller_coasters present, placing a mechanic restores uptime and yields reward (s34 uptime 0.28, s35 0.0 → mechanic placed s36 → uptime 0.96/1.0 with +400 then +1028). Promoted to playbook; do not re-propose.
+- CONFIRMED (rides, t1_3): Favor high-tier ride placements over carousels late-game; high-tier placements drove the largest rewards (rc s73 +1910, s51 +1311; ferris s57 +1203, s59 +1023), carousel removals were net positive (s71 +359), and park_rating held ≥24 until terminal reset. Promoted to playbook; do not re-propose.
+- NOT_APPLIED / still active (research, t1_2): Upgrade-research-above-slow rule never fired — runner used only 'slow' speed all episode and never selected 'fast' even with cash >3000 (s32 3358, s34 4847). Cannot confirm/falsify; carried forward unchanged. Do not re-propose a duplicate; the existing active trial covers it.
+- FALSIFIED: none this episode.
+- REWARD DROP CONTEXT: Final reward fell sharply 352604.0 → 47245.0, but this is a step-100 teardown/reset artifact (num_rides→0, num_shops→0, park_value→500, rating→20.0), NOT a mid-episode strategy failure. Cumulative reward grew monotonically through s99 (46530@s99 → 47245@s100). Do not propose trials chasing the terminal reset — it is a sim end-of-episode artifact with no falsifiable behaviour change.
+- NEW TRIAL for next episode (shops, t1_2): Probes the untested shops domain — num_shops frozen at 7 from s19–s99 while cash idled 8k–13k and shop_revenue plateaued (~1378@s55, ~1420@s99). Tests adding/upgrading shops when cash>5000 and shop count is stale.
+- PATTERN TO AVOID: Do not re-propose layout/zero-rejection-criterion trials (prior t0_3 falsified on an unachievable zero-rejection metric) despite continued placement-collision signal.
+
+### ep=0
+Episode 0 close-out (final cum_reward=352604.0, prior=0):
+
+- CONFIRMED (rides, t0_1 — promoted to playbook_rides): Adding varied rides breaks the single-ride park_rating cap. num_rides ≥2 from step11 (10 rides @step21); park_rating exceeded 12.0 repeatedly (24.74@step22, 36.83@step34, 34.59@step44); cum_reward@step45=32950.0 ≫ step20's 87.0. Do not re-propose.
+- CONFIRMED (research, t0_2 — promoted to playbook_research): set_research→slow when cash is healthy unlocks a non-yellow subclass. Applied @step32 (cash=5055); carousel/blue placed @step40; cum_reward@step55=55219.0 ≫ step20's 3573.0; no sub-one-day drawdown. Do not re-propose.
+- FALSIFIED (layout, t0_3 — not promoted): The 'zero additional path-collision place rejections' criterion was tripped by three 'Tile already contains a path' rejections at step49 (9,8), step50 (11,9), step67 (11,8). Agent kept retrying occupied/path tiles. Do NOT re-propose this rule unchanged; any layout trial needs a different, achievable criterion that tolerates/explains retry behavior.
+- INCONCLUSIVE: none this episode.
+- Patterns to avoid next episode: (1) don't re-propose rides-variety or research-slow rules (already in playbooks); (2) avoid layout criteria demanding zero path-collision rejections given observed retry-on-occupied behavior; (3) watch min_uptime on roller_coasters — new trial t1_1 (staff) tests proactive mechanic hiring at min_uptime<0.8 (cites steps 23/61/77/78/89/97/99).
+
+- OUTCOME ep=1 trial_id=t1_1 domain=staff outcome=confirmed note='min_uptime cratered <0.8 at s34 (0.28) and s35 (0.0) with roller_coasters present; mechanic placed at s36 restored uptime 0.0->0.96 (s37=1.0) and gave +400 then +1028. Single in-window applicable case succeeded (100% >= 70% threshold).'
+- OUTCOME ep=1 trial_id=t1_2 domain=research outcome=not_applied note='Upgrade-above-slow never occurred: research_speeds_used=['slow'] only. 'fast' tier never selected even though cash exceeded 3000. No applied entry matches the trial action; cannot be evaluated.'
+- OUTCOME ep=1 trial_id=t1_3 domain=rides outcome=confirmed note='Steps 61-100 no carousels placed; high-tier placements drove largest reward (rc s73 +1910, s51 +1311; ferris s57 +1203, s59 +1023); carousel removals net positive (s71 +359). park_rating held >=24 until terminal reset. Success criterion met.'
+- OUTCOME ep=1 trial_id=t0_1 domain=research outcome=confirmed note='Research set to slow at step 44; a blue-tier carousel placed at step 70 — first non-yellow asset unlocked. Failure criterion not tripped (research_speeds_used = ['slow', 'None']).'
+- OUTCOME ep=1 trial_id=t1_1 domain=staff outcome=falsified note='Step 31 rejection: 'Invalid location for staff. Must be on a path or in an attraction.' — occurs within the trial window (step 21+), directly trips the failure criterion.'
+- OUTCOME ep=1 trial_id=t1_2 domain=shops outcome=falsified note='All shops remained yellow-tier through step 80; cash at step 80 was 8,512 (far above 500 headroom threshold) — no non-yellow shop placed before step 80.'
+- OUTCOME ep=1 trial_id=t1_3 domain=coordinator outcome=falsified note='Three mechanic remove→place-same-tier churn cycles within steps 80–100 (steps 83→84, 87→88, 90→91); failure criterion requires ≤1.'

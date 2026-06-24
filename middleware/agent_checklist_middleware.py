@@ -27,6 +27,7 @@ from langchain.agents.middleware.types import ModelRequest
 from langchain.agents.middleware.types import ModelResponse
 from langchain.agents.middleware.types import ResponseT
 from langchain_core.messages import BaseMessage
+from langchain_core.messages import HumanMessage
 from langchain_core.messages import SystemMessage
 from langchain_core.messages import ToolMessage
 from langchain_core.messages.tool import ToolCall
@@ -91,6 +92,7 @@ class AgentChecklistMiddleware(AgentMiddleware):
         checklist_title: str = "Task Checklist",
         initial_checklist: list[dict[str, str]] | None = None,
         keep_checklist_in_context: bool = False,
+        inject_every_n: int = 1,
         progress_reporter: AgentProgressReporter | None = None,
     ) -> None:
         """Initialize the checklist middleware.
@@ -103,6 +105,11 @@ class AgentChecklistMiddleware(AgentMiddleware):
             the chat context. When ``False`` (default), tool call results are intercepted
             and returned directly without being written to the journal, keeping the context
             clean. The agent still sees the updated checklist via system prompt injection.
+        :param inject_every_n: Inject the checklist into the system prompt only every N
+            agent turns (default 1 = every turn). A "turn" is detected as the first LLM
+            call in a new agent invocation (no tool call has fired yet this turn).
+            The checklist is also injected whenever it is created or modified, regardless
+            of the counter, so updates are always visible.
         :param progress_reporter: Optional progress reporter for emitting checklist
             progress (0.0–1.0) to the client. Injected automatically by the framework
             when ``"progress_reporter": null`` is listed in the middleware ``args``.
@@ -111,7 +118,13 @@ class AgentChecklistMiddleware(AgentMiddleware):
         self.checklist_title: str = checklist_title
         self.checklist: list[dict[str, str]] = []
         self.keep_checklist_in_context: bool = keep_checklist_in_context
+        self.inject_every_n: int = max(1, inject_every_n)
         self.progress_reporter: AgentProgressReporter | None = progress_reporter
+
+        # Turn-counting state: detect new turns via tool-call gap between LLM calls.
+        self._turn_count: int = 0
+        self._had_tool_call: bool = False
+        self._modified: bool = False  # inject on next call after create/update/edit
 
         if initial_checklist:
             for entry in initial_checklist:
@@ -135,20 +148,51 @@ class AgentChecklistMiddleware(AgentMiddleware):
     ) -> ModelResponse[ResponseT]:
         """Inject current checklist state into system prompt before model call.
 
+        Injection is gated by ``inject_every_n``: the checklist is only appended on
+        turns whose count is a multiple of N, or whenever the checklist was just
+        created/modified (``_modified`` flag). "Turn" is detected as the first LLM
+        call since the last tool call — with max_message_history=0 each agent turn
+        always starts without prior tool results, so the gap is reliable.
+
         :param request: Model request containing messages and state
         :param handler: Handler to execute the model call
         :return: Model response from handler
         """
-        checklist_prompt: str = await self._format_checklist_prompt()
+        # Detect turn boundary: no tool call has fired since the last LLM call.
+        is_new_turn: bool = not self._had_tool_call
+        self._had_tool_call = False  # reset; awrap_tool_call sets it back True
 
-        if checklist_prompt:
-            system_message: BaseMessage | None = request.system_message
-            if system_message is not None:
-                original_content = system_message.content if isinstance(system_message.content, str) else ""
-                system_message = SystemMessage(content=f"{original_content}\n\n{checklist_prompt}")
+        if is_new_turn:
+            self._turn_count += 1
+
+        full_inject: bool = (
+            self._modified
+            or self._turn_count % self.inject_every_n == 0
+        )
+
+        if full_inject:
+            prompt: str = await self._format_checklist_prompt()
+            self._modified = False
+        else:
+            # Carry forward only the active phase label — keeps context stable
+            # and cacheable while the director still knows the current phase.
+            prompt = self._format_active_phase()
+
+        if prompt:
+            messages = list(request.messages)
+            # Prepend checklist/phase to the last HumanMessage so the system
+            # message stays unchanged and fully cacheable by AnthropicPromptCachingMiddleware.
+            for i in range(len(messages) - 1, -1, -1):
+                if isinstance(messages[i], HumanMessage):
+                    original = messages[i].content if isinstance(messages[i].content, str) else ""
+                    messages[i] = HumanMessage(
+                        content=f"{prompt}\n\n{original}",
+                        id=messages[i].id,
+                    )
+                    break
             else:
-                system_message = SystemMessage(content=checklist_prompt)
-            return await handler(request.override(system_message=system_message))
+                messages.append(HumanMessage(content=prompt))
+            return await handler(request.override(messages=messages))
 
         return await handler(request)
 
@@ -173,7 +217,13 @@ class AgentChecklistMiddleware(AgentMiddleware):
         tool_name: str = tool_call.get("name", "")
         tool_call_id: str = tool_call.get("id", "")
 
+        # Any tool call marks that we're mid-turn (not at a turn boundary).
+        self._had_tool_call = True
+
         checklist_tool_names: set[str] = {"create_checklist", "update_checklist_item", "edit_checklist_item"}
+
+        if tool_name in checklist_tool_names:
+            self._modified = True  # ensure next LLM call sees the updated checklist
 
         if not self.keep_checklist_in_context and tool_name in checklist_tool_names:
             args: dict[str, Any] = tool_call.get("args", {})
@@ -424,6 +474,20 @@ class AgentChecklistMiddleware(AgentMiddleware):
             "status": status,
             "notes": entry.get("notes", ""),
         }
+
+    def _format_active_phase(self) -> str:
+        """Return a one-line current-phase label for non-full-inject turns.
+
+        Finds the first non-done/non-skipped item; falls back to the last item
+        if everything is marked done. Returns empty string if checklist is empty.
+        """
+        if not self.checklist:
+            return ""
+        active = next(
+            (e for e in self.checklist if e.get("status") not in ("done", "skipped")),
+            self.checklist[-1],
+        )
+        return f"Current phase: {active['item']}"
 
     async def _format_checklist_prompt(self) -> str:
         """Format checklist for injection into system prompt and report progress.

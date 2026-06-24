@@ -1,0 +1,47 @@
+{
+  "step": 13,
+  "cash": 233,
+  "research_speed": "none",
+  "placed_staff": [
+    {
+      "subtype": "janitor",
+      "subclass": "yellow"
+    }
+  ],
+  "placed_shops": [
+    {
+      "subtype": "food",
+      "subclass": "yellow"
+    },
+    {
+      "subtype": "drink",
+      "subclass": "yellow"
+    }
+  ],
+  "placed_rides": [
+    {
+      "subtype": "carousel",
+      "subclass": "yellow"
+    },
+    {
+      "subtype": "carousel",
+      "subclass": "yellow"
+    },
+    {
+      "subtype": "carousel",
+      "subclass": "yellow"
+    },
+    {
+      "subtype": "carousel",
+      "subclass": "yellow"
+    },
+    {
+      "subtype": "carousel",
+      "subclass": "yellow"
+    },
+    {
+      "subtype": "carousel",
+      "subclass": "yellow"
+    }
+  ]
+}

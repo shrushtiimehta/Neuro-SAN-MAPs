@@ -20,7 +20,7 @@ to one domain.
 
 Replaces the per-turn hand-parse every specialist used to do (read both
 files, filter criteria by domain, join trial_ids back to rule bodies). The
-specialists call ActiveTrials(domain='rides'); the anthropologist/curator call
+specialists call ActiveTrials(domain='rides'); the trial_analyst/curator call
 it with no domain to get every active trial.
 """
 
@@ -43,7 +43,7 @@ class ActiveTrials(CodedTool):
     def invoke(self, args: dict[str, Any], sly_data: dict[str, Any]) -> dict[str, Any]:
         """
         :param args: optional 'domain' (rides/shops/staff/research/layout/
-            director/coordinator) to filter to; omit for all active trials.
+            coordinator) to filter to; omit for all active trials.
         :return: {domain, count, trials:[{trial_id, rule, domain, section,
             edit_type, find_text, step_start, ep, success_criterion,
             failure_criterion, rationale}]}.

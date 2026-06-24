@@ -1,0 +1,34 @@
+{
+  "step": 13,
+  "cash": 233,
+  "research_speed": "none",
+  "available_entities": {
+    "carousel": [
+      "yellow"
+    ],
+    "ferris_wheel": [
+      "yellow"
+    ],
+    "roller_coaster": [
+      "yellow"
+    ],
+    "drink": [
+      "yellow"
+    ],
+    "food": [
+      "yellow"
+    ],
+    "specialty": [
+      "yellow"
+    ],
+    "janitor": [
+      "yellow"
+    ],
+    "mechanic": [
+      "yellow"
+    ],
+    "specialist": [
+      "yellow"
+    ]
+  }
+}

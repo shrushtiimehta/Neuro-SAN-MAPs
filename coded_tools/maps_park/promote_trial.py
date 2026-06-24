@@ -51,16 +51,15 @@ class PromoteTrial(CodedTool):
 
     STATE_DIR: ClassVar[str] = "coded_tools/maps_park/state"
     SEED_DIR: ClassVar[str] = "coded_tools/maps_park/config_files"
-    # domain -> config seed filename. Mirrors SeedPlaybooks.PLAYBOOKS; note
-    # 'layout' maps to world_strategy.md, every other domain to <domain>_strategy.md.
+    # domain -> config seed filename. Mirrors SeedPlaybooks.PLAYBOOKS;
+    # every domain maps to <domain>_strategy.md.
     SEED_FILES: ClassVar[dict[str, str]] = {
-        "director":    "director_strategy.md",
         "coordinator": "coordinator_strategy.md",
         "rides":       "rides_strategy.md",
         "shops":       "shops_strategy.md",
         "staff":       "staff_strategy.md",
         "research":    "research_strategy.md",
-        "layout":      "world_strategy.md",
+        "layout":      "layout_strategy.md",
     }
     # Header under which mirrored learned rules accumulate in the seed file.
     LEARNED_SECTION: ClassVar[str] = "## Learned rules (promoted from prior runs)"

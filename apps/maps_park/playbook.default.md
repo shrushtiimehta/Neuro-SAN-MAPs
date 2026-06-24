@@ -3,7 +3,7 @@
 This is the live strategy document for the maps_park agent network.
 Anthropologist owns the writes; every other agent reads it at the start
 of its call and follows the relevant section. When a hypothesis is
-confirmed at episode end, anthropologist folds the new rule into the
+confirmed at episode end, trial_analyst folds the new rule into the
 appropriate section here (rather than keeping a separate rules file).
 
 ---
@@ -48,13 +48,6 @@ the proposed speed_cost without dipping below daily recurring costs.
 
 Anthropologist may use more phases (10-15+) when context suggests it.
 
-## Restrategize triggers (park_director)
-Call anthropologist(mode='restrategize', reason=<short>) when ANY hits:
-- Cash trending toward 0 in last 3-5 turns
-- 3+ consecutive turns of negative reward
-- 2+ no-op turns reported by validator
-- Specialist flags a big opportunity
-
 ## Safety rules (always)
 - price arg for any ride placement MUST equal max_ticket_price exactly
 - Always pass research_topics field for set_research even when speed=none
@@ -64,6 +57,5 @@ Call anthropologist(mode='restrategize', reason=<short>) when ANY hits:
 ---
 
 ## Learned rules
-Confirmed hypotheses get folded into the sections above with a
-"(learned ep<N>)" tag. This section is reserved for cross-cutting rules
-that don't fit cleanly under one heading. Empty on first run.
+This section is reserved for cross-cutting rules that don't fit cleanly
+under one heading. Empty on first run.

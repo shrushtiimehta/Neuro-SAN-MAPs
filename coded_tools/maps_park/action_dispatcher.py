@@ -86,7 +86,7 @@ class ActionDispatcher(CodedTool):
         # /new_park_observation, no top-level done/step/observation), which
         # otherwise causes ParkStatus to report done=false and skip the
         # episode_closer flow. We graft the standard fields onto it so
-        # memory_keeper.preflight triggers end-of-episode bookkeeping.
+        # parkstatus_reader.preflight triggers end-of-episode bookkeeping.
         if isinstance(response, dict) and response.get("episode_complete"):
             new_obs = response.get("new_park_observation") or {}
             response = {

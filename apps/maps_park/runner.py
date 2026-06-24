@@ -70,7 +70,6 @@ from neuro_san.client.agent_session_factory import AgentSessionFactory
 from neuro_san.client.streaming_input_processor import StreamingInputProcessor
 
 from coded_tools.maps_park.action_dispatcher import ActionDispatcher
-from coded_tools.maps_park.seed_observation import SeedObservation
 from coded_tools.maps_park.seed_playbooks import SeedPlaybooks
 
 
@@ -82,7 +81,7 @@ DEFAULT_HOST = "localhost"
 DEFAULT_PORT = 8090
 DEFAULT_TICK_SECONDS = 5
 DEFAULT_MAX_RETRIES = 25
-DEFAULT_CONSULTANT_EVERY = 10
+DEFAULT_CONSULTANT_EVERY = 20
 
 PROPOSAL_PATH = os.path.join(
     os.path.dirname(__file__), "..", "..",
@@ -101,6 +100,22 @@ LATEST_OBS_PATH = os.environ.get(
     os.path.normpath(os.path.join(
         os.path.dirname(__file__), "..", "..",
         "coded_tools", "maps_park", "state", "latest_observations.json",
+    )),
+)
+# Agent reasoning capture. Honor the studio's THINKING_FILE / THINKING_DIR env
+# vars when present; otherwise default to the standard logs/ locations so the
+# runner populates the same paths the studio does (was previously a throwaway
+# /tmp file with thinking_dir disabled, so no per-agent maps were ever written).
+THINKING_FILE = os.environ.get(
+    "THINKING_FILE",
+    os.path.normpath(os.path.join(
+        os.path.dirname(__file__), "..", "..", "logs", "agent_thinking.txt",
+    )),
+)
+THINKING_DIR = os.environ.get(
+    "THINKING_DIR",
+    os.path.normpath(os.path.join(
+        os.path.dirname(__file__), "..", "..", "logs", "thinking_dir",
     )),
 )
 # Env-coupled episode state. On a fresh (non --resume) start this is deleted
@@ -166,7 +181,9 @@ def open_session(agent_name: str, host: str, port: int):
 
 
 def chat(session, thread, message: str):
-    processor = StreamingInputProcessor("DEFAULT", "/tmp/maps_park_thinking.txt", session, None)
+    os.makedirs(THINKING_DIR, exist_ok=True)
+    os.makedirs(os.path.dirname(THINKING_FILE) or ".", exist_ok=True)
+    processor = StreamingInputProcessor("DEFAULT", THINKING_FILE, session, THINKING_DIR)
     thread["user_input"] = message
     thread = processor.process_once(thread)
     return thread.get("last_chat_response"), thread, processor.processor.get_token_accounting()
@@ -233,29 +250,6 @@ def write_run_log_row(row: dict, episode: Any) -> None:
         fh.write(json.dumps(row) + "\n")
         fh.flush()
 
-
-# ── Validators ──────────────────────────────────────────────────────────────
-
-def pre_validate(proposal: dict, last_verified: dict | None) -> tuple[bool, list[str]]:
-    """Cheap re-check on the runner side. Mirrors ProposeAction's checks.
-
-    proposal is the {proposed, validation} envelope written by ProposeAction.
-    Returns (ok, reasons).
-    """
-    reasons: list[str] = []
-    if not isinstance(proposal, dict):
-        return False, ["no proposal envelope present"]
-    if proposal.get("validation", {}).get("ok") is False:
-        # Surface the upstream reasons verbatim.
-        reasons.extend(proposal["validation"].get("reasons", []) or ["ProposeAction reported ok=false"])
-    proposed = proposal.get("proposed") or {}
-    action = proposed.get("action")
-    if not isinstance(action, str) or not action:
-        reasons.append("proposed.action is missing or not a string")
-    args = proposed.get("args")
-    if args is not None and not isinstance(args, dict):
-        reasons.append(f"proposed.args must be an object, got {type(args).__name__}")
-    return (not reasons), reasons
 
 
 # ── Dispatch (runner-side, bypasses neuro-san agent middleware) ─────────────
@@ -420,24 +414,16 @@ def main():
                              "falsified. Pass literal text, or @path to read it from a file.")
     args = parser.parse_args()
 
-    # Clear stale observation cache so each run starts fresh.
-    if os.path.exists(LATEST_OBS_PATH):
-        os.remove(LATEST_OBS_PATH)
-        print(f"[runner] Cleared stale observation cache: {LATEST_OBS_PATH}")
+    if not args.resume:
+        # Clear stale observation cache so each fresh run starts clean.
+        if os.path.exists(LATEST_OBS_PATH):
+            os.remove(LATEST_OBS_PATH)
+            print(f"[runner] Cleared stale observation cache: {LATEST_OBS_PATH}")
 
-    # Clear stale proposal file too.
-    if os.path.exists(PROPOSAL_PATH):
-        os.remove(PROPOSAL_PATH)
+        # Clear stale proposal file too.
+        if os.path.exists(PROPOSAL_PATH):
+            os.remove(PROPOSAL_PATH)
 
-    # Seed the initial (step 0) observation from the env WITHOUT stepping, so
-    # the first turn's ParkStatus returns real state and the agent takes a real
-    # action on turn 1 instead of a throwaway wait() to fetch state.
-    obs_seed = SeedObservation().invoke({"park": 0}, {})
-    if obs_seed.get("status") == "ok":
-        print(f"[runner] Seeded initial observation (park 0, step {obs_seed.get('step')}).")
-    else:
-        print(f"[runner] WARN could not seed initial observation: {obs_seed.get('error')}. "
-              f"The agent will fall back to a first-turn wait().")
 
     runner_session, runner_thread = open_session(args.runner_agent, args.host, args.port)
     consultant_session, consultant_thread = (None, None)
@@ -468,7 +454,7 @@ def main():
     user_input = "Start the run. Take one action on park 0."
     turn = 0
 
-    # Startup seed: lay down the seven playbooks before the first turn via the
+    # Startup seed: lay down the six playbooks before the first turn via the
     # SeedPlaybooks coded tool (deterministic file copy, no LLM). A fresh start
     # resets every playbook to its config_files seed; --resume keeps the
     # existing working copies so learned edits survive.
@@ -492,6 +478,12 @@ def main():
             turn += 1
             print(f"\n========== TURN {turn} ==========")
 
+            # The runner authoritatively knows when an episode is fresh: the
+            # process just started (turn 1) or the prior turn ended an episode.
+            # The preflight custodian consumes this explicit mode instead of
+            # re-inferring "fresh" from step==1.
+            preflight_mode = "fresh_episode" if (turn == 1 or prev_episode_done) else "continue"
+
             # If the previous turn ended an episode, ensure the new episode's
             # playbooks exist before the game-runner acts. overwrite=False:
             # learned edits promoted at the prior episode's close survive.
@@ -503,7 +495,7 @@ def main():
 
             verified_before = read_last_verified()
 
-            prompt = user_input
+            prompt = f"[PREFLIGHT MODE] {preflight_mode}\n\n" + user_input
             if advisory_for_next_turn:
                 prompt = (
                     f"[consultant advisory]\n{advisory_for_next_turn}\n[/consultant advisory]\n\n"
@@ -546,13 +538,14 @@ def main():
                     continue
 
                 last_proposed = proposal_envelope.get("proposed", {}) or {}
-                ok, reasons = pre_validate(proposal_envelope, verified_before)
-                if ok:
+                validation = proposal_envelope.get("validation", {})
+                if validation.get("ok"):
                     proposal_ok = True
                     break
-                print(f"[validator] PRE-VALIDATE rejected: {reasons}")
+                reasons = validation.get("reasons") or ["ProposeAction reported ok=false"]
+                print(f"[runner] ProposeAction rejected: {reasons}")
                 prompt = (
-                    f"ERROR: pre-validation rejected your proposed action. "
+                    f"ERROR: ProposeAction rejected your proposed action. "
                     f"Reasons: {reasons}. The env was NOT touched. "
                     f"Pick a different concrete action and call ProposeAction again."
                 )

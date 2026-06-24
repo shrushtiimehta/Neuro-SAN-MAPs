@@ -1,0 +1,62 @@
+{
+  "step": 13,
+  "cash": 233,
+  "placed_staff": [
+    {
+      "subtype": "janitor",
+      "subclass": "yellow",
+      "x": 11,
+      "y": 8,
+      "salary": 25,
+      "operating_cost": 14,
+      "success_metric": "amount_cleaned",
+      "success_metric_value": 0.39,
+      "tiles_traversed": 329
+    }
+  ],
+  "placed_rides": [
+    {
+      "subtype": "carousel",
+      "subclass": "yellow",
+      "x": 9,
+      "y": 9,
+      "out_of_service": false
+    },
+    {
+      "subtype": "carousel",
+      "subclass": "yellow",
+      "x": 9,
+      "y": 10,
+      "out_of_service": false
+    },
+    {
+      "subtype": "carousel",
+      "subclass": "yellow",
+      "x": 10,
+      "y": 7,
+      "out_of_service": false
+    },
+    {
+      "subtype": "carousel",
+      "subclass": "yellow",
+      "x": 10,
+      "y": 10,
+      "out_of_service": false
+    },
+    {
+      "subtype": "carousel",
+      "subclass": "yellow",
+      "x": 11,
+      "y": 7,
+      "out_of_service": false
+    },
+    {
+      "subtype": "carousel",
+      "subclass": "yellow",
+      "x": 11,
+      "y": 12,
+      "out_of_service": false
+    }
+  ],
+  "broken_rides": []
+}

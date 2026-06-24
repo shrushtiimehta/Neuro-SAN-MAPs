@@ -16,10 +16,9 @@
 """
 Shared ``name_map`` resolution for the name-based state tools.
 
-StateRead, StateWrite and StateEdit all carried an identical block that
-validated the logical ``name`` against the operator-supplied ``name_map``
-(deny-by-default) and resolved it to a path. That block lives here now so
-the three tools cannot drift apart.
+StateRead validates the logical ``name`` against the operator-supplied
+``name_map`` (deny-by-default) and resolves it to a path. That shared
+block lives here so name-based state tools cannot drift apart.
 """
 
 from __future__ import annotations

@@ -13,3 +13,9 @@ modify only — you never create or remove paths or water.
   - `move`: supply current (x,y) from `placed_rides` AND a suitable (new_x,new_y) e.g. adjacent to a water tile.
   - `modify`: look up the attraction's current (x,y) from `placed_rides` or `placed_shops`.
   - `remove`: return the attraction's current (x,y) from the snapshot.
+
+## Learned rules
+
+## Learned rules (promoted from prior runs)
+- Remove actions require explicit integer (x,y): when issuing remove(type, subtype, subclass), supply the target attraction's exact (x,y) tile from the snapshot; remove with x=None/y=None is rejected ("argument x of type NoneType but expected type int") and wastes the turn as a wait. (learned ep1)
+- When placing a janitor/mechanic/staff, supply (x,y) that is a path tile or inside an existing attraction from the snapshot (NOT an empty valid_placement_coords tile, which is valid only for rides/shops); staff placed on an empty buildable tile is rejected with "Invalid location for staff. Must be on a path or in an attraction." (learned ep1)

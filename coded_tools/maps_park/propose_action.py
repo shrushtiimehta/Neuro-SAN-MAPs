@@ -56,6 +56,19 @@ _PROPOSAL_PATH = os.environ.get(
 # Actions that don't cost the agent anything and don't need a state check.
 _FREE_ACTIONS = {"wait", "survey_guests"}
 
+_VALID_RESEARCH_SPEEDS = {"none", "slow", "medium", "fast"}
+
+# Valid entity names for research_topics — rides + shops + staff subtypes.
+_VALID_RESEARCH_TOPICS = {
+    "carousel", "ferris_wheel", "roller_coaster",
+    "drink", "food", "specialty",
+    "janitor", "mechanic", "specialist",
+}
+
+# survey_guests: cost $500/guest, max 25 guests (from MAPs shared/config.json).
+_SURVEY_GUESTS_COST_PER_GUEST = 500
+_SURVEY_GUESTS_MAX = 25
+
 # The only valid values for an action's `type` field (MAPs action_spec). A
 # common mistake is using a subtype (e.g. 'janitor') as the type.
 _VALID_TYPES = {"ride", "shop", "staff"}
@@ -153,6 +166,26 @@ class ProposeAction(CodedTool):
             tile_ok, tile_reason = self._check_placement_tile(action_args, latest)
             if not tile_ok:
                 reasons.append(tile_reason)
+
+        if action == "remove":
+            rem_ok, rem_reason = self._check_remove_coords(action_args, latest)
+            if not rem_ok:
+                reasons.append(rem_reason)
+
+        if action == "move":
+            move_ok, move_reason = self._check_move_fields(action_args, latest)
+            if not move_ok:
+                reasons.append(move_reason)
+
+        if action == "set_research":
+            sr_ok, sr_reason = self._check_set_research_fields(action_args)
+            if not sr_ok:
+                reasons.append(sr_reason)
+
+        if action == "survey_guests":
+            sg_ok, sg_reason = self._check_survey_guests_fields(action_args)
+            if not sg_ok:
+                reasons.append(sg_reason)
 
         if action and action not in _FREE_ACTIONS and reasons == []:
             cash_ok, cash_reason = self._check_cash(action, action_args, latest)
@@ -392,6 +425,140 @@ class ProposeAction(CodedTool):
                 return False, f"y={y} out of park height {h}"
         if x < 0 or y < 0:
             return False, f"x,y must be non-negative; got x={x}, y={y}"
+        return True, ""
+
+    def _check_remove_coords(self, action_args: dict, obs: dict) -> tuple[bool, str]:
+        """Reject a remove that omits integer x,y — the env always requires them."""
+        x, y = action_args.get("x"), action_args.get("y")
+        try:
+            ix, iy = int(x), int(y)
+        except (TypeError, ValueError):
+            return False, (
+                f"remove requires integer x,y to locate the asset; got x={x!r}, y={y!r}. "
+                f"Look up the target's (x,y) from placed_rides/placed_shops/placed_staff "
+                f"in ParkStatus and pass them explicitly."
+            )
+        if obs:
+            atype = (action_args.get("type") or "").lower()
+            mapping = self._PRICE_SECTION.get(atype)
+            if mapping:
+                section_key, list_key, _ = mapping
+                section = obs.get(section_key)
+                items = section.get(list_key) if isinstance(section, dict) else None
+                if items is not None:
+                    found = any(
+                        isinstance(item, dict) and item.get("x") == ix and item.get("y") == iy
+                        for item in items
+                    )
+                    if not found:
+                        return False, (
+                            f"no {atype} found at ({ix},{iy}) to remove; "
+                            f"check placed_{atype}s in ParkStatus for valid coords."
+                        )
+        return True, ""
+
+    def _check_move_fields(self, action_args: dict, obs: dict) -> tuple[bool, str]:
+        """Validate move has type + integer current coords (asset exists) + integer destination."""
+        atype = (action_args.get("type") or "").lower()
+        if atype not in _VALID_TYPES:
+            return False, (
+                f"move 'type' must be one of {sorted(_VALID_TYPES)}; got {action_args.get('type')!r}"
+            )
+        x, y = action_args.get("x"), action_args.get("y")
+        try:
+            ix, iy = int(x), int(y)
+        except (TypeError, ValueError):
+            return False, f"move requires integer x,y for the current position; got x={x!r}, y={y!r}"
+        new_x, new_y = action_args.get("new_x"), action_args.get("new_y")
+        try:
+            inx, iny = int(new_x), int(new_y)
+        except (TypeError, ValueError):
+            return False, (
+                f"move requires integer new_x,new_y for the destination; "
+                f"got new_x={new_x!r}, new_y={new_y!r}"
+            )
+        if obs:
+            mapping = self._PRICE_SECTION.get(atype)
+            if mapping:
+                section_key, list_key, _ = mapping
+                section = obs.get(section_key)
+                items = section.get(list_key) if isinstance(section, dict) else None
+                if items is not None:
+                    found = any(
+                        isinstance(item, dict) and item.get("x") == ix and item.get("y") == iy
+                        for item in items
+                    )
+                    if not found:
+                        return False, (
+                            f"no {atype} found at ({ix},{iy}) to move; "
+                            f"check placed_{atype}s in ParkStatus for valid current coords."
+                        )
+            if atype in ("ride", "shop"):
+                # Destination must be adjacent to a path (valid_placement_coords).
+                coords = obs.get("valid_placement_coords")
+                if isinstance(coords, list) and coords:
+                    valid = {(c[0], c[1]) for c in coords if isinstance(c, (list, tuple)) and len(c) >= 2}
+                    if (inx, iny) not in valid:
+                        return False, (
+                            f"({inx},{iny}) is not a buildable destination for a {atype}; "
+                            f"choose a tile from free_tiles in ParkStatus."
+                        )
+            elif atype == "staff":
+                # Staff must land on a path or attraction tile, not empty/water.
+                path_coords = obs.get("path_coords")
+                if isinstance(path_coords, list) and path_coords:
+                    path_set = {(c[0], c[1]) for c in path_coords if isinstance(c, (list, tuple)) and len(c) >= 2}
+                    attraction_coords = {
+                        (item["x"], item["y"])
+                        for section_key in ("rides", "shops", "staff")
+                        for list_key in (f"{section_key.rstrip('s')}_list",)
+                        for item in (obs.get(section_key) or {}).get(list_key, [])
+                        if isinstance(item, dict) and "x" in item and "y" in item
+                    }
+                    valid = path_set | attraction_coords
+                    if valid and (inx, iny) not in valid:
+                        return False, (
+                            f"({inx},{iny}) is not a valid destination for staff; "
+                            "staff must move to a path tile or inside an existing attraction."
+                        )
+        return True, ""
+
+    def _check_set_research_fields(self, action_args: dict) -> tuple[bool, str]:
+        """Validate set_research speed and topic entity names."""
+        speed = (action_args.get("research_speed") or "none").lower().strip()
+        if speed not in _VALID_RESEARCH_SPEEDS:
+            return False, (
+                f"research_speed must be one of {sorted(_VALID_RESEARCH_SPEEDS)}; got {speed!r}"
+            )
+        topics = action_args.get("research_topics")
+        if topics is not None:
+            if not isinstance(topics, list):
+                return False, "research_topics must be an array/list"
+            invalid = [t for t in topics if t not in _VALID_RESEARCH_TOPICS]
+            if invalid:
+                return False, (
+                    f"invalid research_topics {invalid}; must be from "
+                    f"{sorted(_VALID_RESEARCH_TOPICS)}"
+                )
+        return True, ""
+
+    def _check_survey_guests_fields(self, action_args: dict) -> tuple[bool, str]:
+        """Validate num_guests is an integer in [1, 25]."""
+        raw = action_args.get("num_guests")
+        try:
+            n = int(raw)
+        except (TypeError, ValueError):
+            return False, (
+                f"survey_guests requires integer num_guests (1–{_SURVEY_GUESTS_MAX}); got {raw!r}"
+            )
+        if n < 1:
+            return False, (
+                f"num_guests must be at least 1; got {n}"
+            )
+        if n > _SURVEY_GUESTS_MAX:
+            return False, (
+                f"num_guests must be <= {_SURVEY_GUESTS_MAX} (max_guests_to_survey); got {n}"
+            )
         return True, ""
 
     def _check_cash(self, action: str, action_args: dict, obs: dict) -> tuple[bool, str]:

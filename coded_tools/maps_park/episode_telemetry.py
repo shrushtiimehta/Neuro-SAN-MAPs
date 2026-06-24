@@ -24,7 +24,7 @@ spreads the dispatched action's args (subtype, subclass, price, x, y)
 into each row alongside the post-step metrics — so this tool can surface
 both WHAT was done and its measured effect, without parsing free-text.
 
-The anthropologist uses `steps` as the factual record; the
+The trial_analyst uses `steps` as the factual record; the
 playbook_curator uses `applied` for applied-detection (which trials
 actually fired) and the per-step reward/value deltas for success/failure
 evaluation. Neither needs turn_notes anymore.

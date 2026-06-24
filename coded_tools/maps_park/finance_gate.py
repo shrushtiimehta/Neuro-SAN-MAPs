@@ -28,24 +28,30 @@ Two responsibilities, both moved here from the LLM:
 
 Rules applied per proposal, in priority order:
 
-  1. action='wait'                        → always APPROVE
+  1. action='survey_guests'               → APPROVE only when cash >= $500 × num_guests;
+                                            REJECT otherwise (env charges $500/guest,
+                                            max 25 guests, and counts the turn as wait)
   2. action='remove'                      → always APPROVE (recovers 66%),
        EXCEPT an upgrade-intent remove (carries upgrade_to_subclass): approve
-       only if the replacement ride clears Rule 4's break-even AND fits cash
+       only if the replacement ride clears Rule 5b's break-even AND fits cash
        after the 66% refund — so we never strand a plot by tearing out a
        yellow we can't actually replace.
-  3. specialty/red (Billboard)            → REJECT unless has_food_or_atm=True
+  3. action='move'                        → always APPROVE (free to relocate)
+                                            when cash >= daily_operating_cost
+  4. specialty/red (Billboard)            → REJECT unless has_food_or_atm=True
                                             (Billboard earns $0 directly)
-  4. action='place', type='ride'          → REJECT if days_remaining <
+  5. action='place', type='ride'          → REJECT if days_remaining <
                                             BREAK_EVEN_DAYS[subtype][subclass]
                                             (computed from economics files at
                                             5 ops/day assumption)
-  5. is_research=True                     → APPROVE only when ALL of:
+  6. action='set_research', speed='none'  → APPROVE immediately (stopping
+                                            research costs nothing)
+     action='set_research', speed!=none   → APPROVE only when ALL of:
        (a) has_profitable_ride=True
        (b) days_remaining >= research_days + POST_UNLOCK_MIN_DAYS
-       (c) cash >= research_daily_cost * research_days + recurring_daily
-  6. Everything else                      → APPROVE when:
-       cash - one_time_cost >= recurring_daily (keep 1-day buffer)
+       (c) cash >= research_daily_cost * research_days + daily_operating_cost
+  7. Everything else                      → APPROVE when:
+       cash - one_time_cost >= daily_operating_cost (keep 1-day buffer)
 
 Break-even days are derived from rides_economics.yaml at 5 ops/day
 (moderate-park assumption). Values:
@@ -65,6 +71,9 @@ from typing import ClassVar
 
 from neuro_san.interfaces.coded_tool import CodedTool
 
+
+_SURVEY_GUESTS_COST_PER_GUEST = 500
+_SURVEY_GUESTS_MAX = 25
 
 _RIDES_ECONOMICS_PATH = "coded_tools/maps_park/config_files/rides_economics.md"
 _SHOPS_ECONOMICS_PATH = "coded_tools/maps_park/config_files/shops_economics.md"
@@ -179,8 +188,6 @@ def _read_research_lines(path: str) -> dict[tuple[str, str], Any]:
 class FinanceGate(CodedTool):
     """Approve or reject a list of proposed MAPs actions based on budget rules."""
 
-    ALWAYS_APPROVE_ACTIONS: ClassVar[frozenset[str]] = frozenset({"wait", "remove"})
-
     # Fraction of a ride's build cost refunded on `remove` (simulator
     # asset_value = 0.66 x build cost). Used to size the cash available for an
     # upgrade's replacement `place`.
@@ -224,9 +231,10 @@ class FinanceGate(CodedTool):
         cash = self._int(args.get("cash", 0))
         step = self._int(args.get("step", 0))
         horizon = self._int(args.get("horizon", 100))
-        recurring_daily = self._int(args.get("recurring_daily", 0))
         placed_shops = args.get("placed_shops") or []
         placed_rides = args.get("placed_rides") or []
+        placed_staff = args.get("placed_staff") or []
+        research_speed = str(args.get("research_speed", "none")).lower().strip()
         raw_proposals = args.get("proposals") or []
         if isinstance(raw_proposals, str):
             try:
@@ -245,6 +253,18 @@ class FinanceGate(CodedTool):
         has_food_or_atm = self._scan_food_or_atm(placed_shops)
         has_profitable_ride = self._scan_profitable_ride(placed_rides)
 
+        # DailyOperatingCost is MERGED into FinanceGate: the per-day operating
+        # cost (staff salaries + research speed cost) is derived here from the
+        # placed staff and research speed, so callers no longer compute it in a
+        # separate tool. An explicit daily_operating_cost arg still overrides
+        # (back-compat / direct callers).
+        if args.get("daily_operating_cost") is not None:
+            daily_operating_cost = self._int(args.get("daily_operating_cost"))
+        else:
+            daily_operating_cost = self.operating_cost(
+                placed_staff, research_speed, staff_econ, research_econ
+            )
+
         results: list[dict[str, Any]] = []
 
         for proposal in proposals:
@@ -260,7 +280,7 @@ class FinanceGate(CodedTool):
             approved, reason = self._evaluate(
                 cash=cash,
                 days_remaining=days_remaining,
-                recurring_daily=recurring_daily,
+                daily_operating_cost=daily_operating_cost,
                 action=enriched["action"],
                 entity_type=enriched["type"],
                 subtype=enriched["subtype"],
@@ -274,6 +294,7 @@ class FinanceGate(CodedTool):
                 upgrade_to_subclass=enriched["upgrade_to_subclass"],
                 upgrade_to_cost=enriched["upgrade_to_cost"],
                 current_tier_refund=enriched["current_tier_refund"],
+                num_guests=enriched["num_guests"],
             )
             row: dict[str, Any] = {
                 "label":    enriched["label"],
@@ -291,9 +312,31 @@ class FinanceGate(CodedTool):
         return {
             "results":         results,
             "cash":            cash,
-            "recurring_daily": recurring_daily,
+            "daily_operating_cost": daily_operating_cost,
             "days_remaining":  days_remaining,
         }
+
+    @staticmethod
+    def operating_cost(
+        placed_staff: Any, research_speed: str, staff_econ: dict, research_econ: dict
+    ) -> int:
+        """Per-day operating cost = sum of placed-staff salaries + research speed cost.
+
+        This is the former DailyOperatingCost tool, merged in. Reads salaries
+        from the staff economics table and the speed cost from the research
+        table — the same files FinanceGate already loads.
+        """
+        total = 0
+        for entry in placed_staff or []:
+            if not isinstance(entry, dict):
+                continue
+            subtype = str(entry.get("subtype", "")).lower().strip()
+            subclass = str(entry.get("subclass", "")).lower().strip()
+            salary = staff_econ.get(("staff", subtype, subclass), {}).get("salary", 0)
+            total += FinanceGate._int(salary)
+        speed = str(research_speed or "none").lower().strip()
+        total += FinanceGate._int(research_econ.get(("speed_cost", speed), 0))
+        return total
 
     def _enrich(
         self,
@@ -359,13 +402,31 @@ class FinanceGate(CodedTool):
         else:
             label = action or "unknown"
 
+        # Auto-set the `price` field so the LLM never looks it up:
+        #   ride/shop place|modify -> the env's per-subclass cap (max_ticket_price /
+        #                             max_item_price); we always charge the max allowed.
+        #   staff place            -> the staff member's salary from economics_staff.
+        # Falls back to the proposed price when no value is configured.
+        price = self._int(proposal.get("price", 0))
+        if action in ("place", "modify") and entity_type in ("ride", "shop"):
+            cap_field = "max_ticket_price" if entity_type == "ride" else "max_item_price"
+            cap = (ride_econ if entity_type == "ride" else shop_econ).get(
+                (entity_type + "s", subtype, subclass), {}
+            ).get(cap_field)
+            if isinstance(cap, (int, float)):
+                price = self._int(cap)
+        elif action == "place" and entity_type == "staff":
+            salary = staff_econ.get(("staff", subtype, subclass), {}).get("salary")
+            if isinstance(salary, (int, float)):
+                price = self._int(salary)
+
         return {
             "label":               label,
             "action":              action,
             "type":                entity_type,
             "subtype":             subtype,
             "subclass":            subclass,
-            "price":               self._int(proposal.get("price", 0)),
+            "price":               price,
             "order_quantity":      self._int(proposal.get("order_quantity", 0)),
             "x":                   proposal.get("x"),
             "y":                   proposal.get("y"),
@@ -380,6 +441,7 @@ class FinanceGate(CodedTool):
             "upgrade_to_subclass": upgrade_to_subclass or None,
             "upgrade_to_cost":     upgrade_to_cost,
             "current_tier_refund": current_tier_refund,
+            "num_guests":          self._int(proposal.get("num_guests", 0)),
         }
 
     @staticmethod
@@ -412,7 +474,7 @@ class FinanceGate(CodedTool):
         self,
         cash: int,
         days_remaining: int,
-        recurring_daily: int,
+        daily_operating_cost: int,
         action: str,
         entity_type: str,
         subtype: str,
@@ -426,12 +488,28 @@ class FinanceGate(CodedTool):
         upgrade_to_subclass: str | None = None,
         upgrade_to_cost: int = 0,
         current_tier_refund: int = 0,
+        num_guests: int = 0,
     ) -> tuple[bool, str]:
-        # Rule 1 — wait: free, always go ahead
+        # wait is always approved
         if action == "wait":
-            return True, "always approved"
+            return True, "wait approved"
 
-        # Rule 2 — remove: recovers 66% of build cost, always beneficial
+        # Rule 1 — survey_guests: costs $500 × num_guests (max 25), reject if unaffordable
+        if action == "survey_guests":
+            n = max(num_guests, 1)
+            total_cost = _SURVEY_GUESTS_COST_PER_GUEST * n
+            if cash < total_cost:
+                return False, (
+                    f"survey_guests({n} guests) costs ${total_cost} "
+                    f"(${_SURVEY_GUESTS_COST_PER_GUEST}/guest) but cash is ${cash}; "
+                    f"reduce num_guests or wait until cash >= ${total_cost}"
+                )
+            return True, (
+                f"survey_guests approved: ${total_cost} ({n} guests × "
+                f"${_SURVEY_GUESTS_COST_PER_GUEST}) fits cash ${cash}"
+            )
+
+        # Rule 3 — remove: recovers 66% of build cost, always beneficial
         if action == "remove":
             # Plain remove (no upgrade intent): always beneficial.
             if not upgrade_to_subclass:
@@ -447,12 +525,12 @@ class FinanceGate(CodedTool):
                     "keep the existing ride rather than strand the plot"
                 )
             cash_after_swap = cash + current_tier_refund - upgrade_to_cost
-            if cash_after_swap < recurring_daily:
+            if cash_after_swap < daily_operating_cost:
                 return False, (
                     f"upgrade to {subtype}/{upgrade_to_subclass}: cash after "
                     f"refund (+${current_tier_refund}) and rebuild "
                     f"(-${upgrade_to_cost}) is ${cash_after_swap} < 1-day "
-                    f"recurring ${recurring_daily}; defer the swap"
+                    f"operating cost ${daily_operating_cost}; defer the swap"
                 )
             return True, (
                 f"upgrade remove approved: replacement {subtype}/"
@@ -460,7 +538,16 @@ class FinanceGate(CodedTool):
                 f"and budget (cash after swap ${cash_after_swap})"
             )
 
-        # Rule 3 — Billboard (specialty/red): earns $0 directly
+        # Rule 4 — move: free to relocate; just needs cash to cover daily ops
+        if action == "move":
+            if cash < daily_operating_cost:
+                return False, (
+                    f"cash ${cash} < 1-day operating cost ${daily_operating_cost}; "
+                    "park can't sustain even a free action"
+                )
+            return True, "move approved (no relocation cost)"
+
+        # Rule 6 — Billboard (specialty/red): earns $0 directly
         if action == "place" and subtype == "specialty" and subclass == "red":
             if not has_food_or_atm:
                 return False, (
@@ -468,7 +555,7 @@ class FinanceGate(CodedTool):
                     "reject until food/ATM shops are in place to capture demand"
                 )
 
-        # Rule 4 — ride break-even: too late in episode to recoup build cost
+        # Rule 6b — ride break-even: too late in episode to recoup build cost
         if action == "place" and (entity_type == "ride" or subtype in self.BREAK_EVEN_DAYS):
             be_days = self.BREAK_EVEN_DAYS.get(subtype, {}).get(subclass)
             if be_days is not None and days_remaining < be_days:
@@ -477,7 +564,10 @@ class FinanceGate(CodedTool):
                     f"but only {days_remaining} steps remain"
                 )
 
-        # Rule 5 — research: capital investment, strict approval criteria
+        # Rule 7 — research: capital investment, strict approval criteria
+        if action == "set_research" and not is_research:
+            return True, "set_research(speed=none) approved: stopping research costs nothing"
+
         if is_research:
             if not has_profitable_ride:
                 return False, (
@@ -492,7 +582,7 @@ class FinanceGate(CodedTool):
                     "payback window for the unlocked tier)"
                 )
             upfront_days = min(research_days, self.RESEARCH_UPFRONT_DAYS)
-            total_needed = research_daily_cost * upfront_days + recurring_daily
+            total_needed = research_daily_cost * upfront_days + daily_operating_cost
             if cash < total_needed:
                 return False, (
                     f"need ${total_needed} ({upfront_days}d research upfront + "
@@ -504,13 +594,13 @@ class FinanceGate(CodedTool):
                 f"cash ${cash} covers full duration"
             )
 
-        # Rule 6 — general cash sufficiency: keep at least 1 day of recurring costs
+        # Rule 8 — general cash sufficiency: keep at least 1 day of recurring costs
         cash_after = cash - one_time_cost
-        if cash_after < recurring_daily:
+        if cash_after < daily_operating_cost:
             return False, (
-                f"cash after spend ${cash_after} < 1-day recurring ${recurring_daily}"
+                f"cash after spend ${cash_after} < 1-day recurring ${daily_operating_cost}"
             )
-        return True, f"cash after spend ${cash_after} >= 1-day buffer ${recurring_daily}"
+        return True, f"cash after spend ${cash_after} >= 1-day buffer ${daily_operating_cost}"
 
     @staticmethod
     def _int(value: Any) -> int:
