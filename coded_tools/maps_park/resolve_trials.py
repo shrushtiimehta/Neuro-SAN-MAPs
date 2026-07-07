@@ -21,8 +21,11 @@ Policy (per active trial):
   - confirmed / falsified -> REMOVE from trial_strategies + trial_strategies_criteria
   - not_applied / inconclusive -> KEEP
   - an active trial absent from the report -> KEEP, outcome 'inconclusive' note 'no_report'
+  - origin=micro -> REMOVE regardless of outcome (micro trials are episode-scoped;
+    a confirmed one was already promoted to the playbook by the curator), so the
+    next episode starts back at just the persisted macro trials.
 In all cases append one line to trial_strategies_outcome:
-  "- OUTCOME ep=<N> trial_id=<id> domain=<D> outcome=<O> note='<note>'"
+  "- OUTCOME ep=<N> trial_id=<id> domain=<D> origin=<O> outcome=<O> note='<note>'"
 """
 
 from __future__ import annotations
@@ -84,22 +87,30 @@ class ResolveTrials(CodedTool):
 
         for trial_id in active_ids:
             entry = report_map.get(trial_id)
+            crit = criteria.get(trial_id, {})
+            origin = crit.get("origin", "")
             if entry:
                 outcome = str(entry.get("outcome", "inconclusive")).strip() or "inconclusive"
                 note = str(entry.get("note", "")).strip()
-                domain = entry.get("domain") or criteria.get(trial_id, {}).get("domain", "")
+                domain = entry.get("domain") or crit.get("domain", "")
             else:
                 outcome, note = "inconclusive", "no_report"
-                domain = criteria.get(trial_id, {}).get("domain", "")
+                domain = crit.get("domain", "")
 
-            if outcome in self.REMOVE_OUTCOMES:
+            # micro trials are episode-scoped — drop every one regardless of
+            # outcome (a confirmed one was already promoted by the curator) so the
+            # next episode starts back at just the persisted macro trials.
+            if origin == "micro" and outcome not in self.REMOVE_OUTCOMES:
+                note = (f"{note}; " if note else "") + "micro_episode_scoped"
+
+            if outcome in self.REMOVE_OUTCOMES or origin == "micro":
                 removed.append(trial_id)
             else:
                 keep_ids.add(trial_id)
                 kept.append(trial_id)
             outcome_lines.append(
                 f"- OUTCOME ep={episode} trial_id={trial_id} domain={domain} "
-                f"outcome={outcome} note='{note}'\n"
+                f"origin={origin} outcome={outcome} note='{note}'\n"
             )
 
         try:

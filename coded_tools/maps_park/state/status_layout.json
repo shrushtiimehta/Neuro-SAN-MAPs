@@ -1,51 +1,8 @@
 {
-  "free_tiles": [
-    {
-      "x": 7,
-      "y": 8
-    },
-    {
-      "x": 7,
-      "y": 9
-    },
-    {
-      "x": 7,
-      "y": 10
-    },
-    {
-      "x": 7,
-      "y": 11
-    },
-    {
-      "x": 8,
-      "y": 12
-    },
-    {
-      "x": 9,
-      "y": 12
-    },
-    {
-      "x": 12,
-      "y": 8
-    },
-    {
-      "x": 12,
-      "y": 9
-    },
-    {
-      "x": 12,
-      "y": 10
-    },
-    {
-      "x": 12,
-      "y": 11
-    }
-  ],
+  "step": 59,
+  "park_rating": 30.59,
+  "free_tiles": [],
   "path_coords": [
-    {
-      "x": 8,
-      "y": 8
-    },
     {
       "x": 8,
       "y": 9
@@ -100,10 +57,6 @@
     },
     {
       "x": 10,
-      "y": 11
-    },
-    {
-      "x": 10,
       "y": 12
     },
     {
@@ -132,6 +85,10 @@
     },
     {
       "x": 11,
+      "y": 8
+    },
+    {
+      "x": 11,
       "y": 9
     },
     {
@@ -145,40 +102,70 @@
   ],
   "placed_rides": [
     {
+      "subtype": "ferris_wheel",
+      "subclass": "yellow",
+      "x": 7,
+      "y": 8
+    },
+    {
+      "subtype": "carousel",
+      "subclass": "yellow",
+      "x": 7,
+      "y": 9
+    },
+    {
+      "subtype": "roller_coaster",
+      "subclass": "yellow",
+      "x": 7,
+      "y": 10
+    },
+    {
+      "subtype": "ferris_wheel",
+      "subclass": "yellow",
+      "x": 7,
+      "y": 11
+    },
+    {
       "subtype": "carousel",
       "subclass": "yellow",
       "x": 9,
       "y": 9
     },
     {
-      "subtype": "carousel",
+      "subtype": "ferris_wheel",
       "subclass": "yellow",
       "x": 9,
-      "y": 10
+      "y": 12
     },
     {
       "subtype": "carousel",
       "subclass": "yellow",
       "x": 10,
-      "y": 7
-    },
-    {
-      "subtype": "carousel",
-      "subclass": "yellow",
-      "x": 10,
-      "y": 10
-    },
-    {
-      "subtype": "carousel",
-      "subclass": "yellow",
-      "x": 11,
-      "y": 7
+      "y": 9
     },
     {
       "subtype": "carousel",
       "subclass": "yellow",
       "x": 11,
       "y": 12
+    },
+    {
+      "subtype": "carousel",
+      "subclass": "yellow",
+      "x": 12,
+      "y": 8
+    },
+    {
+      "subtype": "roller_coaster",
+      "subclass": "yellow",
+      "x": 12,
+      "y": 9
+    },
+    {
+      "subtype": "carousel",
+      "subclass": "yellow",
+      "x": 12,
+      "y": 10
     }
   ],
   "placed_shops": [
@@ -189,17 +176,77 @@
       "y": 7
     },
     {
+      "subtype": "food",
+      "subclass": "yellow",
+      "x": 8,
+      "y": 12
+    },
+    {
+      "subtype": "drink",
+      "subclass": "yellow",
+      "x": 9,
+      "y": 10
+    },
+    {
+      "subtype": "specialty",
+      "subclass": "yellow",
+      "x": 10,
+      "y": 7
+    },
+    {
       "subtype": "drink",
       "subclass": "yellow",
       "x": 10,
-      "y": 9
+      "y": 10
+    },
+    {
+      "subtype": "drink",
+      "subclass": "yellow",
+      "x": 11,
+      "y": 7
+    },
+    {
+      "subtype": "food",
+      "subclass": "yellow",
+      "x": 12,
+      "y": 11
     }
   ],
   "placed_staff": [
     {
       "subtype": "janitor",
       "subclass": "yellow",
-      "x": 11,
+      "x": 10,
+      "y": 11
+    },
+    {
+      "subtype": "janitor",
+      "subclass": "yellow",
+      "x": 10,
+      "y": 11
+    },
+    {
+      "subtype": "mechanic",
+      "subclass": "yellow",
+      "x": 12,
+      "y": 9
+    },
+    {
+      "subtype": "specialist",
+      "subclass": "yellow",
+      "x": 7,
+      "y": 10
+    },
+    {
+      "subtype": "specialist",
+      "subclass": "yellow",
+      "x": 7,
+      "y": 11
+    },
+    {
+      "subtype": "specialist",
+      "subclass": "yellow",
+      "x": 8,
       "y": 8
     }
   ],

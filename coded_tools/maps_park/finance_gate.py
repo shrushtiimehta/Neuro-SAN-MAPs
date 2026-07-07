@@ -402,23 +402,14 @@ class FinanceGate(CodedTool):
         else:
             label = action or "unknown"
 
-        # Auto-set the `price` field so the LLM never looks it up:
-        #   ride/shop place|modify -> the env's per-subclass cap (max_ticket_price /
-        #                             max_item_price); we always charge the max allowed.
-        #   staff place            -> the staff member's salary from economics_staff.
-        # Falls back to the proposed price when no value is configured.
+        # `price` is intentionally NOT derived here. ProposeAction is the single
+        # source of truth for price: it deterministically forces the economics
+        # value (max_ticket_price / max_item_price / salary) at the env boundary,
+        # AFTER the LLM coordinator has picked an action — so a price set here
+        # could only be mangled on that hop anyway. FinanceGate's budget rules
+        # never read price (only building_cost / salary), so we pass the raw
+        # proposal value through untouched.
         price = self._int(proposal.get("price", 0))
-        if action in ("place", "modify") and entity_type in ("ride", "shop"):
-            cap_field = "max_ticket_price" if entity_type == "ride" else "max_item_price"
-            cap = (ride_econ if entity_type == "ride" else shop_econ).get(
-                (entity_type + "s", subtype, subclass), {}
-            ).get(cap_field)
-            if isinstance(cap, (int, float)):
-                price = self._int(cap)
-        elif action == "place" and entity_type == "staff":
-            salary = staff_econ.get(("staff", subtype, subclass), {}).get("salary")
-            if isinstance(salary, (int, float)):
-                price = self._int(salary)
 
         return {
             "label":               label,

@@ -53,9 +53,3 @@ Anthropologist may use more phases (10-15+) when context suggests it.
 - Always pass research_topics field for set_research even when speed=none
 - ActionDispatcher fires exactly once per turn -- including for 'wait'
 - All numeric values in ActionDispatcher args MUST be quoted strings
-
----
-
-## Learned rules
-This section is reserved for cross-cutting rules that don't fit cleanly
-under one heading. Empty on first run.

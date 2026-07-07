@@ -1,0 +1,1 @@
+{"proposed": {"park": 0, "action": "modify", "args": {"type": "shop", "subtype": "drink", "subclass": "yellow", "x": "9", "y": "10", "order_quantity": "1600", "price": 3}}, "validation": {"ok": true, "reasons": []}, "wall_time": 1783426843.704556}

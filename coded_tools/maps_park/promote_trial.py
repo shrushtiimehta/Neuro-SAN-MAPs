@@ -14,13 +14,22 @@
 #
 # END COPYRIGHT
 """
-PromoteTrial: apply ONE confirmed trial's edit to its playbook, tagging the
-new line '(learned ep<N>)'. The curator DECIDES which trials are confirmed
-(judgment); this tool performs the deterministic playbook edit.
+PromoteTrial: the deterministic playbook editor. The curator/analyst DECIDES
+what to change (judgment); this tool performs the file edit and mirrors it into
+the config seed so it survives fresh runs.
 
   - add_line: append the line at the end (section 'end'/'new'/empty), or
-    insert it immediately after the named section header line.
-  - replace_line: replace the unique occurrence of find_text with the new line.
+    insert it immediately after the named section header line; tags it
+    '(learned ep<N>)'.
+  - replace_line: replace the unique occurrence of find_text with the new line
+    (also tagged).
+  - remove_line: DEMOTION — remove a previously-learned line so the loop can
+    SELF-CORRECT a rule that was promoted on a lucky episode but correlates with
+    regressions. SAFETY: only lines tagged '(learned ep<N>)' are removable, so
+    the hand-authored baseline can never be deleted (worst case: a no-op
+    skipped_not_learned). The same line is removed from the seed mirror too.
+    Needs only find_text (a substring of the learned line); new_text/episode are
+    ignored.
 
 When a live-playbook edit succeeds, the learned line is ALSO mirrored into the
 read-only config seed (config_files/<domain>_strategy.md) under a dedicated
@@ -63,6 +72,9 @@ class PromoteTrial(CodedTool):
     }
     # Header under which mirrored learned rules accumulate in the seed file.
     LEARNED_SECTION: ClassVar[str] = "## Learned rules (promoted from prior runs)"
+    # Marker that tags a promoted line; remove_line only touches lines carrying
+    # it, protecting the hand-authored baseline from demotion.
+    LEARNED_MARKER: ClassVar[str] = "(learned ep"
     DOMAINS: ClassVar[frozenset[str]] = frozenset(SEED_FILES)
     END_SECTIONS: ClassVar[frozenset[str]] = frozenset({"", "end", "new"})
 
@@ -77,15 +89,18 @@ class PromoteTrial(CodedTool):
         if domain not in self.DOMAINS:
             return f"ERROR: domain must be one of {sorted(self.DOMAINS)}"
         edit_type = str(args.get("edit_type", "")).strip()
-        if edit_type not in ("add_line", "replace_line"):
-            return "ERROR: edit_type must be 'add_line' or 'replace_line'"
+        if edit_type not in ("add_line", "replace_line", "remove_line"):
+            return "ERROR: edit_type must be 'add_line', 'replace_line', or 'remove_line'"
+        # remove_line (demotion) needs only find_text; add/replace need new_text + episode.
         new_text = str(args.get("new_text", "")).strip()
-        if not new_text:
+        if edit_type != "remove_line" and not new_text:
             return "ERROR: new_text is required and must be non-empty"
-        try:
-            episode = int(args.get("episode"))
-        except (TypeError, ValueError):
-            return "ERROR: episode is required and must be an integer"
+        episode = None
+        if edit_type != "remove_line":
+            try:
+                episode = int(args.get("episode"))
+            except (TypeError, ValueError):
+                return "ERROR: episode is required and must be an integer"
 
         playbook = f"playbook_{domain}"
         path = os.path.join(self.STATE_DIR, f"{playbook}.md")
@@ -102,6 +117,12 @@ class PromoteTrial(CodedTool):
                 text = fh.read()
         except OSError as err:
             return f"ERROR: could not read {path}: {err}"
+
+        if edit_type == "remove_line":
+            find_text = str(args.get("find_text", "")).strip()
+            if not find_text:
+                return "ERROR: remove_line requires find_text"
+            return self._remove_line(domain, playbook, path, text, find_text)
 
         final_line = f"{new_text} (learned ep{episode})"
 
@@ -157,6 +178,67 @@ class PromoteTrial(CodedTool):
             "line": final_line,
             "seed_mirror": seed_mirror,
         }
+
+    def _remove_line(
+        self, domain: str, playbook: str, path: str, text: str, find_text: str
+    ) -> dict[str, Any] | str:
+        """Demotion: remove the unique learned line containing find_text from the
+        playbook and its seed mirror. Only '(learned ep<N>)'-tagged lines qualify,
+        so the hand-authored baseline is never removed.
+
+        :return: {action_taken, playbook, line, seed_mirror}; action_taken is
+            demoted / skipped_not_found / skipped_ambiguous / skipped_not_learned.
+        """
+        lines = text.splitlines()
+        matched = [ln for ln in lines if find_text in ln]
+        if not matched:
+            return {"action_taken": "skipped_not_found", "playbook": playbook,
+                    "line": "", "seed_mirror": "not_attempted"}
+        if len(matched) > 1:
+            return {"action_taken": "skipped_ambiguous", "playbook": playbook,
+                    "line": "", "seed_mirror": "not_attempted"}
+        target = matched[0]
+        if self.LEARNED_MARKER not in target:
+            # Baseline protection — never demote a hand-authored rule.
+            return {"action_taken": "skipped_not_learned", "playbook": playbook,
+                    "line": target, "seed_mirror": "not_attempted"}
+
+        new_body = "\n".join(ln for ln in lines if ln != target)
+        if new_body:
+            new_body += "\n"
+        try:
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(new_body)
+        except OSError as err:
+            return f"ERROR: could not write {path}: {err}"
+
+        return {"action_taken": "demoted", "playbook": playbook,
+                "line": target, "seed_mirror": self._remove_from_seed(domain, target)}
+
+    def _remove_from_seed(self, domain: str, target_line: str) -> str:
+        """Remove the same learned line from the config seed mirror. Best-effort.
+
+        :return: 'removed' | 'not_found' | 'seed_missing'.
+        """
+        seed_path = os.path.join(self.SEED_DIR, self.SEED_FILES[domain])
+        if not os.path.exists(seed_path):
+            return "seed_missing"
+        try:
+            with open(seed_path, encoding="utf-8") as fh:
+                lines = fh.read().splitlines()
+        except OSError:
+            return "seed_missing"
+        if target_line not in lines:
+            return "not_found"
+        new_body = "\n".join(ln for ln in lines if ln != target_line)
+        if new_body:
+            new_body += "\n"
+        try:
+            with open(seed_path, "w", encoding="utf-8") as fh:
+                fh.write(new_body)
+        except OSError:
+            return "seed_missing"
+        return "removed"
 
     def _mirror_to_seed(self, domain: str, final_line: str) -> str:
         """Append the learned line to the config seed under LEARNED_SECTION.

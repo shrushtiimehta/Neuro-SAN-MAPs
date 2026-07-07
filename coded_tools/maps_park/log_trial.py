@@ -26,9 +26,9 @@ fields; the deterministic id-minting and exact line formatting happen here.
 Files written (one appended line each):
   - trial_strategies.md           "- <trial_id>: <new_text>"
   - trial_strategies_criteria.md  "- <trial_id> ep=<E> step_start=<S>
-                                    domain=<D> section='<X>' edit=<...>
-                                    [find='<F>'] rationale='<R>'
-                                    success='<SC>' failure='<FC>'"
+                                    domain=<D> origin=<micro|macro>
+                                    section='<X>' edit=<...> [find='<F>']
+                                    rationale='<R>' success='<SC>' failure='<FC>'"
 """
 
 from __future__ import annotations
@@ -67,6 +67,13 @@ class LogTrial(CodedTool):
         if edit_type not in ("add_line", "replace_line"):
             return "ERROR: edit_type must be 'add_line' or 'replace_line'"
 
+        # origin distinguishes who logged the trial: 'macro' (episode-start, persists
+        # across episodes until resolved) or 'micro' (mid-episode, episode-scoped —
+        # ResolveTrials drops it at close-out). Each network caps its own origin at 3.
+        origin = str(args.get("origin", "")).strip().lower()
+        if origin not in ("micro", "macro"):
+            return "ERROR: origin must be 'micro' or 'macro'"
+
         new_text = str(args.get("new_text", "")).strip()
         domain = str(args.get("domain", "")).strip()
         section = str(args.get("section", "")).strip()
@@ -98,13 +105,13 @@ class LogTrial(CodedTool):
         if edit_type == "replace_line":
             criteria_line = (
                 f"- {trial_id} ep={episode} step_start={step_start} domain={domain} "
-                f"section='{section}' edit=replace_line find='{find_text}' "
+                f"origin={origin} section='{section}' edit=replace_line find='{find_text}' "
                 f"rationale='{rationale}' success='{success}' failure='{failure}'\n"
             )
         else:
             criteria_line = (
                 f"- {trial_id} ep={episode} step_start={step_start} domain={domain} "
-                f"section='{section}' edit=add_line "
+                f"origin={origin} section='{section}' edit=add_line "
                 f"rationale='{rationale}' success='{success}' failure='{failure}'\n"
             )
 

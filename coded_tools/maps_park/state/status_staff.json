@@ -1,20 +1,104 @@
 {
-  "step": 13,
-  "cash": 233,
+  "step": 59,
+  "cash": 3143,
+  "park_rating": 30.59,
   "placed_staff": [
     {
       "subtype": "janitor",
       "subclass": "yellow",
-      "x": 11,
-      "y": 8,
+      "x": 10,
+      "y": 11,
       "salary": 25,
-      "operating_cost": 14,
+      "operating_cost": 76,
       "success_metric": "amount_cleaned",
-      "success_metric_value": 0.39,
-      "tiles_traversed": 329
+      "success_metric_value": 2.13,
+      "tiles_traversed": 9308
+    },
+    {
+      "subtype": "janitor",
+      "subclass": "yellow",
+      "x": 10,
+      "y": 11,
+      "salary": 25,
+      "operating_cost": 86,
+      "success_metric": "amount_cleaned",
+      "success_metric_value": 2.41,
+      "tiles_traversed": 14770
+    },
+    {
+      "subtype": "mechanic",
+      "subclass": "yellow",
+      "x": 12,
+      "y": 9,
+      "salary": 15,
+      "operating_cost": 0,
+      "success_metric": "repair_steps_performed",
+      "success_metric_value": 0.0,
+      "tiles_traversed": 86
+    },
+    {
+      "subtype": "specialist",
+      "subclass": "yellow",
+      "x": 7,
+      "y": 10,
+      "salary": 60,
+      "operating_cost": 0,
+      "success_metric": "guests_entertained",
+      "success_metric_value": 76.0,
+      "tiles_traversed": 1460
+    },
+    {
+      "subtype": "specialist",
+      "subclass": "yellow",
+      "x": 7,
+      "y": 11,
+      "salary": 60,
+      "operating_cost": 0,
+      "success_metric": "guests_entertained",
+      "success_metric_value": 75.0,
+      "tiles_traversed": 7223
+    },
+    {
+      "subtype": "specialist",
+      "subclass": "yellow",
+      "x": 8,
+      "y": 8,
+      "salary": 60,
+      "operating_cost": 0,
+      "success_metric": "guests_entertained",
+      "success_metric_value": 72.0,
+      "tiles_traversed": 7801
     }
   ],
   "placed_rides": [
+    {
+      "subtype": "ferris_wheel",
+      "subclass": "yellow",
+      "x": 7,
+      "y": 8,
+      "out_of_service": false
+    },
+    {
+      "subtype": "carousel",
+      "subclass": "yellow",
+      "x": 7,
+      "y": 9,
+      "out_of_service": false
+    },
+    {
+      "subtype": "roller_coaster",
+      "subclass": "yellow",
+      "x": 7,
+      "y": 10,
+      "out_of_service": false
+    },
+    {
+      "subtype": "ferris_wheel",
+      "subclass": "yellow",
+      "x": 7,
+      "y": 11,
+      "out_of_service": false
+    },
     {
       "subtype": "carousel",
       "subclass": "yellow",
@@ -23,31 +107,17 @@
       "out_of_service": false
     },
     {
-      "subtype": "carousel",
+      "subtype": "ferris_wheel",
       "subclass": "yellow",
       "x": 9,
-      "y": 10,
+      "y": 12,
       "out_of_service": false
     },
     {
       "subtype": "carousel",
       "subclass": "yellow",
       "x": 10,
-      "y": 7,
-      "out_of_service": false
-    },
-    {
-      "subtype": "carousel",
-      "subclass": "yellow",
-      "x": 10,
-      "y": 10,
-      "out_of_service": false
-    },
-    {
-      "subtype": "carousel",
-      "subclass": "yellow",
-      "x": 11,
-      "y": 7,
+      "y": 9,
       "out_of_service": false
     },
     {
@@ -55,6 +125,27 @@
       "subclass": "yellow",
       "x": 11,
       "y": 12,
+      "out_of_service": false
+    },
+    {
+      "subtype": "carousel",
+      "subclass": "yellow",
+      "x": 12,
+      "y": 8,
+      "out_of_service": false
+    },
+    {
+      "subtype": "roller_coaster",
+      "subclass": "yellow",
+      "x": 12,
+      "y": 9,
+      "out_of_service": false
+    },
+    {
+      "subtype": "carousel",
+      "subclass": "yellow",
+      "x": 12,
+      "y": 10,
       "out_of_service": false
     }
   ],

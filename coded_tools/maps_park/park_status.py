@@ -40,6 +40,7 @@ needs via state_read(name='status_<domain>').
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -48,16 +49,22 @@ from neuro_san.interfaces.coded_tool import CodedTool
 from coded_tools.maps_park.latest_observation import LatestObservation
 
 _STATE_DIR = Path("coded_tools/maps_park/state")
+# The macro writes the full turn-phased plan here at episode start; ParkStatus
+# surfaces ONLY the line whose turn-range covers the current step (current_phase)
+# so the game-runner never carries the whole checklist per turn.
+_EPISODE_CHECKLIST = _STATE_DIR / "episode_checklist.md"
+# Matches a checklist line "turns A-B: <goal>" (or "turns A: <goal>").
+_PHASE_RE = re.compile(r"turns?\s+(\d+)\s*(?:[-–]\s*(\d+))?\s*:\s*(.+)", re.IGNORECASE)
 
 # Top-level keys written into each specialist's status file.
 _SPECIALIST_FIELDS: dict[str, list[str]] = {
-    "rides":       ["step", "cash", "placed_rides", "available_entities", "broken_rides"],
-    "shops":       ["step", "cash", "placed_shops", "available_entities"],
-    "research":    ["step", "cash", "research_speed", "available_entities"],
-    "staff":       ["step", "cash", "placed_staff", "placed_rides", "broken_rides"],
-    "layout":      ["free_tiles", "path_coords", "placed_rides", "placed_shops",
+    "rides":       ["step", "cash", "park_rating", "placed_rides", "available_entities", "broken_rides"],
+    "shops":       ["step", "cash", "park_rating", "placed_shops", "available_entities"],
+    "research":    ["step", "cash", "park_rating", "research_speed", "available_entities"],
+    "staff":       ["step", "cash", "park_rating", "placed_staff", "placed_rides", "broken_rides"],
+    "layout":      ["step", "park_rating", "free_tiles", "path_coords", "placed_rides", "placed_shops",
                     "placed_staff", "entrance", "exit"],
-    "coordinator": ["step", "cash", "research_speed",
+    "coordinator": ["step", "cash", "park_rating", "research_speed", "current_phase",
                     "placed_staff", "placed_shops", "placed_rides"],
 }
 
@@ -118,10 +125,45 @@ class ParkStatus(CodedTool):
             "placed_staff":       self._section_list(obs, "staff", "staff_list"),
             "available_entities": obs.get("available_entities") or {},
             "research_speed":     obs.get("research_speed"),
+            "current_phase":      self._current_phase(obs.get("step") or envelope.get("step")),
         }
 
         self._write_specialist_snapshots(snapshot)
         return snapshot
+
+    def _current_phase(self, step: Any) -> str | None:
+        """The single checklist line whose 'turns A-B' range covers `step`.
+
+        The macro owns the full plan (episode_checklist.md); we surface only the
+        relevant line so park_director forwards one phase per turn instead of the
+        whole checklist. Step below the first range -> first line; above the last
+        -> last line. Returns None if there is no (parseable) checklist.
+        """
+        try:
+            s = int(step)
+        except (TypeError, ValueError):
+            return None
+        if not _EPISODE_CHECKLIST.exists():
+            return None
+        try:
+            lines = _EPISODE_CHECKLIST.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return None
+        phases: list[tuple[int, int, str]] = []
+        for ln in lines:
+            m = _PHASE_RE.search(ln)
+            if not m:
+                continue
+            lo = int(m.group(1))
+            hi = int(m.group(2)) if m.group(2) else lo
+            phases.append((lo, hi, ln.strip()))
+        if not phases:
+            return None
+        for lo, hi, full in phases:
+            if lo <= s <= hi:
+                return full
+        phases.sort(key=lambda p: p[0])
+        return phases[0][2] if s < phases[0][0] else phases[-1][2]
 
     def _write_specialist_snapshots(self, snapshot: dict[str, Any]) -> None:
         _STATE_DIR.mkdir(parents=True, exist_ok=True)

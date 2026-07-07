@@ -32,7 +32,10 @@ if [[ $RESUMING -eq 0 ]]; then
     # new run begins clean and never appends into a previous run's episode
     # file. strategy/playbook state is untouched (lessons survive).
     shopt -s nullglob
-    PRIOR_EPISODE_LOGS=("$LOG_DIR"/run.ep*.jsonl "$LOG_DIR"/run.jsonl)
+    # TSVs are bucketed per-run alongside the transcripts. park_ids.jsonl is the
+    # ONE exception: it is the permanent cumulative ledger (UUID-keyed) and must
+    # keep growing across runs including fresh starts, so it is never moved.
+    PRIOR_EPISODE_LOGS=("$LOG_DIR"/run.ep*.jsonl "$LOG_DIR"/run.jsonl "$LOG_DIR"/*.tsv)
     archived=0
     if (( ${#PRIOR_EPISODE_LOGS[@]} )) || [[ -s "$LOG_DIR/turns.jsonl" ]]; then
         ARCHIVE_DIR="$LOG_DIR/prior-runs/$RUN_TS"
@@ -101,16 +104,18 @@ for arg in "$@"; do
         MAPS_RESUME_FLAG="--resume"
     fi
 done
-start "maps_mcp"    "$OPEN_GRIDWORLD"  "python maps_mcp_server.py --layout the_islands --difficulty medium --mcp_port 8765 --num_parks 1 --maps_repo_dir '$MAPS_REPO' --state_file '$MAPS_STATE_FILE' --snapshot_dir '$MAPS_SNAPSHOT_DIR' $MAPS_RESUME_FLAG"
+start "maps_mcp"    "$OPEN_GRIDWORLD"  "python maps_mcp_server.py --layout the_islands --difficulty medium --mcp_port 8765 --num_parks 1 --maps_repo_dir '$MAPS_REPO' --state_file '$MAPS_STATE_FILE' --snapshot_dir '$MAPS_SNAPSHOT_DIR' --trajectory_dir '$LOG_DIR' $MAPS_RESUME_FLAG"
 sleep 3
 start "studio"      "$STUDIO_DIR"      "python -m neuro_san_studio run"
-# Wait until studio HTTP endpoint is accepting connections AND both agent
-# networks (game-runner + consultant) appear in the registry list.
+# Wait until studio HTTP endpoint is accepting connections AND all three agent
+# networks the runner uses (game-runner + micro + macro analyzers) appear in
+# the registry list.
 for i in $(seq 1 60); do
     list_json="$(curl -m 1 -s http://localhost:8090/api/v1/list 2>/dev/null || true)"
-    if echo "$list_json" | grep -q '"industry/maps_park"' \
-       && echo "$list_json" | grep -q '"industry/maps_park_consultant"'; then
-        echo "studio ready after ${i}s (both networks registered)"
+    if echo "$list_json" | grep -q '"maps_park"' \
+       && echo "$list_json" | grep -q '"maps_park_micro"' \
+       && echo "$list_json" | grep -q '"maps_park_macro"'; then
+        echo "studio ready after ${i}s (runner + micro + macro networks registered)"
         break
     fi
     sleep 1

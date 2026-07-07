@@ -43,14 +43,25 @@ class ActiveTrials(CodedTool):
     def invoke(self, args: dict[str, Any], sly_data: dict[str, Any]) -> dict[str, Any]:
         """
         :param args: optional 'domain' (rides/shops/staff/research/layout/
-            coordinator) to filter to; omit for all active trials.
-        :return: {domain, count, trials:[{trial_id, rule, domain, section,
-            edit_type, find_text, step_start, ep, success_criterion,
-            failure_criterion, rationale}]}.
+            coordinator) and/or 'trial_origin' ('micro'|'macro') to filter to;
+            omit for all active trials. (The filter is 'trial_origin', not
+            'origin' — 'origin' is a reserved framework-injected key.)
+        :return: {domain, origin, count, trials:[{trial_id, rule, domain,
+            origin, section, edit_type, find_text, step_start, ep,
+            success_criterion, failure_criterion, rationale}]}.
         """
         del sly_data
         domain = args.get("domain")
         domain = str(domain).strip().lower() if domain else None
+        # NOT 'origin': the AAOSA framework injects a reserved 'origin' key (the
+        # agent call-chain) into every tool call, which clobbered this filter and
+        # silently dropped every trial (count=0 forever, killing the learning
+        # loop). Take the filter from 'trial_origin', and ignore anything that
+        # isn't a real origin so a stray value can never nuke the result again.
+        origin = args.get("trial_origin")
+        origin = str(origin).strip().lower() if origin else None
+        if origin not in ("micro", "macro"):
+            origin = None
 
         strategies = parse_strategies(read_text(STRATEGIES_PATH))
         criteria = parse_criteria(read_text(CRITERIA_PATH))
@@ -61,10 +72,13 @@ class ActiveTrials(CodedTool):
             trial_domain = crit.get("domain")
             if domain is not None and trial_domain != domain:
                 continue
+            if origin is not None and crit.get("origin") != origin:
+                continue
             trials.append({
                 "trial_id": trial_id,
                 "rule": rule,
                 "domain": trial_domain,
+                "origin": crit.get("origin"),
                 "section": crit.get("section"),
                 "edit_type": crit.get("edit"),
                 "find_text": crit.get("find"),
@@ -75,7 +89,7 @@ class ActiveTrials(CodedTool):
                 "rationale": crit.get("rationale"),
             })
 
-        return {"domain": domain, "count": len(trials), "trials": trials}
+        return {"domain": domain, "origin": origin, "count": len(trials), "trials": trials}
 
     async def async_invoke(self, args: dict[str, Any], sly_data: dict[str, Any]) -> dict[str, Any]:
         return self.invoke(args, sly_data)

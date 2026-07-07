@@ -24,15 +24,17 @@ spreads the dispatched action's args (subtype, subclass, price, x, y)
 into each row alongside the post-step metrics — so this tool can surface
 both WHAT was done and its measured effect, without parsing free-text.
 
-The trial_analyst uses `steps` as the factual record; the
-playbook_curator uses `applied` for applied-detection (which trials
-actually fired) and the per-step reward/value deltas for success/failure
-evaluation. Neither needs turn_notes anymore.
+The trial_analyst/curator judge trials by reading `steps` — the faithful
+per-step run (full action args incl. x/y, plus metrics) — and `rejections`
+to decide whether a trial's intended move actually fired, plus the per-step
+reward/value deltas for success/failure. `applied` is a lossy convenience
+digest (non-wait actions only, no coords/metrics); do not judge from it.
 
 Returns:
   {
     "episode":  <int>,
-    "steps":    [ {step, action, subtype, subclass, price, reward,
+    "steps":    [ {step, action, type, subtype, subclass, price,
+                   order_quantity, x, y, reward,
                    cumulative_reward, cash, park_value, park_rating,
                    research_speed, num_rides, num_shops, num_staff,
                    min_cleanliness, min_uptime, shop_revenue,
@@ -40,10 +42,12 @@ Returns:
     "applied":  [ {step, action, subtype, subclass}, ... ],  # non-wait actions
     "rejections": [ {step, rejected_action, subtype, subclass, price,
                      error}, ... ],  # actions the sim refused (logged as wait)
-    "rollup":   { step_count, first_step, last_step, reward_total,
-                  cum_start, cum_end, value_start, value_end, cash_end,
-                  rating_end, actions_by_type, subtypes_placed,
-                  research_speeds_used, rejection_count, rejections_by_action },
+    "rollup":   { step_count, first_step, last_step, reached_step_100,
+                  reward_total, cum_start, cum_end, value_start, value_end,
+                  cash_end, rating_end, actions_by_type, subtypes_placed,
+                  research_speeds_used, research_on_step, peak_rides,
+                  peak_shops, peak_staff, reward_bands, rejection_count,
+                  rejections_by_action },
     "exists":   <bool>,
   }
 
@@ -87,7 +91,11 @@ class EpisodeTelemetry(CodedTool):
         "min_cleanliness", "min_uptime", "shop_revenue", "ride_op_cost",
     )
     # Action fields the runner spreads into the row from the dispatched args.
-    ACTION_FIELDS: ClassVar[tuple[str, ...]] = ("subtype", "subclass", "price")
+    # Carry the FULL applied-action shape (coords, quantity, type included) so
+    # `steps` is the faithful run the close-out judge reads to decide whether a
+    # trial's intended move actually fired — not the lossy `applied` digest.
+    ACTION_FIELDS: ClassVar[tuple[str, ...]] = (
+        "type", "subtype", "subclass", "price", "order_quantity", "x", "y")
 
     def invoke(self, args: dict[str, Any], sly_data: dict[str, Any]) -> dict[str, Any]:
         """
@@ -218,6 +226,8 @@ class EpisodeTelemetry(CodedTool):
         research_speeds: list[Any] = []
         reward_total = 0.0
         rejection_count = 0
+        peak_rides = peak_shops = peak_staff = 0
+        research_on_step: int | None = None
         for s in steps:
             if s.get("action"):
                 actions_by_type[s["action"]] += 1
@@ -230,14 +240,24 @@ class EpisodeTelemetry(CodedTool):
                 rejection_count += 1
                 rejections_by_action[s["rejected_action"]] += 1
             rspeed = s.get("research_speed")
-            if rspeed and rspeed != "none" and rspeed not in research_speeds:
-                research_speeds.append(rspeed)
+            if rspeed and rspeed != "none":
+                if rspeed not in research_speeds:
+                    research_speeds.append(rspeed)
+                if research_on_step is None and s.get("step") is not None:
+                    research_on_step = s.get("step")
             reward_total += FileIO.to_float(s.get("reward"))
+            peak_rides = max(peak_rides, FileIO.to_int(s.get("num_rides")) or 0)
+            peak_shops = max(peak_shops, FileIO.to_int(s.get("num_shops")) or 0)
+            peak_staff = max(peak_staff, FileIO.to_int(s.get("num_staff")) or 0)
         first, last = steps[0], steps[-1]
+        last_step = last.get("step")
         return {
             "step_count": len(steps),
             "first_step": first.get("step"),
-            "last_step": last.get("step"),
+            "last_step": last_step,
+            # An episode is the full 100-day horizon; anything short ended early
+            # (cash crash / cut off) and never reaches the back-half harvest.
+            "reached_step_100": bool(last_step is not None and last_step >= 100),
             "reward_total": round(reward_total, 2),
             "cum_start": first.get("cumulative_reward"),
             "cum_end": last.get("cumulative_reward"),
@@ -248,9 +268,43 @@ class EpisodeTelemetry(CodedTool):
             "actions_by_type": dict(actions_by_type),
             "subtypes_placed": dict(subtypes_placed),
             "research_speeds_used": research_speeds,
+            # First step research left 'none'. Late/never => under-investment.
+            "research_on_step": research_on_step,
+            # Capacity ceiling: only rides drive guest throughput, so the peak
+            # ride count is the dominant cap on the back-half revenue engine.
+            "peak_rides": peak_rides,
+            "peak_shops": peak_shops,
+            "peak_staff": peak_staff,
+            # Avg reward/step in fixed 25-step bands: the compounding curve.
+            # A healthy episode ramps hard in the 76-100 band (the harvest).
+            "reward_bands": self._reward_bands(steps),
             "rejection_count": rejection_count,
             "rejections_by_action": dict(rejections_by_action),
         }
+
+    @staticmethod
+    def _reward_bands(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Average reward/step in four fixed step bands (1-25, 26-50, 51-75,
+        76-100), each with the band's end park_value / park_rating. Surfaces
+        the compounding curve so the analyst can see whether (and when) an
+        episode took off, without re-reading every per-step row."""
+        bounds = [(1, 25), (26, 50), (51, 75), (76, 100)]
+        bands: list[dict[str, Any]] = []
+        for lo, hi in bounds:
+            in_band = [s for s in steps
+                       if s.get("step") is not None and lo <= s["step"] <= hi]
+            if not in_band:
+                continue
+            total = sum(FileIO.to_float(s.get("reward")) for s in in_band)
+            last = in_band[-1]
+            bands.append({
+                "band": f"{lo}-{hi}",
+                "steps": len(in_band),
+                "avg_reward_per_step": round(total / len(in_band), 1),
+                "end_value": last.get("park_value"),
+                "end_rating": last.get("park_rating"),
+            })
+        return bands
 
     async def async_invoke(self, args: dict[str, Any], sly_data: dict[str, Any]) -> dict[str, Any]:
         return self.invoke(args, sly_data)

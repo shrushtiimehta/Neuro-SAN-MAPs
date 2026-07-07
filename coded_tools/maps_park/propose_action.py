@@ -42,6 +42,7 @@ from neuro_san.interfaces.coded_tool import CodedTool
 from coded_tools.maps_park.action_dispatcher import ActionDispatcher
 from coded_tools.maps_park.finance_gate import _RIDES_ECONOMICS_PATH
 from coded_tools.maps_park.finance_gate import _SHOPS_ECONOMICS_PATH
+from coded_tools.maps_park.finance_gate import _STAFF_ECONOMICS_PATH
 from coded_tools.maps_park.finance_gate import _read_lookup_lines
 from coded_tools.maps_park.latest_observation import LatestObservation
 
@@ -77,6 +78,7 @@ _VALID_TYPES = {"ride", "shop", "staff"}
 # cached at module level so the small tables are read once per process.
 _RIDE_ECON_CACHE: dict | None = None
 _SHOP_ECON_CACHE: dict | None = None
+_STAFF_ECON_CACHE: dict | None = None
 
 
 def _ride_economics() -> dict:
@@ -91,6 +93,13 @@ def _shop_economics() -> dict:
     if _SHOP_ECON_CACHE is None:
         _SHOP_ECON_CACHE = _read_lookup_lines(_SHOPS_ECONOMICS_PATH, "shops")
     return _SHOP_ECON_CACHE
+
+
+def _staff_economics() -> dict:
+    global _STAFF_ECON_CACHE
+    if _STAFF_ECON_CACHE is None:
+        _STAFF_ECON_CACHE = _read_lookup_lines(_STAFF_ECONOMICS_PATH, "staff")
+    return _STAFF_ECON_CACHE
 
 
 class ProposeAction(CodedTool):
@@ -142,6 +151,13 @@ class ProposeAction(CodedTool):
                     )
                 else:
                     self._carry_forward_modify(action_args, latest)
+
+            # Price is NEVER taken from the agent: overwrite it deterministically
+            # from the economics files (max cap for ride/shop, salary for staff).
+            # This is the authoritative chokepoint — the runner steps the env from
+            # the proposal this tool persists — so a wrong agent price (e.g. the
+            # food cap 5 leaking onto a drink shop capped at 3) can't reach the env.
+            self._force_econ_price(action_args)
 
             price_ok, price_reason = self._check_price_cap(action_args, latest)
             if not price_ok:
@@ -285,6 +301,43 @@ class ProposeAction(CodedTool):
             oq = asset.get("order_quantity")
             if isinstance(oq, int) and not isinstance(oq, bool):
                 action_args["order_quantity"] = oq
+
+    # Where each entity type's authoritative price lives in the economics
+    # tables. Rides/shops are capped (we always charge the cap); staff "price"
+    # is the fixed salary.
+    _ECON_PRICE_FIELD: ClassVar[dict[str, tuple[str, str]]] = {
+        # type -> (economics domain, field name)
+        "ride":  ("rides", "max_ticket_price"),
+        "shop":  ("shops", "max_item_price"),
+        "staff": ("staff", "salary"),
+    }
+
+    def _force_econ_price(self, action_args: dict) -> None:
+        """Authoritatively set ``price`` from the economics files; the agent's
+        value is always discarded.
+
+        Rides/shops use the per-subclass max cap (max_ticket_price /
+        max_item_price) — the network design always charges the max and the env
+        rejects anything above it. Staff use their fixed salary. Mutates
+        ``action_args`` in place so the persisted proposal (which the runner
+        steps the env from) carries the correct price.
+
+        Leaves ``price`` untouched only when the type/subtype/subclass can't be
+        resolved to an economics row (e.g. a modify whose asset wasn't found, or
+        a typo'd subtype) — those cases are rejected by the other checks.
+        """
+        atype = (action_args.get("type") or "").lower()
+        subtype = (action_args.get("subtype") or "").lower()
+        subclass = (action_args.get("subclass") or "").lower()
+        mapping = self._ECON_PRICE_FIELD.get(atype)
+        if not mapping or not subtype or not subclass:
+            return
+        domain, field = mapping
+        econ = {"rides": _ride_economics, "shops": _shop_economics, "staff": _staff_economics}[domain]()
+        entry = econ.get((domain, subtype, subclass))
+        value = entry.get(field) if entry else None
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            action_args["price"] = int(value)
 
     def _check_price_cap(self, action_args: dict, obs: dict) -> tuple[bool, str]:
         """Validate that price, when present, is an integer. Presence itself is

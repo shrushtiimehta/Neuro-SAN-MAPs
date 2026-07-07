@@ -59,6 +59,19 @@ class SeedPlaybooks(CodedTool):
         "playbook_layout":      "layout_strategy.md",
     }
 
+    # Trial-ledger files the consultant networks read via state_read every
+    # episode. Unlike the playbooks these are NOT seeded from config — they
+    # accumulate trial state across runs — but state_read errors on a missing
+    # file, so a brand-new run/state dir leaves the analyzers reading a file
+    # that does not exist yet (the macro close-out then errors with
+    # "trial_strategies_outcome.md missing"). Ensure each one EXISTS (empty),
+    # creating it only when absent so accumulated content is never clobbered.
+    TRIAL_LEDGERS: ClassVar[tuple[str, ...]] = (
+        "trial_strategies.md",
+        "trial_strategies_criteria.md",
+        "trial_strategies_outcome.md",
+    )
+
     def __init__(self) -> None:
         self.logger = logging.getLogger(__name__)
 
@@ -93,7 +106,23 @@ class SeedPlaybooks(CodedTool):
                 continue
             seeded.append(name)
 
-        return {"status": "ok", "seeded": seeded, "skipped": skipped, "errors": errors}
+        # Ensure the trial-ledger files exist so the consultant networks'
+        # state_read never errors on a missing file. Create-if-absent only:
+        # an existing ledger (with accumulated cross-run content) is left as-is
+        # regardless of ``overwrite`` — those lessons must survive a fresh run.
+        ledgers_created: list[str] = []
+        for fname in self.TRIAL_LEDGERS:
+            target = os.path.join(self.STATE_DIR, fname)
+            if os.path.exists(target):
+                continue
+            write_err = FileIO.write_guarded(target, "", self.logger)
+            if write_err is not None:
+                errors.append(f"{fname}: {write_err}")
+                continue
+            ledgers_created.append(fname)
+
+        return {"status": "ok", "seeded": seeded, "skipped": skipped,
+                "errors": errors, "trial_ledgers_created": ledgers_created}
 
     async def async_invoke(self, args: dict[str, Any], sly_data: dict[str, Any]) -> dict[str, Any]:
         """Delegate to the synchronous invoke."""

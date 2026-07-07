@@ -19,7 +19,7 @@ maps_park loop runner — two-network design with pre-validate + rollback.
 Architecture (vs. the legacy single-session runner):
 
   ─ game-runner session ───────────────────────────────────────────────
-    Network: industry/maps_park
+    Network: maps_park
     Per turn the game-runner agent picks ONE action and calls
     ProposeAction (a coded_tool that validates + persists the proposal
     to coded_tools/maps_park/state/proposed_action.json). The runner
@@ -27,11 +27,32 @@ Architecture (vs. the legacy single-session runner):
     the ActionDispatcher coded tool. If pre-validate fails, the runner
     re-prompts the same session with corrective context (env untouched).
 
-  ─ consultant session ────────────────────────────────────────────────
-    Network: industry/maps_park_consultant
-    Invoked AFTER each step when env_step % CONSULTANT_EVERY == 0
-    (default 10) or when verified.done is True. The advisory is captured
-    and prepended to the next game-runner prompt.
+  ─ consultant sessions (two networks) ────────────────────────────────
+    The old single consultant network was split in two:
+      • micro  (maps_park_micro)  — mid-episode analysis.
+        Invoked AFTER each step when env_step % MICRO_EVERY == 0
+        (default 10), i.e. at steps 10,20,...,90 of the 100-step episode.
+        Logs trials for the current episode, and emits a health VERDICT
+        (on_track|underperforming|doomed) judged against the best-ever
+        episode. A 'doomed' verdict at/after step 50 makes the runner ABORT
+        the episode at once; before step 50 it grants one more checkpoint
+        (~MICRO_EVERY steps) to recover, aborting on two consecutive 'doomed'
+        verdicts. Aborting stops soliciting the game-runner and fast-forwards
+        to done with wait()s (the MAPs env has no early-reset tool), booking
+        the loss. The next episode's
+        macro start then regenerates the strategy from the best episode
+        (rollback) and the aborted trials are falsified at close-out.
+      • macro  (maps_park_macro)  — start- AND end-of-episode work.
+        At episode START (fired before turn 1 of each new episode) it
+        compares the best-ever episode against the last one, writes the
+        episode checklist + coordinator strategy summary, demotes stale
+        learned rules, and logs fresh trials. At episode END (verified.done
+        is True — step 100 or an earlier terminated episode) it runs the
+        thin close-out (promote/resolve this episode's trials,
+        advance_episode).
+    The micro advisory is captured and prepended to the next game-runner
+    prompt. Step 100 is done=True, so the macro end fires there, not the
+    micro — the two cadences never collide.
 
   ─ Per-step lifecycle ────────────────────────────────────────────────
     1. Run the game-runner; read its ProposeAction proposal file.
@@ -57,6 +78,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import time
 from typing import Any
 
@@ -75,13 +97,39 @@ from coded_tools.maps_park.seed_playbooks import SeedPlaybooks
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
-DEFAULT_RUNNER_AGENT = "industry/maps_park"
-DEFAULT_CONSULTANT_AGENT = "industry/maps_park_consultant"
+DEFAULT_RUNNER_AGENT = "maps_park"
+# The consultant was split into two networks: a mid-episode micro analyzer and
+# an end-of-episode macro analyzer (close-out + whole-run synthesis).
+DEFAULT_MICRO_AGENT = "maps_park_micro"
+DEFAULT_MACRO_AGENT = "maps_park_macro"
 DEFAULT_HOST = "localhost"
 DEFAULT_PORT = 8090
 DEFAULT_TICK_SECONDS = 5
 DEFAULT_MAX_RETRIES = 25
-DEFAULT_CONSULTANT_EVERY = 20
+# Micro analyzer cadence: every 10 successful steps -> steps 10,20,...,90.
+DEFAULT_MICRO_EVERY = 10
+
+# Early-abort guardrail. At each micro checkpoint the analyzer judges the run
+# against the BEST-ever episode's leading indicators and emits a
+# "VERDICT: on_track|underperforming|doomed" line the runner parses. How a
+# 'doomed' verdict is acted on depends on how far the 100-step episode has run:
+#   • at/after ABORT_HALFWAY_STEP -> abort immediately (a single strike). Half
+#     the episode is already gone; there is no runway left to recover.
+#   • before ABORT_HALFWAY_STEP   -> grant ~micro_every more steps (one extra
+#     checkpoint) to recover; abort only on ABORT_MIN_STRIKES consecutive strikes.
+#   • before ABORT_EARLIEST_STEP  -> ignored (reward is always low this early, so
+#     a doom call here is noise).
+# Aborting fast-forwards the rest of the episode with wait()s — booking the loss
+# cheaply instead of burning LLM calls on a run that cannot clear the floor.
+# Rollback is emergent: the next episode's macro start regenerates the strategy
+# summary from the BEST episode, and the aborted trials are falsified at close-out.
+DEFAULT_REWARD_FLOOR = 300000   # cum_reward a run must plausibly clear by step 100
+DEFAULT_REWARD_GOAL = 1000000   # the north-star target the whole run chases
+# ponytail: need enough signal before trusting a doom call; value compounds in
+# the back half so early steps are always low. Bump if runs get killed too soon.
+ABORT_EARLIEST_STEP = 30
+ABORT_HALFWAY_STEP = 50         # at/after this step a single 'doomed' aborts at once
+ABORT_MIN_STRIKES = 2           # consecutive 'doomed' verdicts to abort BEFORE halfway
 
 PROPOSAL_PATH = os.path.join(
     os.path.dirname(__file__), "..", "..",
@@ -125,17 +173,38 @@ LAST_REWARD_PATH = os.path.normpath(os.path.join(
     os.path.dirname(__file__), "..", "..",
     "coded_tools", "maps_park", "state", "last_reward.md",
 ))
-# Standing user strategy directive (set via --user-strategy). The runner is the
-# SOLE writer; agents read it via state_read(name='user_directives') and honor it
-# with top precedence — it is never falsified or edited by the consultant.
-USER_DIRECTIVES_PATH = os.path.normpath(os.path.join(
-    os.path.dirname(__file__), "..", "..",
-    "coded_tools", "maps_park", "state", "user_directives.md",
+
+# Playbook state dir + snapshot archive. Playbooks evolve each episode
+# (start-of-episode plan + close-out promotions), so we snapshot them into
+# state/playbook_history/<ts>_<tag>/ at both the start (ep<NNN>_pre) and end
+# (ep<NNN>_post) of every episode — plus once before a fresh run reseeds them
+# (prerun). Snapshots are append-only; nothing is ever deleted.
+PLAYBOOK_STATE_DIR = os.path.normpath(os.path.join(
+    os.path.dirname(__file__), "..", "..", "coded_tools", "maps_park", "state",
 ))
-USER_DIRECTIVES_NONE = "(none set)"
+PLAYBOOK_HISTORY_DIR = os.path.join(PLAYBOOK_STATE_DIR, "playbook_history")
 
 
 # ── Bootstrap ────────────────────────────────────────────────────────────────
+
+
+def snapshot_playbooks(tag: str) -> str | None:
+    """Copy state/playbook_*.md into state/playbook_history/<ts>_<tag>/.
+
+    Called at each episode boundary (tag ep<NNN>_pre / ep<NNN>_post) and once
+    before a fresh run reseeds (tag 'prerun'). Append-only — never deletes. The
+    timestamp prefix keeps every snapshot distinct. Returns the snapshot dir,
+    or None if there were no non-empty playbooks to save.
+    """
+    sources = [p for p in sorted(glob.glob(os.path.join(PLAYBOOK_STATE_DIR, "playbook_*.md")))
+               if os.path.getsize(p) > 0]
+    if not sources:
+        return None
+    dest = os.path.join(PLAYBOOK_HISTORY_DIR, f"{time.strftime('%Y%m%d-%H%M%S')}_{tag}")
+    os.makedirs(dest, exist_ok=True)
+    for src in sources:
+        shutil.copy2(src, os.path.join(dest, os.path.basename(src)))
+    return dest
 
 def _bootstrap_env_and_plugins() -> None:
     try:
@@ -258,10 +327,12 @@ def dispatch_action(proposed: dict) -> dict[str, Any]:
     """Call ActionDispatcher directly from the runner.
 
     Returns the raw post-step observation envelope (or {"error": ...}).
-    It does NOT log anything: the caller decides whether the step is accepted
-    (then writes the run-log row) or rejected (rolls the env back, writes
-    nothing). Logging here would record rolled-back attempts as if they
-    happened, corrupting the authoritative run log.
+    It does NOT log anything. MAPs always advances the day and simply drops an
+    action it rejects (the day runs as a wait), so there is nothing to roll
+    back — the caller inspects the envelope and writes the one authoritative
+    run-log row itself (env-rejected action -> logged as a wait; transport
+    failure -> skipped). Keeping I/O out of here means the log is written
+    exactly once, from the single place that knows the real outcome.
     """
     dispatcher = ActionDispatcher()
     args = {
@@ -329,45 +400,55 @@ def build_run_row(args: dict, envelope: dict) -> dict:
 
 # ── Consultant invocation ──────────────────────────────────────────────────
 
-def resolve_user_strategy(raw: str | None) -> str:
-    """Resolve the --user-strategy value: literal text, or @path to read a file."""
-    if not raw:
-        return ""
-    if raw.startswith("@"):
-        path = os.path.expanduser(raw[1:])
-        try:
-            with open(path, encoding="utf-8") as fh:
-                return fh.read().strip()
-        except OSError as exc:  # noqa: BLE001
-            print(f"[runner] WARN could not read --user-strategy file {path}: {exc}")
-            return ""
-    return raw.strip()
+# The micro analyzer's mid-episode reply begins with this line; the runner
+# parses it to drive the early-abort guardrail.
+_VERDICT_RE = re.compile(r"VERDICT:\s*(on[_ ]?track|underperforming|doomed)", re.I)
 
 
-def write_user_directives(body: str) -> None:
-    """Persist the standing user directive so agents can state_read it each turn."""
-    header = "# User strategy directives (standing; honored with top precedence)\n\n"
-    with open(USER_DIRECTIVES_PATH, "w", encoding="utf-8") as fh:
-        fh.write(header + (body + "\n" if body else USER_DIRECTIVES_NONE + "\n"))
+def _parse_verdict(advisory: str | None) -> str | None:
+    """Pull the micro's health verdict from its advisory, or None if absent.
 
-
-def read_user_directives() -> str:
-    """Read the current directive body (sans the header/comment lines).
-
-    Re-read every turn so live edits to the file mid-run take effect on the next
-    turn. Returns "" when no directive is set ('(none set)', empty, or missing).
+    A missing/unparseable verdict returns None, which the abort state machine
+    treats as a no-op — the runner NEVER aborts a run on a parse miss.
     """
-    try:
-        with open(USER_DIRECTIVES_PATH, encoding="utf-8") as fh:
-            lines = fh.read().splitlines()
-    except OSError:
-        return ""
-    body = "\n".join(ln for ln in lines if not ln.startswith("#")).strip()
-    return "" if body == USER_DIRECTIVES_NONE else body
+    if not advisory:
+        return None
+    match = _VERDICT_RE.search(advisory)
+    if not match:
+        return None
+    verdict = match.group(1).lower().replace(" ", "_")
+    return "on_track" if verdict == "ontrack" else verdict
 
 
-def consult(session, thread, kind: str, verified: dict | None) -> str | None:
-    """Invoke the consultant agent; return its advisory string (or None)."""
+def _doom_decision(strikes: int, verdict: str | None, step: int) -> tuple[int, bool]:
+    """Fold one micro verdict into the abort state machine.
+
+    Returns (new_strike_count, should_abort). A 'doomed' verdict at/after
+    ABORT_EARLIEST_STEP adds a strike; whether it aborts depends on the step:
+    at/after ABORT_HALFWAY_STEP a single strike aborts immediately (no runway
+    left to recover), while before halfway it takes ABORT_MIN_STRIKES consecutive
+    strikes (one extra ~micro_every-step checkpoint of grace). Any non-doomed
+    verdict resets the count; an unknown/None verdict (or a doom call before
+    ABORT_EARLIEST_STEP) is a no-op.
+    """
+    if step >= ABORT_EARLIEST_STEP and verdict == "doomed":
+        strikes += 1
+        required = 1 if step >= ABORT_HALFWAY_STEP else ABORT_MIN_STRIKES
+        return strikes, strikes >= required
+    if verdict in ("on_track", "underperforming"):
+        return 0, False
+    return strikes, False
+
+
+def consult(session, thread, kind: str, verified: dict | None,
+            label: str = "consultant", extra: str = "") -> str | None:
+    """Invoke a consultant network (micro or macro); return its advisory (or None).
+
+    `label` is purely cosmetic (which network is being called) for the logs;
+    the agent routes on `kind` (periodic -> micro; episode_start / episode_end
+    -> macro). `extra` is appended verbatim to the message (e.g. the reward
+    floor/goal on periodic, or the aborted flag on episode_end).
+    """
     ep = verified.get("episode") if verified else None
     step = verified.get("step") if verified else None
     cum = verified.get("cumulative_reward") if verified else None
@@ -376,12 +457,63 @@ def consult(session, thread, kind: str, verified: dict | None) -> str | None:
         f"kind={kind} episode={ep} step={step} cumulative_reward={cum} "
         f"final_reward={final}"
     )
-    print(f"[consultant] invoking ({kind}) at step={step}")
+    if extra:
+        msg += " " + extra
+    print(f"[{label}] invoking ({kind}) at episode={ep} step={step}")
     response, _thread, tokens = chat(session, thread, msg)
     if tokens:
-        print(f"[consultant tokens] total={tokens.get('total_tokens')} "
+        print(f"[{label} tokens] total={tokens.get('total_tokens')} "
               f"cost={tokens.get('total_cost')}")
     return (response or "").strip() or None
+
+
+# ── One-shot consult mode ────────────────────────────────────────────────────
+
+def run_consult_only(args) -> None:
+    """Invoke a single analyzer network once against the latest episode log.
+
+    Runs NO game loop and performs none of the runner's fresh-start resets, so
+    playbooks/state are left exactly as the cancelled run left them. Assumes the
+    studio server + MAPs env are already up (e.g. booted by run_macro.sh).
+
+    For 'macro' the message uses kind=episode_end, which drives the network's
+    full close-out (cross-run analysis + promote/resolve trials + advance_episode)
+    — the same side effects a normal episode end has. The latest run.ep*.jsonl is
+    read as context even when its last row has done=false (a cancelled episode).
+    """
+    kind = "episode_end" if args.consult_only == "macro" else "periodic"
+    agent_name = args.macro_agent if args.consult_only == "macro" else args.micro_agent
+
+    # This path skips the normal startup seed, so ensure the trial-ledger files
+    # exist before the analyzer reads them — otherwise the macro errors on a
+    # missing trial_strategies_outcome.md. overwrite=False never clobbers the
+    # cancelled run's learned playbooks (they exist and are skipped); in practice
+    # this just create-if-absents the ledgers.
+    seed = SeedPlaybooks().invoke({"overwrite": False}, {})
+    if seed.get("trial_ledgers_created"):
+        print(f"[runner] Initialized missing trial ledgers: {seed['trial_ledgers_created']}")
+    if seed.get("errors"):
+        print(f"[runner] WARN seed errors: {seed['errors']}")
+
+    try:
+        session, thread = open_session(agent_name, args.host, args.port)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[runner] Could not connect to '{agent_name}' at "
+              f"{args.host}:{args.port}: {exc}")
+        print("[runner] Is the studio server up? Boot the backend with "
+              "apps/maps_park/run_macro.sh.")
+        return
+    verified = read_last_verified()
+    if verified is None:
+        print("[runner] WARN: no run.ep*.jsonl found; invoking with empty context.")
+    else:
+        print(f"[runner] consult-only ({args.consult_only}) against "
+              f"episode={verified.get('episode')} step={verified.get('step')} "
+              f"done={verified.get('done')}")
+    advisory = consult(session, thread, kind, verified, label=args.consult_only)
+    print("\n" + "=" * 70)
+    print(f"[{args.consult_only}] advisory:\n")
+    print(advisory or "(no advisory returned)")
 
 
 # ── Main loop ──────────────────────────────────────────────────────────────
@@ -391,7 +523,11 @@ def main():
 
     parser = argparse.ArgumentParser(description="maps_park loop runner")
     parser.add_argument("--runner-agent", default=DEFAULT_RUNNER_AGENT)
-    parser.add_argument("--consultant-agent", default=DEFAULT_CONSULTANT_AGENT)
+    parser.add_argument("--micro-agent", default=DEFAULT_MICRO_AGENT,
+                        help="Mid-episode (kind=periodic) analyzer network.")
+    parser.add_argument("--macro-agent", default=DEFAULT_MACRO_AGENT,
+                        help="End-of-episode (kind=episode_end) close-out + "
+                             "whole-run analyzer network.")
     parser.add_argument("--host", default=DEFAULT_HOST)
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--tick", type=float, default=DEFAULT_TICK_SECONDS,
@@ -399,20 +535,37 @@ def main():
     parser.add_argument("--max-retries", type=int, default=DEFAULT_MAX_RETRIES,
                         help="Max pre/post validation retries before restoring "
                              "the env and re-trying the same step on the next tick.")
-    parser.add_argument("--consultant-every", type=int, default=DEFAULT_CONSULTANT_EVERY,
-                        help="Invoke the consultant after every N successful steps.")
-    parser.add_argument("--no-consultant", action="store_true",
-                        help="Skip the consultant entirely (one-network mode for debugging).")
+    parser.add_argument("--micro-every", type=int, default=DEFAULT_MICRO_EVERY,
+                        help="Invoke the micro analyzer after every N successful "
+                             "steps (default 10 -> steps 10,20,...,90).")
+    parser.add_argument("--reward-floor", type=int, default=DEFAULT_REWARD_FLOOR,
+                        help="cum_reward a run must plausibly clear by step 100. "
+                             "Passed to the micro, which judges 'doomed' against "
+                             "this and the best episode's trajectory.")
+    parser.add_argument("--reward-goal", type=int, default=DEFAULT_REWARD_GOAL,
+                        help="North-star cum_reward target for the run; passed to "
+                             "the micro for context.")
+    parser.add_argument("--consult-only", choices=("macro", "micro"),
+                        nargs="?", const="macro", default=None,
+                        help="Run NO game loop: invoke one analyzer network a single "
+                             "time against the latest episode log, print its advisory, "
+                             "and exit. Bare --consult-only defaults to 'macro', which "
+                             "fires the full episode-end close-out (cross-run analysis + "
+                             "promote/resolve trials + advance_episode) — same side "
+                             "effects as a normal episode end. Pass 'micro' for the "
+                             "mid-episode analyzer instead. Use apps/maps_park/run_macro.sh "
+                             "to boot the backend (in --resume mode) and run this in one step.")
     parser.add_argument("--resume", action="store_true",
                         help="Continuing a prior run: keep existing state/playbook_*.md "
                              "(learned edits survive). Default (fresh start) resets every "
                              "playbook to its config_files seed.")
-    parser.add_argument("--user-strategy", default=None,
-                        help="Standing user strategy directive. Injected at the top of "
-                             "every turn's prompt and honored by the specialists with top "
-                             "precedence (above playbooks and active trials); never "
-                             "falsified. Pass literal text, or @path to read it from a file.")
     args = parser.parse_args()
+
+    # One-shot analyzer mode: invoke a single network and exit, running none of
+    # the game loop or fresh-start resets below (playbooks/state untouched).
+    if args.consult_only:
+        run_consult_only(args)
+        return
 
     if not args.resume:
         # Clear stale observation cache so each fresh run starts clean.
@@ -426,33 +579,34 @@ def main():
 
 
     runner_session, runner_thread = open_session(args.runner_agent, args.host, args.port)
-    consultant_session, consultant_thread = (None, None)
-    if not args.no_consultant:
-        try:
-            consultant_session, consultant_thread = open_session(
-                args.consultant_agent, args.host, args.port)
-        except Exception as exc:  # noqa: BLE001
-            print(f"[runner] consultant session failed ({exc}); running without it.")
-            consultant_session = None
-
-    # Standing user strategy directive. The runner is the sole writer; agents
-    # read it each turn via state_read(name='user_directives') and honor it with
-    # top precedence. On a fresh start (or when --user-strategy is given) we
-    # (re)write the file so a stale directive from a prior run never leaks in; on
-    # --resume with no flag we keep whatever is already there. We also ensure the
-    # file always exists so state_read never hits file_not_found.
-    user_strategy = resolve_user_strategy(args.user_strategy)
-    if args.user_strategy is not None or not args.resume \
-            or not os.path.exists(USER_DIRECTIVES_PATH):
-        write_user_directives(user_strategy)
-        if user_strategy:
-            print(f"[runner] User strategy directive set ({len(user_strategy)} chars).")
-        else:
-            print("[runner] No user strategy directive (file cleared).")
+    # Two analyzer sessions: micro (mid-episode) and macro (episode-end). Each
+    # gets its own session/thread so their conversation histories never mix.
+    micro_session, micro_thread = (None, None)
+    macro_session, macro_thread = (None, None)
+    try:
+        micro_session, micro_thread = open_session(
+            args.micro_agent, args.host, args.port)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[runner] micro analyzer session failed ({exc}); running without it.")
+        micro_session = None
+    try:
+        macro_session, macro_thread = open_session(
+            args.macro_agent, args.host, args.port)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[runner] macro analyzer session failed ({exc}); running without it.")
+        macro_session = None
 
     advisory_for_next_turn: str | None = None
     user_input = "Start the run. Take one action on park 0."
     turn = 0
+
+    # Fresh start reseeds the playbooks from config below (overwrite=True),
+    # discarding the finished run's learned edits — so snapshot them first as
+    # 'prerun'. --resume keeps the working copies, so there is nothing to save.
+    if not args.resume:
+        snap = snapshot_playbooks("prerun")
+        if snap:
+            print(f"[runner] Snapshotted prior-run playbooks to {snap}")
 
     # Startup seed: lay down the six playbooks before the first turn via the
     # SeedPlaybooks coded tool (deterministic file copy, no LLM). A fresh start
@@ -472,6 +626,14 @@ def main():
             print(f"[runner] Fresh start: cleared {os.path.basename(LAST_REWARD_PATH)}")
 
     prev_episode_done = False
+    # Episode number for the upcoming episode's start-of-episode macro pass.
+    # turn 1 is episode 0; bumped to ended_episode+1 when an episode finishes.
+    next_episode_num = 0
+
+    # Early-abort state (per episode; reset on every fresh episode below).
+    aborting = False
+    abort_reason = ""
+    doom_strikes = 0
 
     try:
         while True:
@@ -484,6 +646,13 @@ def main():
             # re-inferring "fresh" from step==1.
             preflight_mode = "fresh_episode" if (turn == 1 or prev_episode_done) else "continue"
 
+            # A fresh episode clears any abort/doom state carried from the prior
+            # one (the loss is already booked; this episode starts clean).
+            if preflight_mode == "fresh_episode":
+                aborting = False
+                abort_reason = ""
+                doom_strikes = 0
+
             # If the previous turn ended an episode, ensure the new episode's
             # playbooks exist before the game-runner acts. overwrite=False:
             # learned edits promoted at the prior episode's close survive.
@@ -492,6 +661,27 @@ def main():
                 if roll["seeded"]:
                     print(f"[runner] New-episode playbooks created: {roll['seeded']}")
                 prev_episode_done = False
+
+            # Start-of-episode MACRO pass: compare the best-ever episode against
+            # the last one, WriteEpisodePlan the checklist + coordinator strategy
+            # summary, demote regression-linked learned rules, and log fresh
+            # trials — all BEFORE park_director acts on turn 1. Skipped when
+            # resuming an in-flight episode (turn 1 + --resume is a continuation,
+            # not a genuine new episode).
+            if (preflight_mode == "fresh_episode" and macro_session is not None
+                    and not (turn == 1 and args.resume)):
+                start_ctx = {"episode": next_episode_num, "step": 0,
+                             "cumulative_reward": 0, "done": False}
+                consult(macro_session, macro_thread, "episode_start",
+                        start_ctx, label="macro-start")
+
+            # BEFORE the episode starts: snapshot the playbooks the game-runner
+            # will act on (the start-of-episode plan just written, plus the prior
+            # episode's close-out promotions) as ep<NNN>_pre.
+            if preflight_mode == "fresh_episode":
+                snap = snapshot_playbooks(f"ep{next_episode_num:03d}_pre")
+                if snap:
+                    print(f"[runner] Snapshotted ep{next_episode_num} pre-episode playbooks to {snap}")
 
             verified_before = read_last_verified()
 
@@ -502,26 +692,30 @@ def main():
                     + prompt
                 )
                 advisory_for_next_turn = None
-            # Standing user directive sits ABOVE the consultant advisory every turn.
-            # Re-read the file each turn so live edits mid-run take effect next turn.
-            current_directive = read_user_directives()
-            if current_directive:
-                prompt = (
-                    "[USER DIRECTIVE — standing, top priority; overrides playbooks "
-                    "and trials]\n" + current_directive + "\n[/USER DIRECTIVE]\n\n"
-                    + prompt
-                )
-
             turn_done = False
             last_proposed: dict = {}
             verified_after: dict | None = verified_before
             tokens: dict = {}
             proposal_ok = False
 
+            # Doomed run (micro verdict): skip all LLM solicitation and fast-
+            # forward this episode with wait() until the env reports done. The
+            # MAPs env has no early-reset MCP tool (only snapshot/restore), so
+            # reaching step 100 via waits is the only way to end the episode and
+            # begin a fresh one. The loss is booked; the next episode's macro
+            # start regenerates the strategy from the BEST episode (rollback) and
+            # the aborted trials are falsified at close-out.
+            if aborting:
+                print(f"[runner] ABORTING (doomed): {abort_reason} — advancing with wait().")
+                last_proposed = {"park": 0, "action": "wait", "args": {}}
+                proposal_ok = True
+
             # Ask the agent for a VALID proposal. Pre-validation does not touch
             # the env, so re-prompting on rejection is cheap and safe — there is
             # no snapshot and no rollback anywhere in this loop.
             for attempt in range(1, args.max_retries + 1):
+                if aborting:
+                    break
                 # Clear the proposal file so we know the agent wrote a fresh one.
                 if os.path.exists(PROPOSAL_PATH):
                     os.remove(PROPOSAL_PATH)
@@ -608,17 +802,51 @@ def main():
                 fh.write(json.dumps(turn_record, default=str) + "\n")
                 fh.flush()
 
-            # Consultant cadence: every N successful steps, plus on episode end.
-            if turn_done and consultant_session is not None and verified_after:
+            # Analyzer cadence. On the done=true row -> macro network (episode
+            # close-out + whole-run analysis). Otherwise, every N successful
+            # steps (10,20,...,90) -> micro network (mid-episode analysis).
+            # Step 100 is done=true, so macro wins there and the two never
+            # collide. Each fires only if its session opened.
+            if turn_done and verified_after:
                 step_n = verified_after.get("step") or 0
                 episode_done = bool(verified_after.get("done"))
                 if episode_done:
-                    advisory_for_next_turn = consult(
-                        consultant_session, consultant_thread, "episode_end", verified_after)
+                    if macro_session is not None:
+                        # Tell the close-out whether the episode was aborted so it
+                        # falsifies the doomed run's active trials (rather than
+                        # leaving them inconclusive, which would carry them over).
+                        extra = (f"aborted=true reason={abort_reason}" if aborting
+                                 else "aborted=false")
+                        advisory_for_next_turn = consult(
+                            macro_session, macro_thread, "episode_end",
+                            verified_after, label="macro", extra=extra)
+                    # AFTER the episode ends: snapshot the playbooks the close-out
+                    # just promoted into (its confirmed-trial learned rules) as
+                    # ep<NNN>_post — the episode's final learned state.
+                    ended_ep = verified_after.get("episode") or 0
+                    snap = snapshot_playbooks(f"ep{ended_ep:03d}_post")
+                    if snap:
+                        print(f"[runner] Snapshotted ep{ended_ep} post-episode playbooks to {snap}")
                     prev_episode_done = True
-                elif args.consultant_every > 0 and step_n > 0 and step_n % args.consultant_every == 0:
+                    # Next loop iteration is a fresh episode; its start pass
+                    # plans episode (ended_episode + 1).
+                    next_episode_num = (verified_after.get("episode") or 0) + 1
+                elif (not aborting and micro_session is not None and args.micro_every > 0
+                        and step_n > 0 and step_n % args.micro_every == 0):
                     advisory_for_next_turn = consult(
-                        consultant_session, consultant_thread, "periodic", verified_after)
+                        micro_session, micro_thread, "periodic",
+                        verified_after, label="micro",
+                        extra=f"floor={args.reward_floor} goal={args.reward_goal}")
+                    # Fold the micro's health verdict into the abort guardrail.
+                    verdict = _parse_verdict(advisory_for_next_turn)
+                    doom_strikes, do_abort = _doom_decision(doom_strikes, verdict, step_n)
+                    if do_abort:
+                        aborting = True
+                        abort_reason = f"micro verdict 'doomed' x{doom_strikes} by step {step_n}"
+                        print(f"[runner] ABORT TRIGGERED: {abort_reason}")
+                    elif verdict == "doomed":
+                        print(f"[runner] doom strike {doom_strikes}/{ABORT_MIN_STRIKES} "
+                              f"at step {step_n} (~{args.micro_every}-step grace to recover)")
 
             user_input = "Take one action on park 0."
             if args.tick > 0:

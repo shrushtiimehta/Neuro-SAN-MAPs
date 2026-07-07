@@ -1,0 +1,352 @@
+{
+    include "registries/aaosa_basic.hocon"
+
+    metadata = {
+        description = "AI consultant for maps_park. Owns mid-episode strategic analysis and end-of-episode trial promotion + playbook curation. The runner invokes this network every N successful steps (kind=periodic) and on done=true (kind=episode_end). Sub-agents (trial_analyst, episode_closer, playbook_curator) were lifted out of industry/maps_park so the game-runner network owns only the action engine.",
+        tags = ["maps", "industry", "consultant", "advisor"],
+        sample_queries = [
+            "kind=periodic episode=1 step=20 cumulative_reward=1500 final_reward=null",
+            "kind=episode_end episode=1 step=100 cumulative_reward=69238 final_reward=69238"
+        ]
+    },
+
+    include "config/llm_config.hocon",
+
+    llm_config = ${llm_config},
+
+    # Anthropic prompt caching (system prompt + tool defs); 1h TTL.
+    prompt_caching_middleware = {"class": "langchain_anthropic.middleware.AnthropicPromptCachingMiddleware", "args": {"ttl": "1h"}},
+
+    max_steps = 4000,
+    max_execution_seconds = 1200,
+
+    instructions_prefix = """
+This is the maps_park AI consultant network.
+You analyze the game-runner's state and update strategy artifacts so the runner network's specialists can act on confirmed rules.
+- Target: the runner should reach at least $1,000,000 in cumulative reward by step 100. Evaluate strategy and promote rules against that goal.
+- Do NOT hallucinate or use external knowledge. Cite step numbers / metric deltas from the episode telemetry (EpisodeTelemetry,
+sourced from the deterministic run.jsonl) for every claim.
+- All writes go through the provided tools. last_reward is owned by the advance_episode tool.
+""",
+
+    # Single TrimHistoryMiddleware instance reused by every analyst agent's
+    # middleware list.
+    trim_history_middleware = {"class": "middleware.trim_history_middleware.TrimHistoryMiddleware", "args": {}},
+
+    tools = [
+        {
+            name = "consultant_director",
+            max_message_history = 2,
+            function = {
+                description = "External orchestrator. Routes by `kind`: periodic -> trial_analyst(mid_episode) + log suggestions; episode_end -> episode_closer chain."
+            },
+            instructions = ${instructions_prefix} """
+You receive ONE message of the form: "kind=<K> episode=<E> step=<S> cumulative_reward=<C> final_reward=<F or null>"
+K is one of: periodic, episode_end.
+
+=== kind=periodic ===
+Called every 10 successful steps. Produce mid-episode trial suggestions based on cumulative telemetry (steps 1 to current) and
+write them to trial_strategies + trial_strategies_criteria.
+  1. Call trial_analyst(kind='mid_episode', reason='periodic ep=<E> step=<S>'). It analyzes runs/logs any new trials via LogTrial,
+    returning {status:'ok'|'skipped', logged:[<trial_ids>]}.
+  2. Return summary paragraph naming the logged trial_ids (if any) and their success criteria to inject into the next prompt.
+
+=== kind=episode_end ===
+Called on the done=true row. Runs the full close-out chain previously owned by episode_closer + playbook_curator(promote_trials).
+
+  1. Gather:
+       - prior_reward: state_read(name='last_reward') -> 'cumulative_reward: <N>' (for episode 0 treat prior_reward as 0).
+       - final_reward ($C) and episode ($E) from your input message.
+  2. Call episode_closer(status_cumulative_reward=<C>, prior_reward=<from step 1>, episode=<E from your input message>).
+     It does the full close at the end of the episode (analyzing and logging). The per-step factual record comes from
+     EpisodeTelemetry (run.jsonl), which is episode-scoped and append-only, so there is nothing to clear.
+  3. Return up to 3 bullets summarizing the episode (promoted / falsified rules, what to try next episode), one line each.
+
+For any kind, if a tool errors, mention it briefly and continue with whatever data you have. Do not throw.
+""",
+            middleware = [ ${prompt_caching_middleware} ],
+            tools = ["trial_analyst", "episode_closer", "state_read"]
+        },
+
+        {
+            name = "trial_analyst",
+            max_message_history = 2,
+            function = ${aaosa_call} {
+                description = "Analyst. Reads the playbooks, the per-episode telemetry (EpisodeTelemetry), the active trials (ActiveTrials), and the trial_strategies_outcome ledger, then logs one or more new trials itself via LogTrial. Returns {status, logged:[trial_ids]}. Called by consultant_director on periodic and by episode_closer at episode end."
+            },
+            instructions = ${instructions_prefix} """
+You analyze telemetry and log actionable trials via LogTrial. You never write playbooks directly.
+
+Inputs: kind ('mid_episode' or 'episode_end'), reason (mid_episode only), optional focus_domains.
+
+Procedure:
+1. Read: EpisodeTelemetry() (no from_step — always read all steps 1 to current) for the factual record + episode number;
+   ActiveTrials(); state_read('trial_strategies_outcome'); state_read each relevant playbook.
+
+2. Cap gate — check ActiveTrials() count BEFORE logging anything:
+   - Normal cap: if count >= 3, come up with new trials and keep the best 3 out of the new and old ones.
+     Urgent mode: log at most 1 more trial if neeeded targeting the domain most responsible for the stagnation.
+   - If a domain already has an active trial, do NOT log another for that domain.
+   - If fewer than 15 steps remain, log nothing.
+
+3. Non-triviality gate — each candidate must clear ALL of these:
+   - It changes agent BEHAVIOUR in a way the current playbook does not already cover.
+   - It is falsifiable: there is a concrete observable metric + direction + window you can cite.
+   - It has not been tried and falsified already (check trial_strategies_outcome).
+   - It is a broad strategic principle — NOT a minor threshold tweak or rewording of an existing rule.
+   Reject any candidate that fails even one gate. If nothing passes, return {status:'skipped', logged:[]}.
+
+4. Write the trial rule (new_text for LogTrial) as a GENERAL imperative:
+   - One clear sentence: what action to take and under what general condition.
+   - No specific observed values from this run (no step counts, cash amounts, or episode-specific observations).
+   - No examples. State the principle directly.
+
+5. Log at most 1 trial per call. Call LogTrial. Return {status:'ok', logged:[trial_ids]}.
+
+If any tool errors, halt and return the error verbatim.
+""",
+            middleware = [
+                ${trim_history_middleware},
+                ${prompt_caching_middleware}
+            ],
+            tools = ["state_read", "EpisodeTelemetry", "ActiveTrials", "LogTrial"]
+        },
+
+        {
+            name = "episode_closer",
+            max_message_history = 2,
+            function = ${aaosa_call} {
+                description = "End-of-episode orchestrator. Called by consultant_director on kind=episode_end. Asks playbook_curator to evaluate + promote trials, calls ResolveTrials to remove confirmed/falsified, asks trial_analyst to log new trials, then calls advance_episode which deterministically cleans up all trial files and persists last_reward."
+            },
+            instructions = ${instructions_prefix} """
+You run the end-of-episode flow. consultant_director hands you status_cumulative_reward (this episode's final cum_reward),
+prior_reward, and episode (the simulator's episode number). You orchestrate the close-out; the curator and trial_analyst
+read the telemetry and trial files via their own tools. You do NOT touch playbook_* and you do NOT synthesize lessons yourself.
+
+=== Single mode (call signature: status_cumulative_reward, prior_reward, episode) ===
+
+Order is deliberate: resolve THIS episode's trials before logging new ones.
+
+  0. current_episode is the `episode` input arg; final_reward is status_cumulative_reward.
+
+  1. playbook_curator(mode='promote_trials', episode=<current_episode>, final_reward=<status_cumulative_reward>, prior_reward=<from input>).
+  Evaluates each trial, promotes confirmed ones, returns per_trial report [{trial_id, domain, outcome, action_taken, note}].
+
+  2. ResolveTrials(episode=<current_episode>, report=<curator's per_trial list>) — removes confirmed/falsified from trial files,
+  keeps not_applied/inconclusive, and appends OUTCOME lines to trial_strategies_outcome.
+  Whatever remains in trial_strategies after this step carries forward into the next episode as-is.
+
+  3. trial_analyst(kind='episode_end') — logs fresh trials for the next episode via LogTrial.
+  Running AFTER step 2 keeps new trials out of this episode's evaluation.
+
+  4. Craft an outcome_summary (3-8 bullet points) covering:
+    - CONFIRMED this episode: rule + domain (don't re-propose)
+    - FALSIFIED this episode: what was disproved + why (don't re-propose)
+    - INCONCLUSIVE: what was not testable and should not be re-proposed unchanged
+    - Key patterns to avoid next episode
+  Then call advance_episode(final_reward=<status_cumulative_reward>, episode=<current_episode>, outcome_summary=<text>).
+  Returns {status, last_reward_written, observation_cache_cleared, outcome_updated}.
+
+  5. Return {status:'episode_ended', logged:<from step 3>, promoted/falsified/inconclusive:<from step 1>, final_reward:<value>}.
+
+If any tool errors, halt and return the error verbatim.
+""",
+            middleware = [
+                ${trim_history_middleware},
+                ${prompt_caching_middleware}
+            ],
+            tools = ["trial_analyst", "playbook_curator", "advance_episode", "ResolveTrials"]
+        },
+
+        {
+            name = "playbook_curator",
+            max_message_history = 2,
+            function = ${aaosa_call} {
+                description = "Sole writer of the six playbook_* files (mode='promote_trials'): evaluates this episode's trials and edits playbooks for confirmed ones. Every episode is an exam episode and promotion runs on every episode."
+            },
+            instructions = ${instructions_prefix} """
+You are the sole writer of playbook_coordinator/rides/shops/staff/research/layout.
+
+=== mode='promote_trials' ===
+Args: episode, final_reward, prior_reward.
+
+1. Call ActiveTrials() and EpisodeTelemetry(). Use telemetry.applied for applied-detection (exact match on action/subtype);
+   fall back to metric trajectory for threshold-only trials. No matching applied entry in window → not_applied.
+
+2. For each trial evaluate against telemetry.steps in its window:
+   - success met, failure not tripped → confirmed
+   - failure tripped → falsified
+   - neither → inconclusive
+
+3. For each confirmed trial: always use add_line — append to the 'Learned rules' section only. Never replace or remove existing lines.
+   Write new_text as a GENERAL imperative: one clear sentence, no episode numbers, step counts, or observed values.
+   Call PromoteTrial(domain, edit_type='add_line', new_text, episode, section='Learned rules (promoted from prior runs)').
+
+4. Return {status:'completed', episode, reward_delta, per_trial:[{trial_id, domain, outcome, action_taken, note}],
+   promoted:[...], falsified:[...], inconclusive:[...], not_applied:[...]}.
+
+If any tool errors, halt and return the error verbatim.
+""",
+            middleware = [
+                ${trim_history_middleware},
+                ${prompt_caching_middleware}
+            ],
+            tools = ["EpisodeTelemetry", "ActiveTrials", "PromoteTrial", "state_read"]
+        },
+
+        {
+            name = "advance_episode",
+            class = "coded_tools.maps_park.advance_episode.AdvanceEpisode",
+            function = {
+                description = "End-of-episode bookkeeping: persists reward, clears the observation cache, inserts LLM outcome_summary under '## Episode Summaries' in the outcome ledger, and trims old raw OUTCOME lines. Trial strategies/criteria cleanup happens at episode START via SeedPlaybooks (runner). Returns {status, last_reward_written, observation_cache_cleared, outcome_updated}.",
+                parameters = {
+                    type = "object",
+                    properties = {
+                        final_reward = {
+                            type = "float",
+                            description = "This episode's cumulative_reward; written to last_reward.md."
+                        },
+                        episode = {
+                            type = "int",
+                            description = "Current episode number; used to age out stale trials and tag the summary."
+                        },
+                        outcome_summary = {
+                            type = "string",
+                            description = "LLM-crafted concise summary of this episode's trial outcomes: what was confirmed (rule + domain), what was falsified (rule + why), what was inconclusive and why. Inserted under '## Episode Summaries' in trial_strategies_outcome.md so future trial_analyst calls know what NOT to re-propose."
+                        }
+                    },
+                    required = ["final_reward", "episode"]
+                }
+            }
+        },
+
+        {
+            name = "EpisodeTelemetry",
+            class = "coded_tools.maps_park.episode_telemetry.EpisodeTelemetry",
+            function = {
+                description = "Structured per-step factual record for ONE episode, read from the deterministic run.jsonl the runner writes (replaces the old LLM-authored turn_notes journal). Returns {episode, steps:[{step, action, subtype, subclass, price, rejected_action, error, reward, cumulative_reward, cash, park_value, park_rating, research_speed, num_rides, num_shops, num_staff, min_cleanliness, min_uptime, shop_revenue, ride_op_cost}], applied:[{step, action, subtype, subclass}], rejections:[{step, rejected_action, subtype, subclass, price, error}], rollup:{step_count, reward_total, cum_start, cum_end, value_start, value_end, cash_end, rating_end, actions_by_type, subtypes_placed, research_speeds_used, rejection_count, rejections_by_action}, exists}. Use `applied` for applied-detection (which trial actions actually fired, with subtype/subclass) and the per-step reward/value/rating deltas in `steps` for success/failure evaluation. `rejections` lists every action the sim REFUSED (committed as a wait with the original rejected_action + error message) — a repeated rejected_action with the same error is the agent using the wrong action and is a prime trial target.",
+                parameters = {
+                    type = "object",
+                    properties = {
+                        episode   = { type = "int", description = "Episode number to read. Omit to use the latest episode present in the log." }
+                        from_step = { type = "int", description = "Only return steps >= this (mid-episode tail). Omit for the full episode." }
+                    }
+                }
+            }
+        },
+
+        {
+            name = "LogTrial",
+            class = "coded_tools.maps_park.log_trial.LogTrial",
+            function = {
+                description = "Mint a collision-free trial_id and append the matching pair of lines to trial_strategies (the one-line rule) and trial_strategies_criteria (the metadata + success/failure criteria). Use this for EVERY new trial; never count ids or hand-format the criteria line yourself. Returns {trial_id} (or 'ERROR: ...').",
+                parameters = {
+                    type = "object",
+                    properties = {
+                        episode           = { type = "int", description = "Current episode number." }
+                        step_start        = { type = "string",  description = "Step at which the trial activates (as a string), or the literal 'end_of_episode'." }
+                        domain            = { type = "string",  description = "One of: rides, shops, staff, research, layout, coordinator." }
+                        section           = { type = "string",  description = "Target playbook section header (or 'new')." }
+                        edit_type         = { type = "string",  description = "'add_line' or 'replace_line'." }
+                        new_text          = { type = "string",  description = "The one-line rule to add/replace (no rationale or metrics embedded)." }
+                        find_text         = { type = "string",  description = "replace_line only: the exact existing playbook line to replace." }
+                        rationale         = { type = "string",  description = "One sentence citing step(s) / metric delta." }
+                        success_criterion = { type = "string",  description = "Observable metric + direction + evaluation window (turns; fits in the fixed 100-step episode)." }
+                        failure_criterion = { type = "string",  description = "Observable metric that would falsify the trial." }
+                    }
+                    required = ["episode", "step_start", "domain", "section", "edit_type", "new_text", "rationale", "success_criterion", "failure_criterion"]
+                }
+            }
+        },
+
+        {
+            name = "ActiveTrials",
+            class = "coded_tools.maps_park.active_trials.ActiveTrials",
+            function = {
+                description = "Return the active trials joined across trial_strategies (rule body) and trial_strategies_criteria (metadata), optionally filtered to one domain. Returns {domain, count, trials:[{trial_id, rule, domain, section, edit_type, find_text, step_start, ep, success_criterion, failure_criterion, rationale}]}.",
+                parameters = {
+                    type = "object",
+                    properties = {
+                        domain = { type = "string", description = "Filter to one domain. Omit for all active trials." }
+                    }
+                }
+            }
+        },
+
+        {
+            name = "ResolveTrials",
+            class = "coded_tools.maps_park.resolve_trials.ResolveTrials",
+            function = {
+                description = "Apply the curator's per-trial report at episode end: remove confirmed/falsified trials from trial_strategies + trial_strategies_criteria, keep not_applied/inconclusive (and any unreported active trial, as inconclusive note='no_report'), and append an OUTCOME line for every active trial to trial_strategies_outcome. Returns {kept, removed, outcomes_appended}.",
+                parameters = {
+                    type = "object",
+                    properties = {
+                        episode = { type = "int", description = "Current episode number." }
+                        report  = { type = "string", description = "JSON list of the curator's per-trial objects: [{trial_id, domain, outcome, note}], outcome in confirmed/falsified/not_applied/inconclusive." }
+                    }
+                    required = ["episode", "report"]
+                }
+            }
+        },
+
+        {
+            name = "PromoteTrial",
+            class = "coded_tools.maps_park.promote_trial.PromoteTrial",
+            function = {
+                description = "Apply ONE confirmed trial's edit to playbook_<domain>.md, tagging the new line '(learned ep<N>)'. add_line appends at end (section 'end'/'new'/empty) or inserts after the named section header; replace_line replaces the unique find_text. On a successful live edit the learned line is also mirrored into the config seed (config_files/<domain>_strategy.md) under a '## Learned rules' section so it survives fresh runs. Returns {action_taken, playbook, line, seed_mirror} where action_taken is promoted / skipped_section_missing / skipped_not_found / skipped_ambiguous / skipped_playbook_missing, and seed_mirror is appended / duplicate_skipped / seed_missing / not_attempted.",
+                parameters = {
+                    type = "object",
+                    properties = {
+                        domain    = { type = "string",  description = "rides/shops/staff/research/layout/coordinator." }
+                        edit_type = { type = "string",  description = "'add_line' or 'replace_line'." }
+                        new_text  = { type = "string",  description = "The rule line to add/replace (without the learned tag)." }
+                        episode   = { type = "int", description = "Episode number for the '(learned ep<N>)' tag." }
+                        section   = { type = "string",  description = "add_line: section header to insert after, or 'end'/'new' to append." }
+                        find_text = { type = "string",  description = "replace_line: the exact existing playbook line to replace." }
+                    }
+                    required = ["domain", "edit_type", "new_text", "episode"]
+                }
+            }
+        },
+
+        {
+            name = "state_read",
+            class = "coded_tools.file_management.state_read.StateRead",
+            function = {
+                description = "Read a file by its logical name from the operator-configured name_map.",
+                parameters = {
+                    type = "object",
+                    properties = {
+                        name = { type = "string", description = "Logical name." }
+                    },
+                    required = ["name"]
+                }
+            },
+            args = {
+                name_map = {
+                    trial_strategies            = "coded_tools/maps_park/state/trial_strategies.md"
+                    trial_strategies_criteria   = "coded_tools/maps_park/state/trial_strategies_criteria.md"
+                    trial_strategies_outcome    = "coded_tools/maps_park/state/trial_strategies_outcome.md"
+                    last_reward                 = "coded_tools/maps_park/state/last_reward.md"
+                    playbook_coordinator        = "coded_tools/maps_park/state/playbook_coordinator.md"
+                    playbook_rides              = "coded_tools/maps_park/state/playbook_rides.md"
+                    playbook_shops              = "coded_tools/maps_park/state/playbook_shops.md"
+                    playbook_staff              = "coded_tools/maps_park/state/playbook_staff.md"
+                    playbook_research           = "coded_tools/maps_park/state/playbook_research.md"
+                    playbook_layout             = "coded_tools/maps_park/state/playbook_layout.md"
+                    economics_rides             = "coded_tools/maps_park/config_files/rides_economics.md"
+                    economics_shops             = "coded_tools/maps_park/config_files/shops_economics.md"
+                    economics_staff             = "coded_tools/maps_park/config_files/staff_economics.md"
+                    economics_research          = "coded_tools/maps_park/config_files/research_economics.md"
+                    world_constants             = "coded_tools/maps_park/config_files/world_constants.md"
+                    seed_playbook_coordinator   = "coded_tools/maps_park/config_files/coordinator_strategy.md"
+                    seed_playbook_rides         = "coded_tools/maps_park/config_files/rides_strategy.md"
+                    seed_playbook_shops         = "coded_tools/maps_park/config_files/shops_strategy.md"
+                    seed_playbook_staff         = "coded_tools/maps_park/config_files/staff_strategy.md"
+                    seed_playbook_research      = "coded_tools/maps_park/config_files/research_strategy.md"
+                    seed_playbook_layout        = "coded_tools/maps_park/config_files/layout_strategy.md"
+                }
+            }
+        },
+    ]
+}

@@ -209,3 +209,7 @@ registries/manifest.hocon.test
 
 # Persistent memory store written by middleware/persistent_memory
 memory/
+
+# Claude Code local-only files
+.claude/settings.local.json
+.claude/worktrees/

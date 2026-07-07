@@ -1,6 +1,7 @@
 {
-  "step": 13,
-  "cash": 233,
+  "step": 59,
+  "cash": 3143,
+  "park_rating": 30.59,
   "research_speed": "none",
   "available_entities": {
     "carousel": [
