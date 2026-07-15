@@ -1,8 +1,0 @@
-- t2_1: Run a continuous shop price-modify engine on drink/food/specialty every turn through the entire late game, and never fall back to idle waits while modifies remain positive.
-- t2_2: Turn research on during the early build phase and escalate its speed tier as cash allows rather than leaving it off or capped at the slowest tier.
-- t2_3: Front-load the ride build so the park reaches roughly a dozen rides by the mid-thirties turns, avoiding invalid-tile placements, then prune the weakest rides to protect rating.
-- t2_4: Whenever minimum cleanliness drops below roughly half, add or reposition a janitor before making further shop or ride placements so park_rating is not dragged down.
-- t2_5: When a shop modify still returns positive reward, scale its order_quantity up on the next modify rather than repeating the same restock size, so throughput rises with guest demand.
-- t2_6: When placing any staff member, target a tile already occupied by a path or attraction rather than an open ground tile, so the placement is accepted instead of rejected.
-- t2_7: Stop adding duplicate low-tier rides once total ride_op_cost approaches shop_revenue, and instead remove the weakest redundant ride so operating cost stops eroding per-step margin.
-- t2_8: When park_rating sits below ~30 in the mid game, prioritize modifies and staff that lift rating before adding capacity, since per-step shop reward scales sharply once rating clears 30.

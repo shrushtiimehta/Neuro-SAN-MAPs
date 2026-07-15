@@ -14,17 +14,22 @@
 # episode and may edit the playbooks — the same side effects as a normal episode
 # end. It is not a read-only analysis.
 #
-# Override paths via env vars, as with run_all.sh:
-#   MAPS_REPO=/path/to/MAPs OPEN_GRIDWORLD=/path/to/open_gridworld ./run_macro.sh
+# Override the MAPs repo path via env var, as with run_all.sh:
+#   MAPS_REPO=/path/to/MAPs ./run_macro.sh
 
 set -euo pipefail
 
 MAPS_REPO="${MAPS_REPO:-$HOME/MAPs}"
-OPEN_GRIDWORLD="${OPEN_GRIDWORLD:-$HOME/open_gridworld}"
 STUDIO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+MAPS_MCP_SERVER="$STUDIO_DIR/apps/maps_park/maps_mcp_server.py"
 LOG_DIR="$STUDIO_DIR/logs/maps_park"
 MEMORY_DIR="$STUDIO_DIR/memory/maps_park"
 mkdir -p "$LOG_DIR" "$MEMORY_DIR"
+
+# Boot with the repo venv so `python`/`python3` resolve with deps even if the
+# caller forgot to activate it. No-op if there is no venv here.
+# shellcheck disable=SC1091
+[[ -f "$STUDIO_DIR/venv/bin/activate" ]] && source "$STUDIO_DIR/venv/bin/activate"
 
 RUN_TS="$(date +%Y%m%d-%H%M%S)"
 # studio.log is just a process log — rotate it. We deliberately do NOT touch
@@ -60,7 +65,7 @@ start() {
 }
 
 [[ -d "$MAPS_REPO/map_backend" ]] || { echo "MAPs repo not found at $MAPS_REPO"; exit 1; }
-[[ -f "$OPEN_GRIDWORLD/maps_mcp_server.py" ]] || { echo "open_gridworld not found at $OPEN_GRIDWORLD"; exit 1; }
+[[ -f "$MAPS_MCP_SERVER" ]] || { echo "vendored MCP server missing at $MAPS_MCP_SERVER"; exit 1; }
 
 # Clear any leftover processes from the cancelled run before booting fresh.
 pkill -f "map_backend/server.js"  2>/dev/null || true
@@ -72,12 +77,10 @@ sleep 2
 
 start "maps_node" "$MAPS_REPO" "node map_backend/server.js"
 sleep 2
-MAPS_STATE_FILE="${MAPS_STATE_FILE:-$STUDIO_DIR/coded_tools/maps_park/state/park_state.pkl}"
-MAPS_SNAPSHOT_DIR="${MAPS_SNAPSHOT_DIR:-$STUDIO_DIR/coded_tools/maps_park/state/snapshots}"
-mkdir -p "$MAPS_SNAPSHOT_DIR"
+MAPS_STATE_FILE="${MAPS_STATE_FILE:-$STUDIO_DIR/coded_tools/state/park_state.pkl}"
 # --resume so the env continues the cancelled mid-flight episode instead of
 # starting a new one; advance_episode in the close-out then acts on that state.
-start "maps_mcp" "$OPEN_GRIDWORLD" "python maps_mcp_server.py --layout the_islands --difficulty medium --mcp_port 8765 --num_parks 1 --maps_repo_dir '$MAPS_REPO' --state_file '$MAPS_STATE_FILE' --snapshot_dir '$MAPS_SNAPSHOT_DIR' --resume"
+start "maps_mcp" "$STUDIO_DIR" "python '$MAPS_MCP_SERVER' --layout the_islands --difficulty medium --mcp_port 8765 --num_parks 1 --maps_repo_dir '$MAPS_REPO' --state_file '$MAPS_STATE_FILE' --resume"
 sleep 3
 start "studio" "$STUDIO_DIR" "python -m neuro_san_studio run"
 

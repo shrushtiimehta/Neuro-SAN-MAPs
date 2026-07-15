@@ -7,17 +7,16 @@ cumulative park value (target: **$1,000,000+**). Between episodes the agents *le
 confirmed strategies into their playbooks so each run starts from the best run so far.
 
 This repo (a [Neuro SAN Studio](https://github.com/cognizant-ai-lab/neuro-san-studio) fork) is the
-agent side: the agent networks, the coded tools that wrap the simulator, and a loop runner that
-drives episode after episode. The park itself runs in two **external** projects you install
-separately (both open source):
+agent side: the agent networks, the coded tools that wrap the simulator, an MCP server
+([apps/maps_park/maps_mcp_server.py](apps/maps_park/maps_mcp_server.py)) that exposes the simulator
+to the agents, and a loop runner that drives episode after episode. The park itself runs in one
+**external** project you install separately:
 
 - **MAPs** — the amusement-park simulator (a Node.js backend + a Python `map_py` interface),
   from Skyfall AI: <https://github.com/Skyfall-Research/MAPs>
-- **open_gridworld** — provides `maps_mcp_server.py`, which exposes the MAPs simulator to the
-  agents over MCP.
 
-If you have never touched MAPs, open_gridworld, or Neuro SAN Studio before, follow
-[Setup from scratch](#setup-from-scratch) top to bottom — it covers all three.
+If you have never touched MAPs or Neuro SAN Studio before, follow
+[Setup from scratch](#setup-from-scratch) top to bottom — it covers both.
 
 ---
 
@@ -45,8 +44,8 @@ Pre-validation never touches the env, so a rejected proposal is re-prompted for 
 *dispatch* is logged as a `wait` and surfaced to the agent next turn.
 
 **Learning between episodes.** The agents follow six **playbooks**
-(`coded_tools/maps_park/state/playbook_*.md`), seeded from
-[coded_tools/maps_park/config_files/](coded_tools/maps_park/config_files/) on a fresh run.
+(`coded_tools/state/playbook_*.md`), seeded from
+[coded_tools/config_files/](coded_tools/config_files/) on a fresh run.
 
 - *Start of episode* — `maps_park_macro` compares the best-ever episode against the last, writes
   the episode plan + coordinator strategy summary, demotes regression-linked rules, and logs fresh
@@ -72,26 +71,24 @@ Playbooks are snapshotted into `state/playbook_history/<ts>_<tag>/` at every epi
 - **Node.js 22.15+** and npm (for the MAPs backend).
 - **git**, and an **LLM provider API key** (OpenAI by default; Anthropic/Azure/others also work).
 
-### 1. Clone all three repos
+### 1. Clone the two repos
 
-Clone the two external repos anywhere convenient. The defaults below (`$HOME/MAPs`,
-`$HOME/open_gridworld`) are what the run scripts expect; override with env vars if you put them
-elsewhere (see step 6).
+Clone MAPs anywhere convenient. The default (`$HOME/MAPs`) is what the run scripts expect; override
+with an env var if you put it elsewhere (see step 6).
 
 ```bash
 # this repo (the agent side) — you likely already have it
 git clone https://github.com/cognizant-ai-lab/neuro-san-studio
 cd neuro-san-studio                      # <- run everything below from here unless noted
 
-# the simulator + the MCP bridge
-git clone https://github.com/Skyfall-Research/MAPs            ~/MAPs
-git clone https://github.com/cognizant-ai-lab/open_gridworld ~/open_gridworld
+# the simulator
+git clone https://github.com/Skyfall-Research/MAPs ~/MAPs
 ```
 
 ### 2. Create ONE Python environment for everything
 
 `run_all.sh` launches the MCP server and the studio with whichever `python` is on your PATH, so a
-**single active virtual environment** must contain the deps for all three projects.
+**single active virtual environment** must contain the deps for both projects.
 
 ```bash
 python3.12 -m venv venv
@@ -109,14 +106,11 @@ pip install -e .              # installs the Python map_py interface into your v
 cd -                          # back to neuro-san-studio
 ```
 
-### 4. Install the MCP bridge deps
+### 4. MCP server dependencies
 
-`maps_mcp_server.py` (from open_gridworld) needs only these to serve the MAPs benchmark — you do
-**not** need open_gridworld's full `requirements.txt`:
-
-```bash
-pip install "mcp[cli]" requests flask
-```
+The MCP server ([apps/maps_park/maps_mcp_server.py](apps/maps_park/maps_mcp_server.py)) is vendored
+into this repo and imports only `mcp`, `pydantic`, and `requests` (plus MAPs' `map_py` from step 3)
+— all pulled in by the studio requirements in the next step. Nothing extra to install.
 
 ### 5. Install the studio and set your LLM key
 
@@ -135,13 +129,12 @@ export OPENAI_API_KEY="sk-..."
 To persist it and configure other providers (Anthropic, Azure, Ollama, …), copy `.env.example` to
 `.env` and fill it in — the runner loads `.env` automatically.
 
-### 6. (Optional) Point the run scripts at your repos
+### 6. (Optional) Point the run scripts at your MAPs clone
 
-Only needed if you did **not** clone to the default locations:
+Only needed if you did **not** clone MAPs to the default location:
 
 ```bash
 export MAPS_REPO=/path/to/MAPs
-export OPEN_GRIDWORLD=/path/to/open_gridworld
 ```
 
 You're ready to run.
@@ -163,7 +156,7 @@ apps/maps_park/run_all.sh --resume
 `run_all.sh` boots all four processes and tears them all down on Ctrl-C:
 
 1. **MAPs Node backend** — `node map_backend/server.js` (in `$MAPS_REPO`)
-2. **MCP env** — `maps_mcp_server.py` (in `$OPEN_GRIDWORLD`), layout `the_islands`, difficulty
+2. **MCP env** — the vendored `apps/maps_park/maps_mcp_server.py`, layout `the_islands`, difficulty
    `medium`, one park, on MCP port 8765
 3. **Studio server** — `python -m neuro_san_studio run`, which registers the three agent networks
 4. **Runner** — `python -m apps.maps_park.runner` (foreground; drives the episode loop)
@@ -195,8 +188,8 @@ Run the loop directly with `python -m apps.maps_park.runner --help`. Notable opt
 
 ### Troubleshooting
 
-- **"MAPs repo not found" / "open_gridworld not found"** — the run script can't find a repo at its
-  default path; set `MAPS_REPO` / `OPEN_GRIDWORLD` (step 6).
+- **"MAPs repo not found"** — the run script can't find MAPs at its default path; set `MAPS_REPO`
+  (step 6).
 - **`ModuleNotFoundError: map_py`** — you skipped `pip install -e .` in `~/MAPs`, or you're not in
   the venv where you installed it.
 - **Networks never register / port already in use** — a previous run left processes alive.
@@ -211,11 +204,11 @@ Run the loop directly with `python -m apps.maps_park.runner --help`. Notable opt
 ```
 apps/maps_park/
   runner.py            loop runner — drives episodes, early-abort guardrail, playbook snapshots
+  maps_mcp_server.py   vendored MCP server exposing the MAPs simulator to the agents
   run_all.sh           boot everything (MAPs backend + MCP env + studio + runner)
   run_macro.sh         one-shot macro close-out for a cancelled episode
-  playbook.default.md  reference playbook
 
-coded_tools/maps_park/
+coded_tools/             (flat — all tool modules directly here, no per-app subfolders)
   action_dispatcher.py         routes a validated action to the Maps* MCP wrappers
   maps_*.py                    typed action wrappers (place, move, modify, remove, wait, ...)
   propose_action.py            validate + persist the game-runner's proposal
@@ -224,8 +217,9 @@ coded_tools/maps_park/
   seed_playbooks.py            lay down state/playbook_*.md from config_files/
   {log,resolve,promote}_trial  the hypothesis (trial) ledger
   write_episode_plan.py, advance_episode.py, plot_rewards.py
-  config_files/                seed playbooks + economics constants
-  state/                       live playbooks, ledgers, snapshots (git-tracked working state)
+  file_io.py, state_read.py, name_map.py   shared file helpers
+  config_files/                seed playbooks + economics constants (tracked)
+  state/                       live playbooks, ledgers, snapshots — runtime, gitignored, reseeded each run
 
 registries/              maps_park*.hocon — the three agent networks
 logs/maps_park/          run.ep<NNN>.jsonl (one per episode), turns.jsonl, per-process logs
@@ -233,4 +227,4 @@ logs/maps_park/          run.ep<NNN>.jsonl (one per episode), turns.jsonl, per-p
 
 Outputs to watch after a run: per-episode reward trajectories in `logs/maps_park/run.ep<NNN>.jsonl`,
 the per-turn ledger in `turns.jsonl`, and the evolving strategy in
-`coded_tools/maps_park/state/playbook_*.md`.
+`coded_tools/state/playbook_*.md`.

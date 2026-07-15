@@ -22,7 +22,7 @@ Architecture (vs. the legacy single-session runner):
     Network: maps_park
     Per turn the game-runner agent picks ONE action and calls
     ProposeAction (a coded_tool that validates + persists the proposal
-    to coded_tools/maps_park/state/proposed_action.json). The runner
+    to coded_tools/state/proposed_action.json). The runner
     reads that file, re-validates, and then commits via direct call to
     the ActionDispatcher coded tool. If pre-validate fails, the runner
     re-prompts the same session with corrective context (env untouched).
@@ -91,8 +91,11 @@ logging.getLogger("mcp.client.streamable_http").setLevel(logging.WARNING)
 from neuro_san.client.agent_session_factory import AgentSessionFactory
 from neuro_san.client.streaming_input_processor import StreamingInputProcessor
 
-from coded_tools.maps_park.action_dispatcher import ActionDispatcher
-from coded_tools.maps_park.seed_playbooks import SeedPlaybooks
+from coded_tools import champion_plan
+from coded_tools.action_dispatcher import ActionDispatcher
+from coded_tools.park_status import ParkStatus
+from coded_tools.seed_observation import SeedObservation
+from coded_tools.seed_playbooks import SeedPlaybooks
 
 
 # ── Constants ────────────────────────────────────────────────────────────────
@@ -116,24 +119,21 @@ DEFAULT_MICRO_EVERY = 10
 #   • at/after ABORT_HALFWAY_STEP -> abort immediately (a single strike). Half
 #     the episode is already gone; there is no runway left to recover.
 #   • before ABORT_HALFWAY_STEP   -> grant ~micro_every more steps (one extra
-#     checkpoint) to recover; abort only on ABORT_MIN_STRIKES consecutive strikes.
-#   • before ABORT_EARLIEST_STEP  -> ignored (reward is always low this early, so
-#     a doom call here is noise).
+#     checkpoint of grace) to recover; abort only on ABORT_MIN_STRIKES consecutive
+#     strikes. This applies from the FIRST checkpoint — no early step is ignored;
+#     one 'doomed' is never an instant abort before halfway, it just starts the count.
 # Aborting fast-forwards the rest of the episode with wait()s — booking the loss
 # cheaply instead of burning LLM calls on a run that cannot clear the floor.
 # Rollback is emergent: the next episode's macro start regenerates the strategy
 # summary from the BEST episode, and the aborted trials are falsified at close-out.
 DEFAULT_REWARD_FLOOR = 300000   # cum_reward a run must plausibly clear by step 100
 DEFAULT_REWARD_GOAL = 1000000   # the north-star target the whole run chases
-# ponytail: need enough signal before trusting a doom call; value compounds in
-# the back half so early steps are always low. Bump if runs get killed too soon.
-ABORT_EARLIEST_STEP = 30
 ABORT_HALFWAY_STEP = 50         # at/after this step a single 'doomed' aborts at once
-ABORT_MIN_STRIKES = 2           # consecutive 'doomed' verdicts to abort BEFORE halfway
+ABORT_MIN_STRIKES = 2           # consecutive 'doomed' verdicts to abort BEFORE halfway (~1 checkpoint of grace)
 
 PROPOSAL_PATH = os.path.join(
     os.path.dirname(__file__), "..", "..",
-    "coded_tools", "maps_park", "state", "proposed_action.json",
+    "coded_tools", "state", "proposed_action.json",
 )
 # Per-episode run logs: one file per episode (run.ep<NNN>.jsonl) so an
 # episode is never split across files. The runner is the SOLE writer.
@@ -147,7 +147,7 @@ LATEST_OBS_PATH = os.environ.get(
     "MAPS_LATEST_OBS_PATH",
     os.path.normpath(os.path.join(
         os.path.dirname(__file__), "..", "..",
-        "coded_tools", "maps_park", "state", "latest_observations.json",
+        "coded_tools", "state", "latest_observations.json",
     )),
 )
 # Agent reasoning capture. Honor the studio's THINKING_FILE / THINKING_DIR env
@@ -171,7 +171,7 @@ THINKING_DIR = os.environ.get(
 # last_reward makes episode-0 prior_reward default to 0.
 LAST_REWARD_PATH = os.path.normpath(os.path.join(
     os.path.dirname(__file__), "..", "..",
-    "coded_tools", "maps_park", "state", "last_reward.md",
+    "coded_tools", "state", "last_reward.md",
 ))
 
 # Playbook state dir + snapshot archive. Playbooks evolve each episode
@@ -180,7 +180,7 @@ LAST_REWARD_PATH = os.path.normpath(os.path.join(
 # (ep<NNN>_post) of every episode — plus once before a fresh run reseeds them
 # (prerun). Snapshots are append-only; nothing is ever deleted.
 PLAYBOOK_STATE_DIR = os.path.normpath(os.path.join(
-    os.path.dirname(__file__), "..", "..", "coded_tools", "maps_park", "state",
+    os.path.dirname(__file__), "..", "..", "coded_tools", "state",
 ))
 PLAYBOOK_HISTORY_DIR = os.path.join(PLAYBOOK_STATE_DIR, "playbook_history")
 
@@ -404,7 +404,6 @@ def build_run_row(args: dict, envelope: dict) -> dict:
 # parses it to drive the early-abort guardrail.
 _VERDICT_RE = re.compile(r"VERDICT:\s*(on[_ ]?track|underperforming|doomed)", re.I)
 
-
 def _parse_verdict(advisory: str | None) -> str | None:
     """Pull the micro's health verdict from its advisory, or None if absent.
 
@@ -423,15 +422,15 @@ def _parse_verdict(advisory: str | None) -> str | None:
 def _doom_decision(strikes: int, verdict: str | None, step: int) -> tuple[int, bool]:
     """Fold one micro verdict into the abort state machine.
 
-    Returns (new_strike_count, should_abort). A 'doomed' verdict at/after
-    ABORT_EARLIEST_STEP adds a strike; whether it aborts depends on the step:
-    at/after ABORT_HALFWAY_STEP a single strike aborts immediately (no runway
-    left to recover), while before halfway it takes ABORT_MIN_STRIKES consecutive
-    strikes (one extra ~micro_every-step checkpoint of grace). Any non-doomed
-    verdict resets the count; an unknown/None verdict (or a doom call before
-    ABORT_EARLIEST_STEP) is a no-op.
+    Returns (new_strike_count, should_abort). A 'doomed' verdict adds a strike
+    from the FIRST checkpoint (no early step is ignored); whether it aborts
+    depends on the step: at/after ABORT_HALFWAY_STEP a single strike aborts
+    immediately (no runway left to recover), while before halfway it takes
+    ABORT_MIN_STRIKES consecutive strikes (one extra ~micro_every-step checkpoint
+    of grace). Any non-doomed verdict resets the count; an unknown/None verdict
+    is a no-op.
     """
-    if step >= ABORT_EARLIEST_STEP and verdict == "doomed":
+    if verdict == "doomed":
         strikes += 1
         required = 1 if step >= ABORT_HALFWAY_STEP else ABORT_MIN_STRIKES
         return strikes, strikes >= required
@@ -578,6 +577,16 @@ def main():
             os.remove(PROPOSAL_PATH)
 
 
+    # Archive the prior run's learned playbooks BEFORE anything that can fail
+    # (session-open, backend down): it's a local file copy with no session
+    # dependency, so a boot failure must never cost us the snapshot. Fresh start
+    # reseeds them below (overwrite=True), discarding the finished run's edits;
+    # --resume keeps the working copies, so there is nothing to save.
+    if not args.resume:
+        snap = snapshot_playbooks("prerun")
+        if snap:
+            print(f"[runner] Snapshotted prior-run playbooks to {snap}")
+
     runner_session, runner_thread = open_session(args.runner_agent, args.host, args.port)
     # Two analyzer sessions: micro (mid-episode) and macro (episode-end). Each
     # gets its own session/thread so their conversation histories never mix.
@@ -599,14 +608,6 @@ def main():
     advisory_for_next_turn: str | None = None
     user_input = "Start the run. Take one action on park 0."
     turn = 0
-
-    # Fresh start reseeds the playbooks from config below (overwrite=True),
-    # discarding the finished run's learned edits — so snapshot them first as
-    # 'prerun'. --resume keeps the working copies, so there is nothing to save.
-    if not args.resume:
-        snap = snapshot_playbooks("prerun")
-        if snap:
-            print(f"[runner] Snapshotted prior-run playbooks to {snap}")
 
     # Startup seed: lay down the six playbooks before the first turn via the
     # SeedPlaybooks coded tool (deterministic file copy, no LLM). A fresh start
@@ -634,6 +635,11 @@ def main():
     aborting = False
     abort_reason = ""
     doom_strikes = 0
+    # Champion-plan rollback: whether the PREVIOUS episode doomed (+ its reason).
+    # Persists across the episode boundary (NOT reset on fresh_episode) so the next
+    # start can restore the champion as a base and tell the macro what to avoid.
+    last_episode_aborted = False
+    last_abort_reason = ""
 
     try:
         while True:
@@ -670,10 +676,24 @@ def main():
             # not a genuine new episode).
             if (preflight_mode == "fresh_episode" and macro_session is not None
                     and not (turn == 1 and args.resume)):
+                # If the PRIOR episode doomed, restore the champion plan as the BASE
+                # (deterministic, no LLM) and then run the macro to REFINE it — the
+                # macro is told (recovery=true) to treat the doomed run as a
+                # cautionary example, not a model, so we keep the champion's progress
+                # without letting the doomed data drive a fresh plan wholesale.
+                recovery_extra = ""
+                if last_episode_aborted:
+                    if champion_plan.restore_last_good():
+                        print(f"[runner] Prior episode doomed — restored champion as the base "
+                              f"for ep{next_episode_num}; macro will refine it.")
+                        recovery_extra = f"recovery=true doom_reason={last_abort_reason!r}"
+                    else:
+                        print("[runner] Prior episode doomed but no champion to restore; "
+                              "macro plans from telemetry.")
                 start_ctx = {"episode": next_episode_num, "step": 0,
                              "cumulative_reward": 0, "done": False}
                 consult(macro_session, macro_thread, "episode_start",
-                        start_ctx, label="macro-start")
+                        start_ctx, label="macro-start", extra=recovery_extra)
 
             # BEFORE the episode starts: snapshot the playbooks the game-runner
             # will act on (the start-of-episode plan just written, plus the prior
@@ -682,6 +702,29 @@ def main():
                 snap = snapshot_playbooks(f"ep{next_episode_num:03d}_pre")
                 if snap:
                     print(f"[runner] Snapshotted ep{next_episode_num} pre-episode playbooks to {snap}")
+
+            # Seed turn-1's observation deterministically (moved out of park_director's
+            # instructions): world_observe caches the park's current state WITHOUT
+            # stepping, so the first ParkStatus returns real state instead of "No
+            # observation stored yet" — no throwaway wait. On --resume this just
+            # re-caches the in-flight state (world_observe returns current, not step 0).
+            if preflight_mode == "fresh_episode":
+                seeded = SeedObservation().invoke({"park": 0}, {})
+                print(f"[runner] Seeded fresh-episode observation: {seeded}")
+
+            # Refresh every specialist's status slice from the latest observation BEFORE
+            # the coordinator + specialists read them. Deterministic (no decision), so the
+            # runner owns it (like SeedObservation) — the coordinator no longer calls
+            # ParkStatus; it reads only its lean status_coordinator slice.
+            park_snapshot = asyncio.run(ParkStatus().async_invoke({"park": "0"}, {}))
+            if isinstance(park_snapshot, dict) and park_snapshot.get("error"):
+                print(f"[runner] ParkStatus warning: {park_snapshot['error']}")
+            # Rare (e.g. --resume onto a finished episode): nothing to act on — end the run.
+            # (This replaces park_director's turn-start done-check.)
+            if isinstance(park_snapshot, dict) and park_snapshot.get("done"):
+                print(f"[runner] Park already done at turn start "
+                      f"(final_reward={park_snapshot.get('cumulative_reward')}); ending run.")
+                break
 
             verified_before = read_last_verified()
 
@@ -724,10 +767,16 @@ def main():
                 print(f"[runner reply attempt={attempt}] " + (response or "(no response)"))
 
                 proposal_envelope = read_proposal()
+                # ponytail: retries go to park_director, which cannot call
+                # ProposeAction itself (that's strategy_coordinator's tool) and
+                # requires the [PREFLIGHT MODE] header. Keep the header and phrase
+                # the fix in the director's own terms, or it spins to max_retries.
                 if proposal_envelope is None:
                     prompt = (
-                        "ERROR: you did not call ProposeAction this turn. "
-                        "Call ProposeAction exactly once with action and args."
+                        f"[PREFLIGHT MODE] {preflight_mode}\n\n"
+                        "ERROR: no action was proposed this turn. Re-run your per-turn "
+                        "sequence and call strategy_coordinator, which must propose "
+                        "exactly one action via ProposeAction."
                     )
                     continue
 
@@ -739,9 +788,10 @@ def main():
                 reasons = validation.get("reasons") or ["ProposeAction reported ok=false"]
                 print(f"[runner] ProposeAction rejected: {reasons}")
                 prompt = (
-                    f"ERROR: ProposeAction rejected your proposed action. "
-                    f"Reasons: {reasons}. The env was NOT touched. "
-                    f"Pick a different concrete action and call ProposeAction again."
+                    f"[PREFLIGHT MODE] {preflight_mode}\n\n"
+                    f"ERROR: the proposed action was rejected. Reasons: {reasons}. "
+                    f"The env was NOT touched. Call strategy_coordinator again to "
+                    f"propose a different concrete action."
                 )
 
             # If the agent never produced a valid proposal, advance the day with
@@ -831,6 +881,15 @@ def main():
                     # Next loop iteration is a fresh episode; its start pass
                     # plans episode (ended_episode + 1).
                     next_episode_num = (verified_after.get("episode") or 0) + 1
+                    # Champion checkpoint (deterministic): a clean run promotes its
+                    # plan to champion ONLY if it beats the best-so-far reward; a
+                    # doom leaves the champion and flags the next start to roll back.
+                    last_episode_aborted = aborting
+                    last_abort_reason = abort_reason
+                    ep_reward = verified_after.get("cumulative_reward")
+                    if champion_plan.promote_plan(aborting, ep_reward, args.reward_floor):
+                        print(f"[runner] New best clean episode (reward={ep_reward} >= "
+                              f"floor {args.reward_floor}) — promoted plan to champion.")
                 elif (not aborting and micro_session is not None and args.micro_every > 0
                         and step_n > 0 and step_n % args.micro_every == 0):
                     advisory_for_next_turn = consult(

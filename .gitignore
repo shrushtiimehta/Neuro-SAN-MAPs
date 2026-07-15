@@ -26,6 +26,8 @@ share/python-wheels/
 *.egg
 MANIFEST
 logs/
+# maps_park runtime state — reseeded from config_files/ each run; archived externally
+coded_tools/state/
 # .python-version appears when we try to use uv
 .python-version
 

@@ -1,268 +1,134 @@
-# Self-Improving Multi-Agent Networks via Falsifiable Strategy Memory: A Case Study on the MAPs Benchmark
+# Self-Improving Agent Networks: Getting Better at a Task Without Changing a Single Weight
 
-**Authors:** [author list] · Cognizant AI Lab
+## The idea
 
-**Keywords:** multi-agent systems · self-improving LLM agents · lifelong learning · open-endedness · natural-language memory · decision-making systems
+LLMs are non-deterministic. Run one a hundred times and the hundredth attempt might look like the first or maybe even worse — same weights, same prompt, same or worse mistakes on repeat — because all of its competence is frozen in the model, and nothing about the ninety-nine attempts before it ever sticks. Making the model bigger raises the starting point; it does not give the agent a way to learn from its own runs.
 
-## Abstract
+A **self-improving agent network** is our term for the alternative: a multi-agent system that gets measurably better at a task across repeated attempts **with no weight updates and no human editing its prompts between runs** but only persistent memory, middleware and tool calling. The only thing that changes from one attempt to the next is a memory the system writes, curates, and is forced to justify — for itself.
 
-We describe a multi-agent LLM system that improves at a long-horizon
-optimization task across repeated attempts **without any change to model weights
-or human-authored prompts.** The system separates a fast *actor* network, which
-plays the task, from a slower *critic* network, which reflects on the play and
-rewrites a set of human-readable strategy files that the actor reads on every
-turn. Learning is gated by a *falsifiable trial protocol*: a candidate lesson
-becomes durable knowledge only after it survives an explicit, metric-defined
-test against deterministic telemetry. On the MAPs (Mini Amusement Parks)
-benchmark, cumulative reward rose from 12,121 in the first attempt to 331,642 by
-the fifth — a 27× gain with the model held fixed. Improvement was non-monotonic
-(one later attempt regressed), which motivates the three mechanisms we argue are
-the real contribution: **carrying knowledge forward** across cold starts,
-**stopping** doomed attempts early, and **renewing** each attempt from the
-best-ever run rather than the most recent one. We report the setup, results, and
-a candid set of limitations. This is a single-system case study, not a
-benchmarked claim of generality.
+The approach rests on a few principles, each of which we make concrete later:
 
-## 1. Introduction
+- **Separate acting from reflecting.** One fast network acts. Slower networks do nothing but read what happened and decide what the acting network should try next. They never share a conversation — only plain-text notes on disk.
+- **Earn every memory.** No lesson is kept because a run went well. Each proposed lesson is written as a falsifiable hypothesis — a rule, a success condition, a failure condition — run live, and then judged against an objective log. Confirmed lessons are kept; falsified ones are deleted and recorded so they cannot come back.
+- **Models decide, code enforces.** The models supply judgment. All arithmetic, bookkeeping, and file edits are performed by deterministic code, so the acting network can never quietly grade its own homework.
+- **Never lose ground.** Proven lessons accrete into a permanent store that survives a cold restart, and every new attempt plans from the best run ever recorded — never the most recent one — so a bad attempt cannot drag the next one down.
+- "Underirable states:"
 
-Most deployed LLM agents are *stateless* across runs. A prompt is authored, the
-agent executes, the process exits, and the next invocation begins with no
-memory of what worked or failed. The competence lives entirely in the frozen
-weights and the static prompt. For stateless tasks this is adequate; for tasks
-whose winning strategy must be *discovered* empirically rather than reasoned out
-in advance, it is a hard ceiling — the agent cannot get better at the specific
-problem it keeps facing.
+None of these pieces are individually new. Actor–critic separation is decades old in reinforcement learning, and writing lessons down in natural language has real precedent. What makes a network *self-improving* rather than merely *self-modifying* is the discipline connecting them: a memory that has to prove itself before it is trusted.
 
-This post reports an engineering case study of a system built to break that
-ceiling. The research question is narrow and practical: *can a multi-agent LLM
-system measurably improve at a hard task across repeated attempts, using only
-self-authored natural-language memory, with strong guarantees against learning
-the wrong thing?*
+## Why this needs a hard testbed
 
-Our contributions are:
+A self-improving system is only as trustworthy as the ground truth it grades itself against. If the objective can be gamed, or the record of what happened can be spun by the same model that produced it, the system will "improve" straight into a delusion — learning wrong lessons with total confidence. To test the idea honestly we needed a task with two properties: a **single, objective score** the agent cannot narrate its way around, and enough **genuine difficulty** that improvement is unambiguous and there is real room to climb.
 
-1. A concrete **actor/critic architecture** in which the two roles are separate
-   agent networks on separate clocks, communicating only through legible text.
-2. A **falsifiable trial protocol** that treats each candidate lesson as a
-   hypothesis with pre-registered success and failure criteria, evaluated against
-   deterministic logs rather than the model's own recollection.
-3. A characterization of the **knowledge lifecycle** — carry-forward, stop,
-   renew — as the load-bearing design levers, supported by an observed
-   non-monotonic learning curve.
-4. A multi-layer **guardrail** design following the principle *LLMs decide,
-   deterministic code enforces.*
+Mini Amusement Parks fits both.
 
-We are explicit up front about scope: the empirical evidence is a small number of
-attempts on a single benchmark with a single model. We treat the numbers as an
-existence proof and a source of qualitative insight, not as a generalization
-claim.
+## The testbed: Mini Amusement Parks (MAPs)
 
-## 2. Problem setting
+[Mini Amusement Parks (MAPs)](https://maps.skyfall.ai/) is a business-simulation benchmark for AI research, released by Skyfall AI ([arXiv:2511.15830](https://arxiv.org/abs/2511.15830)). The player is the manager of an amusement park and takes **exactly one action per day** over a fixed horizon; the park then opens, guests stream in and interact with it for a full day, and the day's results feed the next decision. The objective is to **maximize the park's total value** by the end of the horizon.
 
-The task is **MAPs (Mini Amusement Parks)**, a benchmark in which an agent
-manages a theme park for a fixed horizon of 100 turns ("steps"). At each step the
-agent issues exactly one action — build a ride, open a shop, hire staff, set a
-research speed, or adjust a price — and the simulator advances one in-game day.
-Guest arrivals scale with the park's rating; guests spend on rides and
-concessions, become hungry and thirsty, generate mess, and depart if conditions
-degrade. Rides break and require repair. Capital is scarce early.
+We run the **medium** difficulty: a 100-day horizon where only the cheapest ("yellow") tier of each attraction is available at the start, and better tiers must be unlocked through research. That single constraint is what makes medium hard — the strongest strategies are literally locked behind a decision to spend money and time now for a payoff much later.
 
-The objective is **cumulative park value at step 100.** The reward structure is
-strongly compounding: an asset built on day 10 earns for the remaining 90 days,
-and any idle step is permanently forgone value. A single 100-step playthrough is
-an *episode*; the system attempts the task over many episodes.
+The manager's daily action is chosen from a small but consequential set:
 
-MAPs is a useful proving ground precisely because it stresses known LLM
-weaknesses: (i) it requires *exact* arithmetic under a hard budget constraint
-(affordability given daily operating cost and remaining horizon); (ii) it rewards
-delayed, compounding investment over locally obvious moves; and (iii) its optimal
-policy is not analytically obvious — it must be found by trial and revision.
+- **Build, move, remove, or re-price** rides and shops. Rides are the only thing that draws guests — a park with no rides gets no visitors — and each has a capacity, an excitement score, a breakdown rate, and per-operation costs. Shops (drink, food, specialty) cater to guest needs; run one dry and it goes out of service and drags the park's rating down.
+- **Hire staff** — janitors to clean, mechanics to repair broken rides, specialists for support roles.
+- **Set research** — pick a speed (none/slow/medium/fast, at \$0 / \$2k / \$8k / \$32k per day) and topics, to unlock higher-tier attractions in blue → green → red order.
+- **Survey guests** — pay \$500 per guest surveyed to learn *why* guests are leaving, up to 25 at a time.
+- **Wait** — run the day with no new action.
 
-## 3. Method
+Guests are the engine underneath all of it. How many arrive depends on the park's **capacity** (set entirely by rides) and its **rating** (driven by ride excitement, cleanliness, balanced intensity, and guests leaving happy). Each guest arrives with limited money and energy, grows hungry and thirsty over the day, seeks out matching attractions, and leaves — or leaves *early* and unhappy — if its needs go unmet. Rides break down. Guests litter. Nothing about the reward is handed to the agent as a formula; it must be discovered by running the park and watching what happens.
 
-### 3.1 Overview: an actor and a critic on separate clocks
+### Why MAPs is a good benchmark
 
-The design instantiates the classical *play → reflect → play again* loop as two
-distinct agent networks:
+Most agent benchmarks isolate a single capability. MAPs' contribution is that it **unifies four interconnected challenges into one environment** ([paper](https://arxiv.org/abs/2511.15830)):
 
-- The **actor** (the game-runner network) plays a single episode, one action per
-  step, optimizing greedily under its current strategy.
-- The **critic** (two consultant networks) never acts on the environment. It
-  reads the log of what happened and rewrites the actor's strategy between and
-  within episodes.
+1. **Long-horizon optimization under stochasticity** — a hundred coupled decisions, where the best move often pays off dozens of days later, against a simulator full of random breakdowns and guest behavior.
+2. **Sample-efficient active learning from sparse experience** — the dynamics are not given; the agent must learn them from a handful of noisy days.
+3. **Spatial reasoning** — attractions must be placed on a grid, adjacent to paths, near the food and drink that high-traffic rides create demand for.
+4. **World modeling** — anticipating the downstream consequences of an action before committing scarce cash to it.
 
-The two communicate only through **strategy books** — plain Markdown files — and
-never share a conversation history. This is deliberate: the actor is permitted to
-be fast and locally greedy because an independent, more skeptical process always
-gets the last word on what counts as a durable lesson.
+It is also, bluntly, *unsolved*. Humans outperform state-of-the-art LLM agents by **6.5× on easy mode and 9.8× on medium**, and the strongest frontier models reach only about 10% of human performance. That headroom is what makes it useful: there is a great deal of room to improve, and improvement is unambiguous. And because the benchmark is **external** — we did not build it, cannot tune it to flatter ourselves, and cannot game it without genuinely running a better park — it provides exactly the hard-to-fake ground truth a self-improving system needs.
 
-### 3.2 The actor network
+---
 
-Each turn, a top-level `park_director` reads the park's status and delegates to a
-`strategy_coordinator`, which fans out in parallel to five domain specialists —
-rides, shops, staffing, research, and layout. Each specialist reads *only its own
-slice* of the environment state and *its own* strategy book, and returns a short,
-ranked list of candidate proposals. The coordinator merges the proposals, submits
-them to a deterministic budget gate, selects exactly one approved action, and
-dispatches it. The environment advances one step and the cycle repeats.
+# Implementation
 
-This decomposition keeps each agent's context narrow and its expertise deep: the
-staffing agent reasons only about staffing and never sees the ride catalog's
-detail, and vice versa.
+The principles above are general. Here is how we instantiated them for MAPs.
 
-### 3.3 The critic networks
+## Running the park: the agent network
 
-The critic runs on two cadences:
+We do not point a single monolithic prompt at the game. The park is run by an **agent network**: a front-man coordinator that, each day, reads the current state of the park and consults a set of **domain specialists** — one each for rides, shops, staff, research, layout, and guest surveys. Each specialist reasons only about its own area and carries its own plain-text **strategy playbook**. The coordinator weighs their input, selects exactly one action for the day, and commits it.
 
-- A **mid-episode** consultant is invoked every 10 steps. It compares the
-  in-progress episode against the best episode ever recorded and emits a health
-  verdict — `on_track`, `underperforming`, or `doomed`.
-- An **end-of-episode** consultant runs at the start and end of every episode. At
-  the start it regenerates the episode's plan from the best-ever run and retires
-  stale rules; at the end it evaluates the episode's trials and commits durable
-  edits.
+The specialists *advise*; they do not do arithmetic or touch the simulator. A proposed action is handed to deterministic code that checks whether the money works and then dispatches it to the game — the split we describe under [Guardrails](#guardrails-the-model-decides-the-code-enforces).
 
-Critically, the critic grounds every judgment in **deterministic telemetry** — a
-structured, append-only per-step log written solely by the runner — rather than
-the model's own narration of events. The critic learns from ground truth, not
-from a possibly-confabulated summary.
+That is enough to *play* MAPs. It is not enough to *improve* at it. For that we add a second and third clock.
 
-### 3.4 Strategy books: the memory representation
+## Three clocks
 
-The system's long-term memory is a set of **strategy books**, one Markdown
-playbook per specialist plus a coordinator book. Each book is layered:
+The system is built from separate agent networks running on three different clocks. None shares a conversation; they communicate only through plain-text files on disk — the "separate acting from reflecting" principle, made concrete.
 
-- A **hand-authored baseline**: founding domain knowledge, the levers each
-  specialist controls, and safe defaults. This layer is permanent.
-- A **"Learned rules" section** that accretes over time. Every confirmed lesson
-  is appended here, tagged with the episode that earned it (e.g. `(learned
-  ep4)`), preserving full provenance.
-- A **regenerated strategy summary** at the top, rewritten before each episode
-  from the best run so far — the current best recipe plus the specific failure
-  modes to avoid.
-- A **phased game plan** carried by the coordinator book: the champion run's
-  trajectory distilled into a turn-by-turn checklist, so the actor follows the
-  strategy proven on its best day rather than re-deriving one each episode.
+- **The player** — the network above. It runs fast, one action per day, and does not look back.
+- **The watcher** — a slower network that wakes up *during* a run, every ten days, reads the profit trajectory so far, and asks a single question: is this run still worth finishing? It never touches the controls. It can only record ideas to try next, and call time of death on a run that is clearly lost.
+- **The planner** — the slowest network, running *between* runs. Before each new attempt it compares the **best run ever recorded** against the most recent one, writes the plan the next attempt will follow — a day-phased checklist plus a short strategy brief the player re-reads every turn — retires ideas that stopped paying off, and proposes fresh ones to test.
 
-Because the memory is text, it is **legible and auditable** — one can read
-exactly what the system believes and why. As an illustration, the staffing book
-authored the following line for itself, unprompted, after comparing two episodes:
+The design bet is that the player can afford to be fast and a little reckless *because* something slower and more skeptical always gets the last word on what counts as real — and something slower still decides what the next run even attempts.
 
-> Mistake to avoid: under-staffing — ep3 held only 5 staff, rating sagged to
-> 25-37, and modify yields were 5-10x smaller than ep4's.
+## Earning memory: the falsifiable trial protocol
 
-The system had inferred a causal chain — *staff → park rating → the multiplier on
-its highest-yield revenue loop* — and encoded it where the staffing agent reads
-it every turn.
+This is where "earn every memory" becomes machinery. An LLM left to its own devices will happily conclude that a lucky run proved a theory. This system is not permitted to. Every idea it wants to keep must first be framed as a **falsifiable hypothesis**:
 
-### 3.5 The falsifiable trial protocol
+1. **A rule** — a general instruction, not a one-off observation.
+2. **A success condition** — a specific metric, a direction, and a window to check it in.
+3. **A failure condition** — the exact result that would prove it wrong.
 
-The mechanism that prevents self-authored memory from degenerating into
-superstition is a **trial protocol** that treats every candidate lesson as a
-pre-registered hypothesis. A candidate is admitted only if it specifies:
+These are not a mindset; they are files on disk. The rule lives in one file, its success-and-failure criteria in a second, and every verdict in a third — an append-only **outcome ledger**. That ledger is the memory of what has already been tried: a falsified idea leaves a permanent record behind, so it cannot quietly return as a "new" proposal three runs later.
 
-1. a **rule**, phrased as a general imperative (not run-specific trivia);
-2. a **success criterion** — an observable metric, a direction, and an
-   evaluation window; and
-3. a **failure criterion** — the observation that would disprove it.
+The hypothesis then actually runs — live, steering real decisions for a full episode — and afterward is checked against the deterministic log, never against the model's own account of what happened:
 
-The trial is then inserted into the live strategy book and actually influences
-the actor for an episode. At episode end, the critic evaluates it against the
-logged telemetry:
+- **Confirmed** → written permanently into the playbook.
+- **Falsified** → removed, and logged so it is never proposed again.
+- **Inconclusive** → carried forward, untouched, for another trial.
 
-- **Confirmed** — success criterion met, failure criterion never tripped. The
-  rule graduates into the book's "Learned rules" section.
-- **Falsified** — failure criterion tripped. The rule is removed and recorded in
-  an outcome ledger of dead ends, so no future analyst re-proposes it.
-- **Inconclusive** — neither fired. The trial carries over, unchanged, to be
-  tested again.
+Nothing graduates to "known" without surviving a fair test it could have failed.
 
-Admission is further constrained (Section 3.7): candidates must be falsifiable,
-non-trivial, general, and within a small active budget.
+## Guardrails: the model decides, the code enforces
 
-### 3.6 The knowledge lifecycle: carry-forward, stop, renew
+There is a quieter failure mode underneath all of this. If the *same* model both makes a decision and does the bookkeeping — totals the budget, estimates whether a ride will ever pay for itself, edits its own playbook — then it is grading its own homework. The numbers its judge later reads are numbers its actor could have fudged, and a self-graded memory is worth nothing.
 
-We found three lifecycle mechanisms — not the raw learning — to be what makes the
-system robust.
+So the models only ever supply **judgment**. Every mechanical step around them is deterministic code with no LLM inside:
 
-**Carry-forward (durable accumulation).** When a trial is confirmed, its rule is
-mirrored into a read-only *seed* file in addition to the working book. This lets a
-lesson survive a fully-from-scratch restart: even when working books are wiped
-and reset, the next episode rebuilds from *baseline + everything ever confirmed.*
-This is a ratchet — knowledge accrues only after paying for its place with
-evidence, and once it has, no restart loses it. Falsified rules are retained as a
-record of dead ends, so the system remembers both what worked and what did not.
+- A **finance gate** does the arithmetic. One-time cost, daily burn rate, how many days a ride needs to break even, whether the park can even afford to run a research project to completion — all computed from the game's economics tables, not estimated by a model. The player *proposes* an action; the gate returns a flat approve or reject.
+- A **pre-step validator** checks the proposed action against the rules *before the simulator advances at all*. If it is malformed, unaffordable, or against policy, the environment is left untouched and the player is re-prompted with the reason it was rejected. Only a valid action ever reaches the game.
+- A **playbook editor** performs the actual file edits — add a learned rule, replace one, remove one — but only after the planner has decided what should change. It physically cannot delete the hand-written baseline: only rules the system taught itself are removable.
 
-**Stop (early abort of doomed attempts).** Two consecutive `doomed` verdicts from
-the mid-episode critic cause the runner to abandon the episode: it ceases
-soliciting the actor and fast-forwards to the horizon, booking the loss cheaply
-rather than spending compute on an unrecoverable run. Beyond the compute saving,
-this serves *learning hygiene*: an aborted run's trials are explicitly falsified
-at close-out rather than left ambiguous, so a bad run actively teaches avoidance.
-A minimum-step threshold and a two-strike grace window prevent premature abort of
-a slow starter, and an unparseable verdict never triggers an abort.
+The point is not tidiness. It is that the log the judge reads is produced by code the actor cannot spin. "Judged against the log, never the model's own account" only means something if the log was never the model's to edit.
 
-**Renew (rollback by construction).** Each episode regenerates its plan from the
-**best episode ever observed**, not the most recent one. Consequently a poor
-episode cannot propagate its mistakes: the following episode plans against the
-champion, with the poor episode's falsified trials already struck from the record.
-Rollback is *emergent* — a property of always measuring against the best, not a
-special-cased recovery path. Renewal also supports **demotion**: a rule promoted
-on a fortunate episode that later correlates with regressions can be struck from
-both the book and its seed.
+## Never losing ground: inheritance and the champion episode
 
-### 3.7 Guardrails: LLMs decide, deterministic code enforces
+Improvement does not come from the trials themselves — proposing plausible ideas is the easy part. It comes from how those ideas are made to persist.
 
-The overarching safety principle is to reserve the LLM for *judgment* and use
-deterministic code for anything that must be exactly right. Guardrails sit at
-three layers.
+**Inherit, don't restart.** The moment a rule is confirmed, the playbook editor mirrors it into a separate, read-only **seed** file — one per strategy area — that outlives any single run. Wipe the working state and start cold, and before the first turn the system rebuilds each playbook straight from its seed: *baseline plus everything ever proven*. The seed is append-only and cannot overwrite the hand-written baseline, so knowledge only ever moves forward — paid for with evidence once, and never lost again.
 
-**Action layer.** A budget gate performs the affordability arithmetic and returns
-approve/reject with a reason; if every proposal is rejected, the coordinator
-returns each specialist its reason and re-solicits until an affordable action
-appears. Structural validation rejects malformed actions (illegal names, invalid
-or occupied coordinates) before dispatch, and prices are auto-capped — a
-model-suggested price is overwritten with the correct maximum. If no valid action
-is produced after repeated attempts, the runner falls back to a no-op wait rather
-than firing something broken.
+**Cut your losses fast.** This is the watcher's entire job. Every ten days it grades the run against the best one on record and returns one word: *on-track*, *underperforming*, or *doomed*. A "doomed" verdict late in a run ends it on the spot; earlier, when there is still runway to recover, it takes two consecutive strikes. An abandoned run fast-forwards to the end and books the loss cheaply — but the real payoff is that its dead-end ideas are marked dead immediately, instead of lingering as ambiguous noise that confuses the next attempt.
 
-**Learning layer.** Candidate lessons must be falsifiable, are capped (few active
-at once, at most one per domain, none logged with too few turns remaining to
-evaluate), and must be phrased as general principles rather than run-specific
-values — jointly constraining the system against overfitting to a single
-episode.
+**Always build from your best day — the champion episode.** This is the mechanism that makes the whole loop safe to run, so it is worth spelling out in full.
 
-**Honesty and authority layer.** Agents are instructed to cite step numbers and
-metric deltas for claims, to read numeric constants from reference files rather
-than guess, and to ask rather than hallucinate when information is missing. Two
-structural protections hold: the hand-authored baseline can never be deleted by
-the loop (only learned rules are demotable), and a standing human directive
-outranks the books and trials and is never overwritten by the critic. The system
-may revise its own conclusions freely but cannot overrule its operator or unlearn
-its foundations.
+Every episode produces a complete **plan**: the day-phased checklist plus the coordinator's and specialists' strategy summaries. At the moment it is written, that plan is snapshotted verbatim to disk as the *current* plan. Around it runs a small, deterministic, runner-driven checkpoint cycle — no LLM at any step:
 
-## 4. Experimental setup
+- **Promote on a clean run.** When an episode finishes without being abandoned, its plan is promoted to the **champion** — the single best plan on record. It becomes the new reference point every future run is measured against.
+- **Protect on a doomed run.** When an episode is abandoned by the watcher, the champion is left exactly as it was. A bad run cannot overwrite the best one; the wreckage is never mistaken for progress.
+- **Restore before the next run.** If the previous episode doomed, the next one does not re-derive its plan from that failure — the runner reloads the champion plan verbatim, and the planner builds forward from there.
 
-- **Environment:** MAPs benchmark, single park slot, horizon = 100 steps per
-  episode.
-- **Held fixed across all episodes:** the LLM (identical model and configuration)
-  and all system code. The *only* variable that changed between episodes was the
-  self-authored strategy memory.
-- **Objective / target:** maximize cumulative park value; the north-star target
-  communicated to the system was $1,000,000.
-- **Critic cadence:** mid-episode verdict every 10 steps; abort after 2
-  consecutive `doomed` verdicts, not earlier than a fixed minimum step.
-- **Trial budget:** a small number of active trials, at most one per domain, none
-  admitted when too few steps remained to evaluate them.
-- **Measurement:** cumulative reward read from the deterministic per-step run log
-  written by the runner (the same ground-truth source the critic uses).
+The consequence is that **a bad attempt literally cannot contaminate the next one**, because the next one was never looking at it — only at the champion. Rollback is not a special case that needs handling; it is a plain file copy the runner performs on its own, without ever asking a model.
 
-## 5. Results
+Note the two persistence layers this creates, deliberately kept separate. Individual *rules* accrete forward through the seed mirror; whole *plans* are checkpointed and reverted through the champion mechanism. One preserves hard-won facts; the other preserves a coherent overall strategy. A run can lose the second without ever losing the first.
 
-Cumulative reward by episode, with the model and code held fixed:
+## Results
 
-| Episode | Final cumulative reward |
-| ------- | ----------------------- |
+Same models. Same code. The only thing that changed across attempts was the memory the network wrote for itself.
+
+| Attempt | Cumulative reward |
+|---|---|
 | 0 | 12,121 |
 | 1 | 9,226 |
 | 2 | 31,406 |
@@ -270,149 +136,20 @@ Cumulative reward by episode, with the model and code held fixed:
 | 4 | **331,642** |
 | 5 | 195,812 |
 
-The headline observation is a **27× improvement** from episode 0 to episode 4
-with no weight updates and no human prompt edits. Qualitatively, the sharp
-episodes 2→4 gains coincide with the system discovering and then refining its core
-revenue engine — research-gated escalation of ride tiers combined with a
-high-rating "modify concessions" loop — and committing that discovery to its
-strategy books.
+That is roughly **27× from attempt 0 to attempt 4**, with no weight updates and no human touching the prompt in between. The steepest gains land exactly where the system locks in its core money-maker — research-gated ride upgrades paired with a high-rating concessions loop — and writes it down where it cannot forget it again.
 
-Two results are as informative as the headline:
+It is not a straight line up, and we want to be upfront about that: attempt 5 fell back to 195,812. That is what genuine exploration looks like, and it is precisely the case the champion mechanism exists for — attempt 6 plans from attempt 4's peak, unaffected by attempt 5's stumble. The system also never reached the target we set going in. It climbed; it did not arrive.
 
-- **Improvement is non-monotonic.** Episode 5 regressed to 195,812 from episode
-  4's 331,642. This is expected of a genuine exploratory learner and is the
-  motivating case for the renew mechanism (Section 3.6): because episodes plan
-  from the best-ever run, episode 5's shortfall does not become the baseline for
-  episode 6.
-- **The target was not reached.** The $1,000,000 north star was not attained
-  within the observed runs. We report this plainly; the system demonstrably
-  climbs but had not, in this window, reached the stated goal.
+## Limitations
 
-## 6. Discussion
+This is a proof of concept, not a leaderboard result: one system, one benchmark, six attempts, one model family, no baseline comparison, and no error bars.
 
-The results support a specific reading: the *learning* is not the hard part —
-prompting an LLM to propose lessons is trivial. The hard part, and where the
-engineering value concentrates, is the **discipline around** the learning. Three
-design levers do the work.
+The single real point of failure is that the system's judgment is only as good as its telemetry. If the metric can be gamed or the log is lossy, it will learn the wrong lesson with total confidence. That is not a footnote — it is the actual precondition for this pattern to work anywhere, and the reason an external benchmark with a deterministic score is the right place to test it.
 
-First, **falsifiability converts opinion into evidence.** Requiring a
-pre-registered metric and window before a lesson can be admitted is what
-distinguishes a durable rule from a plausible-sounding rationalization of a lucky
-run. Second, **grounding in deterministic telemetry** removes the model from the
-one place it is most dangerous — adjudicating whether its own idea worked. Third,
-the **best-anchored renewal** makes the whole loop tolerant of bad episodes:
-without it, a single regression would corrupt all subsequent plans; with it,
-regressions are simply non-events.
+And the causality is correlational, not proven: a rule is judged by whether a metric moved while it was live, not by a controlled experiment. Demotion — the playbook editor's ability to remove a previously-learned rule — catches some of the false positives that slip through, but not all of them.
 
-We also note that the actor/critic split maps onto a broad and long-standing idea
-— separating a policy that acts from a process that evaluates and improves it —
-realized here with natural-language memory as the medium of improvement rather
-than gradients.
+## The takeaway
 
-**A selectionist reading.** The trial protocol can be viewed as an evolutionary
-loop operating over *natural-language strategies* rather than genomes or weights.
-Trials supply **variation** (candidate rule mutations of the current policy);
-evaluation against deterministic telemetry supplies **selection** (confirm /
-falsify as a fitness test); and the seed-mirror carry-forward supplies
-**inheritance** (surviving rules propagate to future episodes, including across
-cold starts). Demotion adds negative selection on rules that later correlate with
-regressions, and best-anchored renewal is a form of elitism — the champion is
-never lost to a bad generation. Framed this way, the system is a small
-open-ended learner whose units of selection are human-readable imperatives, which
-makes the entire evolutionary trajectory legible and auditable in a way that
-weight-space search is not.
+Bigger models will raise the starting point. But an agent that cannot trust its own memory does not get better simply because the model underneath it does. A self-improving agent network is what you get when you take that seriously: memory that must prove itself before it is trusted, a judge that only believes the log, deterministic guardrails so the actor cannot grade its own homework, the willingness to abandon a lost run early, and always starting the next attempt from the best day it has ever had.
 
-## 7. Limitations and threats to validity
-
-We consider the limitations central, not incidental, to an honest reading.
-
-- **Tiny sample; not a benchmark result.** Six episodes on one task with one
-  model is a case study. There are no error bars, no seeds, and no baselines. The
-  numbers establish that improvement *can* occur under this design; they do not
-  establish magnitude, reliability, or generality.
-- **Non-monotonic and unfinished.** The curve is not monotone and did not reach
-  the stated target within the observed window. We cannot claim convergence.
-- **Improvement is bounded by the task's ceiling.** Self-improvement reaches
-  toward the best policy the environment permits; it does not raise that ceiling.
-  Any observed gain must eventually asymptote.
-- **The critic is a single point of failure.** The loop is only as sound as its
-  outcome signal and its telemetry. Where the objective is gameable or the log is
-  lossy or biased, the system will faithfully and confidently learn the wrong
-  thing. This precondition — a trustworthy, hard-to-game measurement — is the
-  real gating requirement for transferring the pattern to other domains.
-- **Attribution is correlational.** Trials are judged by whether a metric moved in
-  a window while the rule was active; this is association, not a controlled
-  intervention. A rule can be confirmed on a run it did not actually cause to
-  succeed (mitigated, but not eliminated, by demotion).
-- **No external comparison.** We do not compare against a static-prompt agent, a
-  fine-tuned agent, or alternative memory schemes, so we cannot quantify how much
-  of the gain is attributable to this specific design versus the actor
-  architecture alone.
-
-## 8. Related work
-
-The design draws on several established lines of work; we claim no novelty over
-their core ideas, only a particular synthesis.
-
-**Reasoning-and-acting agents.** The per-turn loop in which an LLM interleaves
-reasoning with tool-mediated action follows the ReAct paradigm [1].
-
-**Self-improvement via verbal feedback.** Reflexion [2] introduced improving a
-language agent across attempts by having it write natural-language reflections on
-its failures into an episodic memory — the closest antecedent to our strategy
-books. Self-Refine [3] and self-taught reasoning approaches such as STaR [4]
-similarly bootstrap improvement from the model's own outputs. Our departure is to
-*gate* what may be remembered behind a falsifiable, pre-registered criterion
-evaluated against deterministic logs, rather than admitting free-form reflections.
-
-**Lifelong skill and strategy libraries.** Voyager [5] accumulates a reusable,
-inspectable skill library across an open-ended environment; Generative Agents [6]
-maintain a memory stream with periodic reflection. Our strategy books play the
-analogous role for *policy* rather than skills, with explicit provenance tags and
-a carry-forward seed that survives cold starts.
-
-**Actor/critic and evolutionary search.** The separation of an acting policy from
-an evaluating-and-improving process is foundational in reinforcement learning [7].
-The selectionist reading in Section 6 — variation, selection, inheritance over
-natural-language units — connects the approach to evolutionary and open-ended
-learning, a core theme of work on open-endedness [8].
-
-Relative to these, our specific emphases are (i) the **falsifiability gate and
-deterministic grounding** on what an agent is permitted to remember, and (ii) the
-**carry-forward / stop / renew** knowledge lifecycle that makes the loop tolerant
-of bad episodes.
-
-## References
-
-> Indicative references to well-established prior work; author lists abbreviated.
-> Please verify and complete bibliographic details before external publication.
-
-[1] Yao et al. "ReAct: Synergizing Reasoning and Acting in Language Models." 2023.
-
-[2] Shinn et al. "Reflexion: Language Agents with Verbal Reinforcement Learning." NeurIPS, 2023.
-
-[3] Madaan et al. "Self-Refine: Iterative Refinement with Self-Feedback." NeurIPS, 2023.
-
-[4] Zelikman et al. "STaR: Bootstrapping Reasoning with Reasoning." NeurIPS, 2022.
-
-[5] Wang et al. "Voyager: An Open-Ended Embodied Agent with Large Language Models." 2023.
-
-[6] Park et al. "Generative Agents: Interactive Simulacra of Human Behavior." UIST, 2023.
-
-[7] Sutton and Barto. "Reinforcement Learning: An Introduction." 2nd ed., MIT Press, 2018.
-
-[8] Stanley, Lehman, and Clune. "Open-endedness: The last grand challenge you've never heard of." 2017.
-
-## 9. Conclusion
-
-We presented a multi-agent LLM system that improves at a hard, compounding
-optimization task across repeated attempts using only self-authored,
-human-readable strategy memory, with no change to weights or prompts. On the MAPs
-benchmark it achieved a 27× improvement over five episodes while remaining
-non-monotonic and short of its stated target — a profile consistent with a
-genuine exploratory learner rather than a scripted one. The evidence is a case
-study, and we have been explicit about its limits. The transferable lesson is
-architectural: an agent gets better not by having a larger model, but by having a
-memory it can trust, a critic honest enough to admit only tested lessons, the
-discipline to abandon a losing attempt, and the sense to begin each new attempt
-from its best day rather than its last.
+*A case study, not a claim of generality — read the numbers as evidence that something is possible, not as a benchmark to beat.*

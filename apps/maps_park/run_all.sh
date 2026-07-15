@@ -2,17 +2,27 @@
 # Launches the four processes the maps_park demo needs and tears them all
 # down on Ctrl-C. Logs go to ./logs/maps_park/.
 #
-# Override paths via env vars if your checkouts live elsewhere:
-#   MAPS_REPO=/path/to/MAPs OPEN_GRIDWORLD=/path/to/open_gridworld ./run_all.sh
+# Override the MAPs repo path via env var if your checkout lives elsewhere:
+#   MAPS_REPO=/path/to/MAPs ./run_all.sh
 
 set -euo pipefail
 
 MAPS_REPO="${MAPS_REPO:-$HOME/MAPs}"
-OPEN_GRIDWORLD="${OPEN_GRIDWORLD:-$HOME/open_gridworld}"
 STUDIO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# The MAPs MCP server is vendored into this app (was previously an external
+# open_gridworld checkout). It is self-contained: only stdlib + mcp/pydantic/
+# requests + MAPs' map_py (installed via `pip install -e $MAPS_REPO`).
+MAPS_MCP_SERVER="$STUDIO_DIR/apps/maps_park/maps_mcp_server.py"
 LOG_DIR="$STUDIO_DIR/logs/maps_park"
 MEMORY_DIR="$STUDIO_DIR/memory/maps_park"
 mkdir -p "$LOG_DIR" "$MEMORY_DIR"
+
+# Boot with the repo venv so `python` (studio/mcp) and `python3` (runner) both
+# resolve with deps even if the caller forgot to activate it. Without this a
+# fresh start dies at `python: command not found` before the runner can archive
+# state. No-op if there is no venv here (PATH is left as-is).
+# shellcheck disable=SC1091
+[[ -f "$STUDIO_DIR/venv/bin/activate" ]] && source "$STUDIO_DIR/venv/bin/activate"
 
 # Detect --resume early: on resume the MAPs env continues a mid-flight
 # episode, so we must NOT move that episode's run.ep<NNN>.jsonl aside (an
@@ -80,7 +90,7 @@ start() {
 }
 
 [[ -d "$MAPS_REPO/map_backend" ]] || { echo "MAPs repo not found at $MAPS_REPO"; exit 1; }
-[[ -f "$OPEN_GRIDWORLD/maps_mcp_server.py" ]] || { echo "open_gridworld not found at $OPEN_GRIDWORLD"; exit 1; }
+[[ -f "$MAPS_MCP_SERVER" ]] || { echo "vendored MCP server missing at $MAPS_MCP_SERVER"; exit 1; }
 
 # Kill any leftover processes from a previous run before starting fresh.
 # Studio spawns nsflow via uvicorn — that child process keeps port 4183 even
@@ -94,9 +104,7 @@ sleep 2
 
 start "maps_node"   "$MAPS_REPO"       "node map_backend/server.js"
 sleep 2
-MAPS_STATE_FILE="${MAPS_STATE_FILE:-$STUDIO_DIR/coded_tools/maps_park/state/park_state.pkl}"
-MAPS_SNAPSHOT_DIR="${MAPS_SNAPSHOT_DIR:-$STUDIO_DIR/coded_tools/maps_park/state/snapshots}"
-mkdir -p "$MAPS_SNAPSHOT_DIR"
+MAPS_STATE_FILE="${MAPS_STATE_FILE:-$STUDIO_DIR/coded_tools/state/park_state.pkl}"
 # Pass --resume only when the user invoked the script with it; default is fresh.
 MAPS_RESUME_FLAG=""
 for arg in "$@"; do
@@ -104,7 +112,7 @@ for arg in "$@"; do
         MAPS_RESUME_FLAG="--resume"
     fi
 done
-start "maps_mcp"    "$OPEN_GRIDWORLD"  "python maps_mcp_server.py --layout the_islands --difficulty medium --mcp_port 8765 --num_parks 1 --maps_repo_dir '$MAPS_REPO' --state_file '$MAPS_STATE_FILE' --snapshot_dir '$MAPS_SNAPSHOT_DIR' --trajectory_dir '$LOG_DIR' $MAPS_RESUME_FLAG"
+start "maps_mcp"    "$STUDIO_DIR"  "python '$MAPS_MCP_SERVER' --layout the_islands --difficulty medium --mcp_port 8765 --num_parks 1 --maps_repo_dir '$MAPS_REPO' --state_file '$MAPS_STATE_FILE' --trajectory_dir '$LOG_DIR' $MAPS_RESUME_FLAG"
 sleep 3
 start "studio"      "$STUDIO_DIR"      "python -m neuro_san_studio run"
 # Wait until studio HTTP endpoint is accepting connections AND all three agent

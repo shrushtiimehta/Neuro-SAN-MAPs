@@ -87,7 +87,6 @@ Procedure:
    - Normal cap: if count >= 3, come up with new trials and keep the best 3 out of the new and old ones.
      Urgent mode: log at most 1 more trial if neeeded targeting the domain most responsible for the stagnation.
    - If a domain already has an active trial, do NOT log another for that domain.
-   - If fewer than 15 steps remain, log nothing.
 
 3. Non-triviality gate — each candidate must clear ALL of these:
    - It changes agent BEHAVIOUR in a way the current playbook does not already cover.
@@ -165,7 +164,7 @@ If any tool errors, halt and return the error verbatim.
                 description = "Sole writer of the six playbook_* files (mode='promote_trials'): evaluates this episode's trials and edits playbooks for confirmed ones. Every episode is an exam episode and promotion runs on every episode."
             },
             instructions = ${instructions_prefix} """
-You are the sole writer of playbook_coordinator/rides/shops/staff/research/layout.
+You are the sole writer of playbook_coordinator/rides/shops/staff/research/layout/survey.
 
 === mode='promote_trials' ===
 Args: episode, final_reward, prior_reward.
@@ -196,7 +195,7 @@ If any tool errors, halt and return the error verbatim.
 
         {
             name = "advance_episode",
-            class = "coded_tools.maps_park.advance_episode.AdvanceEpisode",
+            class = "coded_tools.advance_episode.AdvanceEpisode",
             function = {
                 description = "End-of-episode bookkeeping: persists reward, clears the observation cache, inserts LLM outcome_summary under '## Episode Summaries' in the outcome ledger, and trims old raw OUTCOME lines. Trial strategies/criteria cleanup happens at episode START via SeedPlaybooks (runner). Returns {status, last_reward_written, observation_cache_cleared, outcome_updated}.",
                 parameters = {
@@ -222,7 +221,7 @@ If any tool errors, halt and return the error verbatim.
 
         {
             name = "EpisodeTelemetry",
-            class = "coded_tools.maps_park.episode_telemetry.EpisodeTelemetry",
+            class = "coded_tools.episode_telemetry.EpisodeTelemetry",
             function = {
                 description = "Structured per-step factual record for ONE episode, read from the deterministic run.jsonl the runner writes (replaces the old LLM-authored turn_notes journal). Returns {episode, steps:[{step, action, subtype, subclass, price, rejected_action, error, reward, cumulative_reward, cash, park_value, park_rating, research_speed, num_rides, num_shops, num_staff, min_cleanliness, min_uptime, shop_revenue, ride_op_cost}], applied:[{step, action, subtype, subclass}], rejections:[{step, rejected_action, subtype, subclass, price, error}], rollup:{step_count, reward_total, cum_start, cum_end, value_start, value_end, cash_end, rating_end, actions_by_type, subtypes_placed, research_speeds_used, rejection_count, rejections_by_action}, exists}. Use `applied` for applied-detection (which trial actions actually fired, with subtype/subclass) and the per-step reward/value/rating deltas in `steps` for success/failure evaluation. `rejections` lists every action the sim REFUSED (committed as a wait with the original rejected_action + error message) — a repeated rejected_action with the same error is the agent using the wrong action and is a prime trial target.",
                 parameters = {
@@ -237,7 +236,7 @@ If any tool errors, halt and return the error verbatim.
 
         {
             name = "LogTrial",
-            class = "coded_tools.maps_park.log_trial.LogTrial",
+            class = "coded_tools.log_trial.LogTrial",
             function = {
                 description = "Mint a collision-free trial_id and append the matching pair of lines to trial_strategies (the one-line rule) and trial_strategies_criteria (the metadata + success/failure criteria). Use this for EVERY new trial; never count ids or hand-format the criteria line yourself. Returns {trial_id} (or 'ERROR: ...').",
                 parameters = {
@@ -245,7 +244,7 @@ If any tool errors, halt and return the error verbatim.
                     properties = {
                         episode           = { type = "int", description = "Current episode number." }
                         step_start        = { type = "string",  description = "Step at which the trial activates (as a string), or the literal 'end_of_episode'." }
-                        domain            = { type = "string",  description = "One of: rides, shops, staff, research, layout, coordinator." }
+                        domain            = { type = "string",  description = "One of: rides, shops, staff, research, layout, survey, coordinator." }
                         section           = { type = "string",  description = "Target playbook section header (or 'new')." }
                         edit_type         = { type = "string",  description = "'add_line' or 'replace_line'." }
                         new_text          = { type = "string",  description = "The one-line rule to add/replace (no rationale or metrics embedded)." }
@@ -261,7 +260,7 @@ If any tool errors, halt and return the error verbatim.
 
         {
             name = "ActiveTrials",
-            class = "coded_tools.maps_park.active_trials.ActiveTrials",
+            class = "coded_tools.active_trials.ActiveTrials",
             function = {
                 description = "Return the active trials joined across trial_strategies (rule body) and trial_strategies_criteria (metadata), optionally filtered to one domain. Returns {domain, count, trials:[{trial_id, rule, domain, section, edit_type, find_text, step_start, ep, success_criterion, failure_criterion, rationale}]}.",
                 parameters = {
@@ -275,7 +274,7 @@ If any tool errors, halt and return the error verbatim.
 
         {
             name = "ResolveTrials",
-            class = "coded_tools.maps_park.resolve_trials.ResolveTrials",
+            class = "coded_tools.resolve_trials.ResolveTrials",
             function = {
                 description = "Apply the curator's per-trial report at episode end: remove confirmed/falsified trials from trial_strategies + trial_strategies_criteria, keep not_applied/inconclusive (and any unreported active trial, as inconclusive note='no_report'), and append an OUTCOME line for every active trial to trial_strategies_outcome. Returns {kept, removed, outcomes_appended}.",
                 parameters = {
@@ -291,13 +290,13 @@ If any tool errors, halt and return the error verbatim.
 
         {
             name = "PromoteTrial",
-            class = "coded_tools.maps_park.promote_trial.PromoteTrial",
+            class = "coded_tools.promote_trial.PromoteTrial",
             function = {
                 description = "Apply ONE confirmed trial's edit to playbook_<domain>.md, tagging the new line '(learned ep<N>)'. add_line appends at end (section 'end'/'new'/empty) or inserts after the named section header; replace_line replaces the unique find_text. On a successful live edit the learned line is also mirrored into the config seed (config_files/<domain>_strategy.md) under a '## Learned rules' section so it survives fresh runs. Returns {action_taken, playbook, line, seed_mirror} where action_taken is promoted / skipped_section_missing / skipped_not_found / skipped_ambiguous / skipped_playbook_missing, and seed_mirror is appended / duplicate_skipped / seed_missing / not_attempted.",
                 parameters = {
                     type = "object",
                     properties = {
-                        domain    = { type = "string",  description = "rides/shops/staff/research/layout/coordinator." }
+                        domain    = { type = "string",  description = "rides/shops/staff/research/layout/survey/coordinator." }
                         edit_type = { type = "string",  description = "'add_line' or 'replace_line'." }
                         new_text  = { type = "string",  description = "The rule line to add/replace (without the learned tag)." }
                         episode   = { type = "int", description = "Episode number for the '(learned ep<N>)' tag." }
@@ -311,7 +310,7 @@ If any tool errors, halt and return the error verbatim.
 
         {
             name = "state_read",
-            class = "coded_tools.file_management.state_read.StateRead",
+            class = "coded_tools.state_read.StateRead",
             function = {
                 description = "Read a file by its logical name from the operator-configured name_map.",
                 parameters = {
@@ -324,27 +323,26 @@ If any tool errors, halt and return the error verbatim.
             },
             args = {
                 name_map = {
-                    trial_strategies            = "coded_tools/maps_park/state/trial_strategies.md"
-                    trial_strategies_criteria   = "coded_tools/maps_park/state/trial_strategies_criteria.md"
-                    trial_strategies_outcome    = "coded_tools/maps_park/state/trial_strategies_outcome.md"
-                    last_reward                 = "coded_tools/maps_park/state/last_reward.md"
-                    playbook_coordinator        = "coded_tools/maps_park/state/playbook_coordinator.md"
-                    playbook_rides              = "coded_tools/maps_park/state/playbook_rides.md"
-                    playbook_shops              = "coded_tools/maps_park/state/playbook_shops.md"
-                    playbook_staff              = "coded_tools/maps_park/state/playbook_staff.md"
-                    playbook_research           = "coded_tools/maps_park/state/playbook_research.md"
-                    playbook_layout             = "coded_tools/maps_park/state/playbook_layout.md"
-                    economics_rides             = "coded_tools/maps_park/config_files/rides_economics.md"
-                    economics_shops             = "coded_tools/maps_park/config_files/shops_economics.md"
-                    economics_staff             = "coded_tools/maps_park/config_files/staff_economics.md"
-                    economics_research          = "coded_tools/maps_park/config_files/research_economics.md"
-                    world_constants             = "coded_tools/maps_park/config_files/world_constants.md"
-                    seed_playbook_coordinator   = "coded_tools/maps_park/config_files/coordinator_strategy.md"
-                    seed_playbook_rides         = "coded_tools/maps_park/config_files/rides_strategy.md"
-                    seed_playbook_shops         = "coded_tools/maps_park/config_files/shops_strategy.md"
-                    seed_playbook_staff         = "coded_tools/maps_park/config_files/staff_strategy.md"
-                    seed_playbook_research      = "coded_tools/maps_park/config_files/research_strategy.md"
-                    seed_playbook_layout        = "coded_tools/maps_park/config_files/layout_strategy.md"
+                    trial_strategies            = "coded_tools/state/trial_strategies.md"
+                    trial_strategies_criteria   = "coded_tools/state/trial_strategies_criteria.md"
+                    trial_strategies_outcome    = "coded_tools/state/trial_strategies_outcome.md"
+                    last_reward                 = "coded_tools/state/last_reward.md"
+                    playbook_coordinator        = "coded_tools/state/playbook_coordinator.md"
+                    playbook_rides              = "coded_tools/state/playbook_rides.md"
+                    playbook_shops              = "coded_tools/state/playbook_shops.md"
+                    playbook_staff              = "coded_tools/state/playbook_staff.md"
+                    playbook_research           = "coded_tools/state/playbook_research.md"
+                    playbook_layout             = "coded_tools/state/playbook_layout.md"
+                    economics_rides             = "coded_tools/config_files/rides_economics.md"
+                    economics_shops             = "coded_tools/config_files/shops_economics.md"
+                    economics_staff             = "coded_tools/config_files/staff_economics.md"
+                    economics_research          = "coded_tools/config_files/research_economics.md"
+                    seed_playbook_coordinator   = "coded_tools/config_files/coordinator_strategy.md"
+                    seed_playbook_rides         = "coded_tools/config_files/rides_strategy.md"
+                    seed_playbook_shops         = "coded_tools/config_files/shops_strategy.md"
+                    seed_playbook_staff         = "coded_tools/config_files/staff_strategy.md"
+                    seed_playbook_research      = "coded_tools/config_files/research_strategy.md"
+                    seed_playbook_layout        = "coded_tools/config_files/layout_strategy.md"
                 }
             }
         },
