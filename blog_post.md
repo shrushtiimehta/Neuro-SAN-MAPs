@@ -18,9 +18,9 @@ Here is how it works.
 
 ---
 
-# Implementation
+## Implementation
 
-## Running the park: the agent network
+### Running the park: the agent network
 
 We don't point a single LLM at the game. The park is run by an **agent network** organized with AAOSA on neuro-san-studio, looping once per day across the hundred-day game. On each turn, a coordinator (the front-man) reads the park's current state and fans a query out, in parallel, to a set of **domain specialists**, one per vertical: rides, shops, staff, layout, research, and guest-survey analyst. Each specialist can read (but not edit) its own **strategy playbook** and the slice of park state relevant to its vertical, and from those it hands back two candidate actions for its area. The coordinator reads its own playbook, weighs the candidates against the strategy written there, and picks one action. Before the action gets fired, we run two deterministic gates to check if the proposal is valid or not.
 
@@ -34,7 +34,7 @@ A loop that long could get expensive fast, seven agents a turn, a hundred turns,
 
 All of that is enough to *play* MAPs. None of it makes the next episode any better than the last.
 
-## Three minds
+### Three minds
 
 To improve across episodes, the agent network has to reflect: record what worked, discard what didn't, and carry the rest into the next episode. We tried a few arrangements before settling on the current one. Our first version folded the reviewer into the same network as the player, and it bled tokens: the two halves talked past each other, turn after turn. Splitting them made each sharper about its own job, far cheaper to run, and let us control in code exactly when the reviewer runs. A second lesson followed: a single reviewer checking in every ten days kept patching symptoms with no sense of where the whole episode was headed, and it churned through too many strategies at once, swapping them out before any had the time it needed to prove out. So we split *reviewing* in two: a between-episodes **planner** that sets the direction, and a mid-episode **watcher** that course-corrects against it. We also limit the number of strategies tried at 3 in one episode.
 
@@ -50,17 +50,17 @@ So the result is three separate agent networks, each a mind with its own goal an
 
 ![The watcher network: a mid-episode analyst with its telemetry and trial tools.](images/watcher_network.png)
 
-## Earning memory, and never losing it
+### Earning memory, and never losing it
 
 Proposing plausible ideas is the easy part; the real work is making sure a good episode's gains survive a bad one. Everything so far happens *within* an episode. What happens *between* episodes is what actually compounds, and it comes down to three moves: keep what's proven, cut what's hopeless before it costs much, and always start the next episode from the best the system has ever managed.
 
 Everything an agent knows for its own slice of the game lives in its **strategy playbook**: a plain-text file it reads at the top of every turn, one for each specialist and one for the coordinator. Each playbook has three parts.
 
-### Static Documentation
+#### Static documentation
 
 The first part is the game's documentation and economics tables for that vertical: the cost, benefits, and rules of every action the agent can take. The rides table, for example, lists each ride and tier with its build cost, capacity, ticket cap, guest happiness and how long it takes to pay for itself. It comes straight from the [MAPs documentation](https://maps.skyfall.ai/) and never changes from episode to episode. The agents read it each day so they never have to guess or estimate the figures a decision depends on, and it is the same reference `FinanceGate` computes against, so the model's judgment and the code's arithmetic work from one source of truth.
 
-### Learned Strategies
+#### Learned strategies
 
 The second part is the strategy the system has worked out for that vertical, both what it has already proven and what it is currently testing. Proven rules are the ones confirmed in earlier episodes, like when a ride is worth upgrading a tier, or which shop to place first. They begin from a hand-written baseline, a read-only **seed**, and grow only as new rules are confirmed, each tagged with the episode it came from. They are read every turn and take priority over hunches.
 
@@ -78,7 +78,7 @@ A trial steers real decisions for the full 100-day episode, then at close-out it
 
 Every rule tried and every verdict is kept in an append-only **trial ledger** that is never wiped between episodes, so a falsified idea stays dead instead of coming back as a "new" proposal three episodes later.
 
-### The episode's plan and Champion
+#### The episode's plan and champion
 
 The third part is the episode's marching orders, written fresh by the planner at the start of each 100-day episode and pinned at the top of every playbook: a short **strategy summary** (the direction for this episode, what the coordinator and each specialist should prioritize and what to avoid) and a day-phased **checklist** of roughly what the park should look like by day 10, 30, 60, and on. The player re-reads it every turn so it never loses the thread. It runs strictly forward: the plan is set at the start and does not change mid-episode.
 
@@ -106,7 +106,7 @@ And the climb isn't a straight line, which is the part worth watching. Episode 5
 
 We came to MAPs to answer a narrow question: can a neuro-san-studio agent network actually learn to run something profitable? It's a first step toward the much larger one behind this whole project: a system that generates and runs businesses on its own, funding new ventures with what it earns and, in time, managing the whole portfolio itself. A park is not a business, research is not real funding, and a benchmark is not the world. And this is a proof of concept, not a proof. Still, watching the same models, untouched, climb nearly 40× on the strength of the harness around them is the first concrete sign that the larger version is worth chasing.
 
-## Future Scope
+## Future scope
 
 Our system already leads every other AI on the benchmark, but it's still well short of human performance; closing that gap is the immediate goal.
 
