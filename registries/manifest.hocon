@@ -17,12 +17,12 @@
     # MAPs (Mini Amusement Parks) benchmark — six specialists each with their own
     # AgentChecklistMiddleware-backed plan, advising a director that posts one
     # action per turn to the maps_mcp_server (see apps/maps_park/).
-    "maps_park.hocon": true,
+    "player.hocon": true,
     # Consultant split into two networks (see apps/maps_park/runner.py):
-    #   maps_park_micro — mid-episode analysis at steps 10..90 (kind=periodic)
-    #   maps_park_macro — start-of-episode analysis + end-of-episode close-out
+    #   watcher — mid-episode analysis at steps 10..90 (kind=periodic)
+    #   planner — start-of-episode analysis + end-of-episode close-out
     # The legacy single-network consultant is no longer used; left on disk but
     # unregistered so it is never loaded.
-    "maps_park_micro.hocon": true,
-    "maps_park_macro.hocon": true,
+    "watcher.hocon": true,
+    "planner.hocon": true,
 }

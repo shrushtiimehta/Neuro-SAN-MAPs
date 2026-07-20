@@ -19,7 +19,7 @@ maps_park loop runner — two-network design with pre-validate + rollback.
 Architecture (vs. the legacy single-session runner):
 
   ─ game-runner session ───────────────────────────────────────────────
-    Network: maps_park
+    Network: player
     Per turn the game-runner agent picks ONE action and calls
     ProposeAction (a coded_tool that validates + persists the proposal
     to coded_tools/state/proposed_action.json). The runner
@@ -29,7 +29,7 @@ Architecture (vs. the legacy single-session runner):
 
   ─ consultant sessions (two networks) ────────────────────────────────
     The old single consultant network was split in two:
-      • micro  (maps_park_micro)  — mid-episode analysis.
+      • micro  (watcher)  — mid-episode analysis.
         Invoked AFTER each step when env_step % MICRO_EVERY == 0
         (default 10), i.e. at steps 10,20,...,90 of the 100-step episode.
         Logs trials for the current episode, and emits a health VERDICT
@@ -42,7 +42,7 @@ Architecture (vs. the legacy single-session runner):
         the loss. The next episode's
         macro start then regenerates the strategy from the best episode
         (rollback) and the aborted trials are falsified at close-out.
-      • macro  (maps_park_macro)  — start- AND end-of-episode work.
+      • macro  (planner)  — start- AND end-of-episode work.
         At episode START (fired before turn 1 of each new episode) it
         compares the best-ever episode against the last one, writes the
         episode checklist + coordinator strategy summary, demotes stale
@@ -100,11 +100,11 @@ from coded_tools.seed_playbooks import SeedPlaybooks
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
-DEFAULT_RUNNER_AGENT = "maps_park"
+DEFAULT_RUNNER_AGENT = "player"
 # The consultant was split into two networks: a mid-episode micro analyzer and
 # an end-of-episode macro analyzer (close-out + whole-run synthesis).
-DEFAULT_MICRO_AGENT = "maps_park_micro"
-DEFAULT_MACRO_AGENT = "maps_park_macro"
+DEFAULT_MICRO_AGENT = "watcher"
+DEFAULT_MACRO_AGENT = "planner"
 DEFAULT_HOST = "localhost"
 DEFAULT_PORT = 8090
 DEFAULT_TICK_SECONDS = 5

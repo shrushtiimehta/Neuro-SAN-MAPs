@@ -26,11 +26,11 @@ Three agent networks (all in [registries/](registries/)) plus a Python loop runn
 
 | Network | File | Role |
 |---|---|---|
-| `maps_park` | [maps_park.hocon](registries/maps_park.hocon) | **Game runner** — picks and validates one action per turn. |
-| `maps_park_micro` | [maps_park_micro.hocon](registries/maps_park_micro.hocon) | **Mid-episode analyst** — health check at steps 10, 20 … 90. |
-| `maps_park_macro` | [maps_park_macro.hocon](registries/maps_park_macro.hocon) | **Start/end-of-episode analyst** — plans the episode, closes it out, learns. |
+| `player` | [player.hocon](registries/player.hocon) | **Game runner** — picks and validates one action per turn. |
+| `watcher` | [watcher.hocon](registries/watcher.hocon) | **Mid-episode analyst** — health check at steps 10, 20 … 90. |
+| `planner` | [planner.hocon](registries/planner.hocon) | **Start/end-of-episode analyst** — plans the episode, closes it out, learns. |
 
-**Per turn** (`maps_park`): `park_director` reads park status → `strategy_coordinator` fans out to
+**Per turn** (`player`): `park_director` reads park status → `strategy_coordinator` fans out to
 five domain specialists in parallel:
 
 - `rides_manager`, `shops_manager`, `staffing_manager` — each proposes a typed action
@@ -47,14 +47,14 @@ Pre-validation never touches the env, so a rejected proposal is re-prompted for 
 (`coded_tools/state/playbook_*.md`), seeded from
 [coded_tools/config_files/](coded_tools/config_files/) on a fresh run.
 
-- *Start of episode* — `maps_park_macro` compares the best-ever episode against the last, writes
+- *Start of episode* — `planner` compares the best-ever episode against the last, writes
   the episode plan + coordinator strategy summary, demotes regression-linked rules, and logs fresh
   **trials** (hypotheses).
-- *Mid-episode* (`maps_park_micro`) — emits a `VERDICT: on_track | underperforming | doomed`. A
+- *Mid-episode* (`watcher`) — emits a `VERDICT: on_track | underperforming | doomed`. A
   `doomed` verdict trips the runner's **early-abort guardrail**: past step 50 one strike aborts,
   before step 50 it takes two consecutive strikes. Aborting fast-forwards the rest of the episode
   with `wait()`s (the env has no early-reset), booking the loss cheaply.
-- *End of episode* — `maps_park_macro` runs the close-out: promote/resolve trials, roll confirmed
+- *End of episode* — `planner` runs the close-out: promote/resolve trials, roll confirmed
   hypotheses into the playbooks, and `advance_episode`.
 
 Playbooks are snapshotted into `state/playbook_history/<ts>_<tag>/` at every episode boundary
@@ -221,7 +221,7 @@ coded_tools/             (flat — all tool modules directly here, no per-app su
   config_files/                seed playbooks + economics constants (tracked)
   state/                       live playbooks, ledgers, snapshots — runtime, gitignored, reseeded each run
 
-registries/              maps_park*.hocon — the three agent networks
+registries/              player.hocon, watcher.hocon, planner.hocon — the three agent networks
 logs/maps_park/          run.ep<NNN>.jsonl (one per episode), turns.jsonl, per-process logs
 ```
 

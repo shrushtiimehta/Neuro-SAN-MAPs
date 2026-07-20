@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run JUST the macro consultant (maps_park_macro) one time, against the
+# Run JUST the macro consultant (planner) one time, against the
 # latest episode log — e.g. to close out a half-episode you cancelled with Ctrl-C
 # (which tore the services down).
 #
@@ -87,7 +87,7 @@ start "studio" "$STUDIO_DIR" "python -m neuro_san_studio run"
 # Wait until studio is accepting connections AND the macro network is registered.
 for i in $(seq 1 60); do
     list_json="$(curl -m 1 -s http://localhost:8090/api/v1/list 2>/dev/null || true)"
-    if echo "$list_json" | grep -q '"maps_park_macro"'; then
+    if echo "$list_json" | grep -q '"planner"'; then
         echo "studio ready after ${i}s (macro network registered)"
         break
     fi

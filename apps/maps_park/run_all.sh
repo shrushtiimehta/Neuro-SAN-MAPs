@@ -120,9 +120,9 @@ start "studio"      "$STUDIO_DIR"      "python -m neuro_san_studio run"
 # the registry list.
 for i in $(seq 1 60); do
     list_json="$(curl -m 1 -s http://localhost:8090/api/v1/list 2>/dev/null || true)"
-    if echo "$list_json" | grep -q '"maps_park"' \
-       && echo "$list_json" | grep -q '"maps_park_micro"' \
-       && echo "$list_json" | grep -q '"maps_park_macro"'; then
+    if echo "$list_json" | grep -q '"player"' \
+       && echo "$list_json" | grep -q '"watcher"' \
+       && echo "$list_json" | grep -q '"planner"'; then
         echo "studio ready after ${i}s (runner + micro + macro networks registered)"
         break
     fi
