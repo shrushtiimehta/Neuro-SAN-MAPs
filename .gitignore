@@ -215,3 +215,8 @@ memory/
 # Claude Code local-only files
 .claude/settings.local.json
 .claude/worktrees/
+
+# Large media exports — host externally / use LFS, do not commit
+images/Park Example.mov
+images/Park_Example.mp4
+images/Park_Example.gif
