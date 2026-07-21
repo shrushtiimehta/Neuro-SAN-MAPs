@@ -10,7 +10,7 @@ The knotty part here is that only the cheapest attractions start unlocked, and e
 
 Here is a single day of an episode: the network commits one move, then the gates open and the day plays out.
 
-![A single day of an episode, replayed](images/step98.gif)
+![A single day of an episode, replayed](images/Park_Example.gif)
 
 But there is a fundamental limit. Point an LLM (or a network of them) at MAPs, run it a hundred times with the same prompts, and the hundredth episode is no better than the first, sometimes worse. The agents backed by LLMs are non-deterministic, and each entire episode is a hundred separate decisions. With no training to build on, a strong episode comes down to luck or the model's innate knowledge, not a strategy it tested and confirmed, and we don't even know whether the profits can be repeated. Either way, nothing improves across episodes: the model can neither identify which decisions worked nor carry them into the next episode. An LLM is frozen at training time, and so is any agent network built from one. A bigger model raises the starting point of every episode, but never lets the network improve *across* it.
 
