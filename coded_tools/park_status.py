@@ -26,6 +26,9 @@ real simulator field names to a clean summary:
   - free_tiles: from observation.valid_placement_coords — tiles ready for
     placement (already computed by the simulator, no grid scan needed)
   - broken_rides: entries from ride_list where out_of_service=true
+  - out_of_service: true if any ride is out of service (park-wide flag)
+  - min_uptime: park-wide worst uptime across rides and shops
+  - min_cleanliness: park-wide worst tile cleanliness (from observation)
   - placed_rides: observation.rides.ride_list
   - placed_shops: observation.shops.shop_list
   - placed_staff: observation.staff.staff_list
@@ -62,13 +65,22 @@ _PHASE_RE = re.compile(r"turns?\s+(\d+)\s*(?:[-–]\s*(\d+))?\s*:\s*(.+)", re.IG
 _SPECIALIST_FIELDS: dict[str, list[str]] = {
     "rides":       ["step", "cash", "park_rating", "placed_rides", "available_entities", "broken_rides"],
     "shops":       ["step", "cash", "park_rating", "placed_shops", "available_entities"],
-    "research":    ["step", "cash", "park_rating", "research_speed", "research_topics", "research_operating_cost", "available_entities"],
-    "staff":       ["step", "cash", "park_rating", "placed_staff", "placed_rides", "broken_rides"],
+    "research":    ["step", "cash", "park_rating", "park_value", "research_speed", "research_topics", "research_operating_cost", "available_entities"],
+    "staff":       ["step", "cash", "park_rating", "out_of_service", "min_uptime", "min_cleanliness", "placed_staff", "available_entities"],
     "survey":      ["step", "cash", "park_rating", "guests", "guest_survey_results"],
     "layout":      ["step", "park_rating", "free_tiles", "path_coords", "placed_rides", "placed_shops",
                     "placed_staff", "entrance", "exit"],
     "coordinator": ["step", "cash", "park_rating", "park_value", "research_speed", "current_phase",
                     "placed_staff", "placed_shops", "placed_rides"],
+}
+
+# available_entities lists every buildable subtype across ALL domains; each
+# specialist should see only its own. A domain absent here (e.g. research, which
+# unlocks everything) keeps the full map.
+_DOMAIN_SUBTYPES: dict[str, frozenset[str]] = {
+    "rides": frozenset({"carousel", "ferris_wheel", "roller_coaster"}),
+    "shops": frozenset({"drink", "food", "specialty"}),
+    "staff": frozenset({"janitor", "mechanic", "specialist"}),
 }
 
 # Per-specialist entity field pruning: (specialist, list_key) → fields to keep.
@@ -80,14 +92,18 @@ _POSITION = ["subtype", "subclass", "x", "y"]
 # (revenue_generated - operating_cost) and pick the worst performer to remove.
 _PERF = _POSITION + ["revenue_generated", "operating_cost", "guests_entertained"]
 _ENTITY_FIELDS: dict[tuple[str, str], list[str]] = {
+    # Rides manager cares about build/upgrade/pricing economics, not maintenance
+    # (uptime/cleanliness/out_of_service) — those are staff/layout concerns.
+    ("rides",       "placed_rides"):  _POSITION + ["ticket_price", "operating_cost", "revenue_generated",
+                                                   "intensity", "excitement", "guests_entertained", "avg_wait_time"],
     ("coordinator", "placed_rides"):  _IDENTITY,
     ("coordinator", "placed_shops"):  _IDENTITY,
     ("coordinator", "placed_staff"):  _IDENTITY,
-    ("layout",      "placed_rides"):  _PERF,
-    ("layout",      "placed_shops"):  _PERF,
+    ("layout",      "placed_rides"):  _PERF + ["uptime", "cleanliness", "avg_wait_time"],
+    ("layout",      "placed_shops"):  _PERF + ["cleanliness"],
     ("layout",      "placed_staff"):  _POSITION,
-    ("staff",       "placed_rides"):  _POSITION + ["out_of_service"],
-    ("staff",       "broken_rides"):  _POSITION,
+    # staff keeps ALL fields on placed_staff (salary, operating_cost, success_metric*,
+    # tiles_traversed) so the manager can judge which hire to dismiss.
 }
 
 
@@ -126,6 +142,9 @@ class ParkStatus(CodedTool):
             "path_coords":        self._to_xy_list(obs.get("path_coords") or []),
             "free_tiles":         self._to_xy_list(obs.get("valid_placement_coords") or []),
             "broken_rides":       self._broken_rides(obs),
+            "out_of_service":     bool(self._broken_rides(obs)),
+            "min_uptime":         self._min_uptime(obs),
+            "min_cleanliness":    obs.get("min_cleanliness"),
             "placed_rides":       self._section_list(obs, "rides", "ride_list"),
             "placed_shops":       self._section_list(obs, "shops", "shop_list"),
             "placed_staff":       self._section_list(obs, "staff", "staff_list"),
@@ -182,6 +201,13 @@ class ParkStatus(CodedTool):
             for k in fields:
                 if k not in snapshot:
                     continue
+                if k == "available_entities":
+                    allowed = _DOMAIN_SUBTYPES.get(specialist)
+                    data[k] = (
+                        {s: v for s, v in snapshot[k].items() if s in allowed}
+                        if allowed and isinstance(snapshot[k], dict) else snapshot[k]
+                    )
+                    continue
                 keep = _ENTITY_FIELDS.get((specialist, k))
                 if keep is not None and isinstance(snapshot[k], list):
                     data[k] = [
@@ -209,3 +235,13 @@ class ParkStatus(CodedTool):
     def _broken_rides(self, obs: dict[str, Any]) -> list:
         ride_list = self._section_list(obs, "rides", "ride_list")
         return [r for r in ride_list if r.get("out_of_service")]
+
+    def _min_uptime(self, obs: dict[str, Any]) -> float | None:
+        """Park-wide worst uptime across rides and shops (the sim reports these
+        per-section). None if neither section is present."""
+        vals = [
+            (obs.get(sec) or {}).get("min_uptime")
+            for sec in ("rides", "shops")
+        ]
+        vals = [v for v in vals if v is not None]
+        return min(vals) if vals else None

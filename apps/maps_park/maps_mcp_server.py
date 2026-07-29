@@ -128,6 +128,7 @@ def make_concise_obs(obs) -> dict:
         "shops":                   d.get("shops"),
         "staff":                   d.get("staff"),
         "min_cleanliness":         d.get("min_cleanliness"),
+        "guests":                  d.get("guests"),
         "guest_survey_results":    d.get("guest_survey_results"),
     }
 
@@ -166,6 +167,7 @@ class GameManager:
             render_park=False,
             observation_type="pydantic",
             return_raw_in_info=True,
+            return_detailed_guest_info=True,
             layout=self.layout,
             difficulty=self.difficulty,
         )

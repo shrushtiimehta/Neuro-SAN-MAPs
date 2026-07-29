@@ -31,7 +31,6 @@ In all cases append one line to trial_strategies_outcome:
 from __future__ import annotations
 
 import json
-import re
 from typing import Any
 
 from neuro_san.interfaces.coded_tool import CodedTool
@@ -40,11 +39,10 @@ from coded_tools.file_io import FileIO
 from coded_tools.trial_parsing import CRITERIA_PATH
 from coded_tools.trial_parsing import OUTCOME_PATH
 from coded_tools.trial_parsing import STRATEGIES_PATH
+from coded_tools.trial_parsing import filter_lines
 from coded_tools.trial_parsing import parse_criteria
 from coded_tools.trial_parsing import parse_strategies
 from coded_tools.trial_parsing import read_text
-
-_LINE_TID_RE = re.compile(r"^-\s+(\S+?):?\s")  # trial_id at the start of a strategy or criteria line
 
 
 class ResolveTrials(CodedTool):
@@ -114,27 +112,13 @@ class ResolveTrials(CodedTool):
             )
 
         try:
-            FileIO.write_text(STRATEGIES_PATH, self._filter_lines(strat_text, keep_ids))
-            FileIO.write_text(CRITERIA_PATH, self._filter_lines(crit_text, keep_ids))
+            FileIO.write_text(STRATEGIES_PATH, filter_lines(strat_text, keep_ids))
+            FileIO.write_text(CRITERIA_PATH, filter_lines(crit_text, keep_ids))
             FileIO.append_text(OUTCOME_PATH, "".join(outcome_lines))
         except OSError as err:
             return f"ERROR: could not write trial files: {err}"
 
         return {"kept": kept, "removed": removed, "outcomes_appended": len(outcome_lines)}
-
-    @staticmethod
-    def _filter_lines(text: str, keep_ids: set[str]) -> str:
-        """Keep every line whose trial_id is in keep_ids; preserve non-trial lines."""
-        out: list[str] = []
-        for line in text.splitlines():
-            match = _LINE_TID_RE.match(line.strip())
-            if match is None:
-                out.append(line)  # blank/header/other — preserve
-            elif match.group(1) in keep_ids:
-                out.append(line)
-            # else: a trial line whose id was removed -> drop
-        body = "\n".join(out).strip("\n")
-        return body + "\n" if body else ""
 
     async def async_invoke(self, args: dict[str, Any], sly_data: dict[str, Any]) -> dict[str, Any] | str:
         return self.invoke(args, sly_data)

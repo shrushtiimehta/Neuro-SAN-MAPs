@@ -38,11 +38,31 @@ _STRATEGY_RE = re.compile(r"^-\s+(\S+):\s+(.*)$")
 # key=value pairs where the value is either a single-quoted string (may contain
 # spaces) or a bare token.
 _KV_RE = re.compile(r"(\w+)=('[^']*'|\S+)")
+# trial_id at the start of a strategy ("- <id>: ...") or criteria ("- <id> ep=...") line.
+_LINE_TID_RE = re.compile(r"^-\s+(\S+?):?\s")
 
 
 def read_text(path: str) -> str:
     """Backwards-compatible alias for :meth:`FileIO.read_text`."""
     return FileIO.read_text(path)
+
+
+def filter_lines(text: str, keep_ids: set[str]) -> str:
+    """Keep every trial line whose trial_id is in keep_ids; preserve non-trial lines.
+
+    Shared by ResolveTrials (keep the survivors at episode close) and
+    DeleteTrial (keep everything except the one pruned mid-episode).
+    """
+    out: list[str] = []
+    for line in text.splitlines():
+        match = _LINE_TID_RE.match(line.strip())
+        if match is None:
+            out.append(line)  # blank/header/other — preserve
+        elif match.group(1) in keep_ids:
+            out.append(line)
+        # else: a trial line whose id was removed -> drop
+    body = "\n".join(out).strip("\n")
+    return body + "\n" if body else ""
 
 
 def parse_strategies(text: str) -> dict[str, str]:

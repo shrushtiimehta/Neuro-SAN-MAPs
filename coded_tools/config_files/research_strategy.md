@@ -6,26 +6,23 @@ You set research speed and topic to unlock higher tiers (blue→green→red). Re
 <!-- PLAYBOOK_SUMMARY:END -->
 
 ## What research does
-Research earns $0 the day it runs, but a yellow-only park caps both capacity and park_rating — which caps guests and revenue. Unlocking higher tiers (rides/shops/staff) lifts capacity + rating → more guests → more revenue → funds the next unlock, so an earlier unlock compounds over more of the run while a late one caps the whole run. But an unlock only lands after research runs for several continuous, funded days — blue takes ~4 days at slow (~$8k total) — so it is worth switching on only once the park has banked enough cash to carry it through to the unlock; started underfunded, research stalls when cash dips and the tier stays locked.
+Research earns nothing directly, yet it is the **HIGHEST-LEVERAGE** action in the game.
 
-## Research mechanics
-Speed costs and IP value per day:
-- slow: costs $2000/day, adds $1500/day to park value.
-- medium: costs $8000/day, adds $3000/day to park value.
-- fast: costs $32000/day, adds $6000/day to park value.
-Further details are in research_economics.
+GOAL: The park has four tiers — yellow → blue → green → red — and reward COMPOUNDS as you climb them. Research is what unlocks each tier; only then can you build the higher-tier assets that raise the capacity and revenue of your rides/shops/staff and earn high rewards. A yellow-only fleet caps BOTH capacity and park_rating, so start researching as EARLY as you can afford — the sooner tiers unlock, the more of the episode the high-reward late-game engine runs. Never defer it for "more revenue first." But keep it BALANCED — never sink so much into research that cash can't cover daily operating costs and keep building.
 
-Higher speed finishes a tier in fewer days (pushing the park ahead faster) but costs more per research point (fast ≈ 2× medium ≈ 4× slow), so the faster tiers only pay off while income covers their higher daily cost.
+## Levers you SET (via `set_research`):
+- **research_speed** — `none` / `slow` / `medium` / `fast`; `none` = no progress. Higher speed unlocks a tier in fewer days but costs more per day.
+- **research_topics** — the QUEUE of subtypes to research, in order.
+
+## Research status readouts (reported per ride, not set by you)
+- **available_entities** — the unlock ledger: which subtypes have reached which tier. Your ONLY view of progress; growing this list is the goal.
+- **research_operating_cost** — the current speed's daily cost; watch it against `cash` so research never pauses.
 
 ## Tips
-- Don't propose research unless cash covers at least 3 days of `speed_cost` above daily recurring costs. If cash dips, research pauses on its own (progress is never lost) and the tier stays locked, so the spend so far buys nothing until cash recovers.
-- Each subtype has four tiers (yellow < blue < green < red); you start at yellow, and research unlocks the rest in that order. `research_topics` is the list of subtypes to research (e.g. `["carousel"]`).
-- `research_topics` is a QUEUE, and listing several costs no more than listing one — flat daily cost, same progress rate, one tier at a time. It only sets the order, breadth-first: the sim cycles one subclass per topic, so every listed topic reaches blue before any reaches green.
-- That is a real trade-off. Listing ONE subtype rushes it to red fastest, but each later subtype then needs a fresh set_research — a whole step. Listing SEVERAL up front keeps unlocks diverse and avoids those extra steps, at the cost of slower depth on any single subtype.
-- State handling:
-  - only yellow unlocked: start slow research on rides.
-  - new subclass just appeared in `available_entities`: research finished; immediately propose the next priority topic.
-  - speed != none (in progress): don't reset unless cash fell below the safety threshold or strategy requires a pivot.
-- Once started, research runs daily until you change the settings, funds run out, or all chosen topics unlock (progress pauses, never lost). It never auto-stops at your target tier — left on, it runs all the way to red.
+- Propose research only if cash covers at least 3 days of `speed_cost` above daily recurring costs otherwise return []. Do NOT let the cash dip below research_operating_cost, as it results in research pausing (progress is never lost) and the tier stays locked, so the spend so far buys nothing until cash recovers.
+- Each subtype has four tiers (yellow < blue < green < red); you start at yellow, and research unlocks the rest in that order. `research_topics` is the list of subtypes of rides/shop/staff to research (e.g. `["carousel"]`).
+- `research_topics` is a QUEUE, and listing several costs no more than listing one. Make sure you use it to set the order to run research breadth-first: it researches one tier per topic, so every listed topic reaches blue then research moves to green and so on. Listing a few up front keeps unlocks diverse and avoids those extra steps to change the research topic, at the cost of slower depth on any single subtype.
+- Once started, research runs daily until you change the settings, funds run out, or all chosen topics unlock (progress pauses, never lost). It never auto-stops at your target tier — left on, it runs all listed subtypes to red.
+- Higher speed finishes a tier in fewer days (pushing the park ahead faster) but costs more per research point (fast ≈ 2× medium ≈ 4× slow). Start increasing the speed once the park's income is able to bear the higher daily cost.
 
 ## Learned rules (promoted from prior runs)

@@ -163,7 +163,7 @@ A ride that breaks down incurs a repair cost equal to 4.5% of its building cost.
 ---
 **set_research** — Set research speed and topics
 - research_speed: none | slow | medium | fast
-- research_topics: list from [carousel, ferris_wheel, roller_coaster, drink, food, specialty]
+- research_topics: list from [carousel, ferris_wheel, roller_coaster, drink, food, specialty, janitor, mechanic, specialist]
 
 ---
 **survey_guests** — Retrieve feedback from a sample of guests

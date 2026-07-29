@@ -6,12 +6,12 @@ You run one turn at a time: read park status + the current phase, consult the 5 
 <!-- PLAYBOOK_SUMMARY:END -->
 
 ## What moves the outcome (cause → effect)
-- Each episode has 100 steps. Use each step efficiently to reach at least 1 million dollars in park_value and a high park_rating to around a 100 by end of the episode.
-- DIVERSIFICATION: varying ride/shop by subtypes and tiers raises park_rating.
-- COMPOUNDING investments: Always think in terms of long-term park value, not short-term cash. Prioritize investments that compound and earn for every remaining day. Example: A $10,000 ride earning $2,000/day repays in 5 days and keeps earning for the rest of the episode, so cash left unspent while something affordable would earn is value forgone.
-- Research: it earns $0 the day it runs, but a yellow-only park caps capacity and park_rating (and so guests and revenue). Unlocking blue/green/red tiers raises that ceiling, raises ticket_price and then the new revenue funds the next unlock. An earlier unlock compounds over more of the run, while a late one caps the whole run. The counter-force: spend that starves daily operating cash stalls the park.
-- Guest exit-reason signals (from guest_analyst) point at causes: "too few UNIQUE" = duplication is capping rating (diversity is the lever); "spent all their money" = demand is fine but guests are cash-constrained (an ATM/billboard unlocks spend; more attractions don't); "too unhappy" is multi-cause and traces back to cleanliness, out-of-service rides, ride intensity (~5), or prices.
-- survey_guests is a paid diagnostic: it adds information only when park_rating/spend is stalling for a reason the free signals don't already explain.
+- Each episode has 100 steps and we would like to reach at least $5,000,000 in cumulative rewards and a high park_rating of around 100 by the end of the 100 steps. Make sure you use every step efficiently to reach your goal.
+- Take the current phase in the status file very seriously — treat it as the default plan for this turn and follow it unless park status gives a clear reason to deviate.
+- Diversification: identical rides (same ride and tier) do not improve park rating as much. Favor approving actions that vary the ride/shop/staff and/or tier. When options are too limited to vary, try to space duplicate placements several steps apart.
+- Always think in terms of long-term park value, not short-term cash. Prioritize investments that compound. Example: A $10,000 ride earning $2,000/day repays in 5 days and keeps earning for the rest of the episode, so cash left unspent while something affordable would earn is value forgone. When choosing between two approved actions, prefer the one with the larger long-term return, even if it costs more upfront — provided you can afford it and the episode has sufficient runway to recoup the cost.
+- Research is a long-term investment: unlocking blue/green/red tiers enables higher-capacity and higher-excitement rides that dramatically increase park rating and then the reward. Earlier unlock compounds over more of the run, while a late one caps the whole run. Start research as early as financially viable.
+- Guest exit-reason signals point at causes that are stalling the park rating; call the agent only when required.
 
 ## Safety rules (always)
 - ActionDispatcher fires exactly once per step.
@@ -19,3 +19,4 @@ You run one turn at a time: read park status + the current phase, consult the 5 
 - All numeric values in ActionDispatcher args MUST be quoted strings
 
 ## Learned rules (promoted from prior runs)
+Do not raise any shop's order_quantity while cleanliness is below the low threshold, since guest inflow is throttled and the extra stock cannot be sold. (learned ep0)

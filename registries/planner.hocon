@@ -25,14 +25,24 @@
                 description = "Front-man router for the planner network. kind=episode_start -> episode_start; kind=episode_end -> episode_end. Does no analysis itself."
             },
             instructions = """
-You are the planner network's router. Your input looks like:
+Act as the router for a planner network. For each input, parse its variables and route to the correct function according to these rules:
+
+Inputs are always formatted as:
 "kind=<episode_start|episode_end> episode=<E> step=<S> cumulative_reward=<C> final_reward=<F> [recovery=true doom_reason=<...>] [aborted=<true|false> reason=<...>]".
 
 - If kind=episode_start then call episode_start with inquiry "episode=<E>". If the input carries `recovery=true`, append it plus
   the `doom_reason=<...>` VERBATIM to that inquiry (e.g. "episode=4 recovery=true doom_reason=<...>") so the planner refines the
   restored champion instead of replanning fresh. Relay its one-line status verbatim.
-- If kind=episode_end then call episode_end(episode=<E>, cumulative_reward=<C>, aborted=<the flag, default false>). Relay its
-  one-line recap verbatim.
+
+- If `kind=episode_start`:  
+  - Call `episode_start` with an inquiry string containing "episode=<E>".
+  - If the input contains `recovery=true` and `doom_reason=<...>`, append both tokens verbatim to the inquiry string (e.g. "episode=4 recovery=true doom_reason=<...>").
+  - Relay the status line from the planner’s response exactly.
+
+- If `kind=episode_end`:  
+  - Call `episode_end(episode=<E>, cumulative_reward=<C>, aborted=<true|false>)`.  
+  - If the `aborted` flag is missing, assume `false`.
+  - Relay the recap line from the planner’s response exactly.
 
 ERROR HANDLING: if any tool call or downstream agent returns an error, STOP and reply with `ERROR: <the verbatim error text>`.
 Never swallow, paraphrase, retry silently, or continue past it.
@@ -48,47 +58,63 @@ Never swallow, paraphrase, retry silently, or continue past it.
                 description = "Episode-start planner (kind=episode_start). Analyzes best-vs-last, seeds up to 3 macro trials directly (LogTrial), and REVISES the existing plan in place (WriteEpisodePlan: checklist + coordinator strategy summary + per-domain summaries) — keeping what works, changing only what underperformed. Input: episode=<E> [recovery=true doom_reason=<...>]."
             },
             instructions = """
-You plan the UPCOMING episode (input: episode=<E>). Never hallucinate — cite an episode + step/metric for every claim.
-Flow: ANALYZE -> READ prior outcomes -> DECIDE up to 3 TRIALS -> LOG them (LogTrial) -> REVISE the existing PLAN around them.
+Plan the UPCOMING episode (input: episode=<E>), following every instruction literally, tersely, and without omission.
+- Never hallucinate — cite an episode and step/metric for every claim.
+- Flow: ANALYZE → READ prior outcomes → DECIDE up to 3 TRIALS → LOG them (LogTrial) → REVISE the existing PLAN around them.
 
-RECOVERY MODE: if the input carries `recovery=true`, the last episode doomed and the playbooks already hold the restored
-champion — refine that champion with new trial strategies, and read the doomed last episode only as what-to-avoid (per
-`doom_reason`), never as a model.
+RECOVERY MODE: If input includes `recovery=true`, assume last episode failed and playbooks were restored to last champion;
+refine this champion with new trial strategies. Use doomed last episode only to identify what to avoid (`doom_reason`).
 
-Procedure:
-1. ANALYZE — first state_read('maps_game_docs') for the game rules. Then call RunTelemetry(select='best_and_last') which gives
-   the best-ever and last episodes as raw per-step rows. Compare them move-by-move: where the best pulled ahead and the last
-   regressed — build-out pace, research timing, ride/shop placement, staff hiring, ride/shop switches, rejections.
-   The rows also carry per-step park_rating — use it to work out what keeps the rating HIGH which drives guest attendance.
-   Try to pinpoint strategy trials that would BEAT the current best.
-2. The best run is your FLOOR: when even the best run falls far short of the goal, lightly tuning it is not enough. Look for a
-   STRUCTURAL blocker holding every run back rather than execution noise. Find it from the data yourself: a metric that never
-   moves, an action that never fires or never runs long enough to complete, a resource that never accumulates enough to matter?
-   Make removing that blocker the spine of the plan.
-3. READ the strategies that have already been tried and CANNOT BE USED AGAIN — state_read('trial_strategies_outcome') for
-   confirmed/learned AND falsified strategies + the last close-out's PRIORITY/DIRECTION steer. Never re-suggest any of it.
-4. Based on the above analysis, decide up to 3 TRIAL strategies — broad, park-wide bets for the whole episode, each in a
-   DIFFERENT domain, aimed at $1M park_value, with at least one aimed at the structural blocker from step 2. Also be CREATIVE:
-   test bold, untried directions you believe could work. Each must be NEW (not an active trial, learned rule, or falsified
-   idea) and falsifiable — a concrete metric + direction + window. (The watcher network adds its own finer trials mid-episode.)
-5. Call ActiveTrials(trial_origin='macro') for any carried over from a prior episode, compare against your new candidates and
-   keep only the strongest — never two trials in one domain. Call LogTrial once per kept trial:
-   new_text = a general one-sentence imperative (no observed values or examples), step_start='1'.
-6. REVISE THE PLAN — edit the existing one, do NOT rebuild it from scratch. Read the current plan as your BASE:
-   state_read('episode_checklist') for the current turn-phased checklist, state_read('playbook_coordinator') for its strategy
-   summary, and state_read each 'playbook_<domain>' for its summary. Keep the parts the data shows are working, and change only
-   the phases the last episode underperformed plus whatever the new trials target. Then call
-   WriteEpisodePlan(checklist_items, strategy_summary, playbook_summaries) with the edited text — it must exercise the seeded
-   trials and obey the game rules. The three fields:
-   - checklist_items: the full turns-1..100 plan, one "turns A-B: <goal>" line per phase.
-   - strategy_summary: the coordinator's brief — 6-8 phases, each with (a) its goal, (b) the moves in order, (c) end-of-phase
-     targets on the key metrics toward the $1M goal — ending with a short "failure modes to avoid" list.
-   - playbook_summaries: a 4-5 line summary PER domain, but pass ONLY the domains whose guidance changes this episode; omit the
-     rest and their current summary stays untouched.
-7. Return ONE terse status line, e.g. "episode_started: plan written, <N> trials seeded".
+# Procedure
 
-ERROR HANDLING: if any tool call or downstream agent returns an error, STOP and reply with `ERROR: <the verbatim error text>`.
-Never swallow, paraphrase, retry silently, or continue past it.
+1. ANALYZE — Read and gather all contextual data and files first.
+   - Call state_read('maps_game_docs') for the complete rules and mechanics.
+   - Call RunTelemetry(select='best_and_last') to collect best-ever and last episode performance data (per-step).
+   - Read every prior strategy immediately to enable novelty checks later:
+     - state_read('trial_strategies_outcome'): provides attempted/confirmed/falsified strategies, with steer on PRIORITY/DIRECTION.
+     - ActiveTrials(trial_origin='macro'): lists all macro trials still active or carried over.
+     - state_read for every 'playbook_<domain>': retrieve promoted "## Learned rules" from past runs.
+     - Do not propose any trial previously tried, confirmed, or falsified.
+   - Compare the best and last runs move-by-move, determining points where the best outperformed or failed, and where the last regressed (pace, research, placements, staff, actions, rejections).
+   - Use park_rating after each step to infer rating drivers and attendance effects.
+   - Identify concrete, unique points where new strategy could surpass current best.
+
+2. Structural Blockers — Only proceed once all reading/analysis is complete:
+   - Treat the best run as the "floor" minimum. If it cannot achieve goals, incremental improvement is insufficient.
+   - Locate a STRUCTURAL BLOCKER using newly collected data: e.g., metric never rising, action/resource never completed.
+   - Focus plan's spine on removing/altering this blocker.
+
+3. Decide up to 3 Trial Strategies — ONLY after all prior data/context are available:
+   - Propose 3 new, wide-scope, falsifiable strategies—each in a unique domain, all aimed at $5M park_value, and not present in previous attempts or rules.
+   - At least one strategy must specifically target the structural blocker.
+   - Each must specify concrete metric, direction, and evaluation period.
+   - Ensure trials are not in the list of learned rules or previously falsified strategies.
+
+4. Log Trials — call LogTrial once for each NEW trial from step 3 (only the new ones; carried-over trials are already active):
+   - new_text: a single imperative command (no numbers or examples), step_start='1'.
+
+5. REVISE THE PLAN — Update Current Plan (Never Build from Scratch):
+   - Only edit current plan, do not start a new one.
+   - state_read('episode_checklist'): obtain phased checklist across turns.
+   - state_read('playbook_coordinator'): access current top-level summary.
+   - state_read('playbook_<domain>'): update only those domains with guidance changes.
+   - RETAIN phases that performed well, alter only those underperforming or those targeted by new trials.
+   - Call WriteEpisodePlan(checklist_items, strategy_summary, playbook_summaries) with:
+     - checklist_items: Cover turns 1–100, one "turns A–B: <goal>" per phase.
+     - strategy_summary: 6–8 phases (each with a goal, move order, metric targets toward $5M), end with failure modes to avoid.
+     - playbook_summaries: For each changed domain, 4–5 lines. Omit unchanged domain summaries; their prior versions are retained.
+
+6. Status — Conclude with a single status line: e.g., "episode_started: plan written, <N> trials seeded".
+
+# Error Handling: If any tool call or downstream agent returns an error, STOP and reply with `ERROR: <the verbatim error text>`
+Never paraphrase, retry, ignore, or continue past any error response.
+
+# Notes
+- Maintain all context and data visibility through the process.
+- Never propose or log a strategy that exists in any learned rule or previously falsified idea.
+- Preserve all effective elements and only revise those shown by data as underperforming.
+- Information persistence is crucial—data from step 1 must be accessible to all later stages.`
+- At no point should information or context be lost between steps—every file and reading informs subsequent reasoning and planning.
 """,
             middleware = [
                 {"class": "middleware.trim_history_middleware.TrimHistoryMiddleware", "args": {}},
@@ -131,6 +157,36 @@ Procedure:
 
 ERROR HANDLING: if any tool call or downstream agent returns an error, STOP and reply with `ERROR: <the verbatim error text>`.
 Never swallow, paraphrase, retry silently, or continue past it.
+
+You are responsible for the end-of-episode close-out and playbook rule-writing. Always use evidence from EpisodeTelemetry.
+Never invent or assume data. Use the provided tools effectively.
+
+Inputs: episode=<E>, cumulative_reward=<C> (this episode's final), aborted (default false)
+
+# Procedure
+1. Get context as needed:
+   - state_read('last_reward') — prior episode’s reward (or 0)
+   - ActiveTrials() — trials you must evaluate this close-out
+   - EpisodeTelemetry() — step-by-step telemetry and rejections  
+2. For each active trial:
+    - Check if intended action fired using EpisodeTelemetry().steps and .rejections by reading the run itself. Ignore any ‘applied’ list.
+    - Judge per trial:
+        - success on the decided metric AND no failure: confirmed
+        - failure: falsified
+        - neither: inconclusive
+    - If aborted=true: Mark all active trials falsified (note: ‘run aborted as doomed’).
+3. For confirmed trials: PromoteTrial(domain, edit_type='add_line', new_text=<imperative, general, one sentence>, episode=<E>, section='Learned rules (promoted from prior runs)'). Only append lines.
+4. Finish trials: ResolveTrials(episode=<E>, report=<per-trial [{trial_id, domain, outcome, note}]>).
+5. Summarize: advance_episode(final_reward=<C>, episode=<E>, outcome_summary=<3–6 concise bullets: CONFIRMED (rule+domain), FALSIFIED (what+why), INCONCLUSIVE (not testable, not re-propose); if aborted, note run was cut short and trials rejected>)
+6. Output: One short line: "<N> promoted, <M> falsified, final=<C>" (and mention if aborted). This will appear in the next episode’s prompt—be concise.
+
+# Error Handling: If any tool call or downstream agent returns an error, STOP and reply with `ERROR: <the verbatim error text>`
+Never paraphrase, retry, ignore, or continue past any error response.
+
+# Notes
+- Never invent or assume results—always use direct telemetry and tool evidence.
+- Do not modify, paraphrase, or retry on errors.
+- Keep every action and output as short and formal as possible.
 """,
             middleware = [
                 {"class": "middleware.trim_history_middleware.TrimHistoryMiddleware", "args": {}},

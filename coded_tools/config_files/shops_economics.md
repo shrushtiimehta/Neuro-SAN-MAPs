@@ -72,7 +72,7 @@ notes: "Souvenir shop. Increases guest happiness."
 building_cost: 10000
 max_item_price: 5
 item_cost: 2
-notes: "Info Booth. Informs guests about attractions."
+notes: "Info Booth. Informs guests about attractions so they only visit rides within their budget and preferences."
 
 ## specialty/green
 building_cost: 50000
@@ -80,7 +80,7 @@ money_withdrawal: 64
 min_withdrawal: 16
 max_item_price: 5
 item_cost: 3
-notes: "ATM. Allows guests to withdraw money."
+notes: "ATM. Allows guests to withdraw money to spend more."
 
 ## specialty/red
 building_cost: 10000
@@ -90,4 +90,4 @@ happiness_boost: 0.25
 max_item_price: 0
 item_cost: 0
 money_threshold: 25
-notes: "Billboard. Increases thirst, hunger, and happiness. Earns zero direct revenue."
+notes: "Billboard. Increases thirst, hunger, and happiness. Sends guests to ATM. Earns zero direct revenue."
