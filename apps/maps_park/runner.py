@@ -126,7 +126,11 @@ DEFAULT_MICRO_EVERY = 10
 # cheaply instead of burning LLM calls on a run that cannot clear the floor.
 # Rollback is emergent: the next episode's macro start regenerates the strategy
 # summary from the BEST episode, and the aborted trials are falsified at close-out.
-DEFAULT_REWARD_FLOOR = 300000   # cum_reward a run must plausibly clear by step 100
+# Doom floor: the cum_reward a run must plausibly clear by step 100. Starts at 0
+# (episode 0 has no baseline, so nothing is ever judged 'doomed') and RISES to the
+# best-ever clean episode's reward as the run progresses — champion_plan.best_reward()
+# is that rising bar. --reward-floor sets a hard MINIMUM the floor never drops below.
+DEFAULT_REWARD_FLOOR = 0
 DEFAULT_REWARD_GOAL = 1000000   # the north-star target the whole run chases
 ABORT_HALFWAY_STEP = 50         # at/after this step a single 'doomed' aborts at once
 ABORT_MIN_STRIKES = 2           # consecutive 'doomed' verdicts to abort BEFORE halfway (~1 checkpoint of grace)
@@ -393,7 +397,10 @@ def build_run_row(args: dict, envelope: dict) -> dict:
         "min_cleanliness": obs.get("min_cleanliness"),
         "shop_revenue": shops.get("total_revenue_generated"),
         "ride_op_cost": rides.get("total_operating_cost"),
-        **{k: v for k, v in flat_args.items() if k not in {"park", "action", "args"}},
+        # research_speed is a park-state metric sourced from obs above; exclude it
+        # from the proposal spread so FinanceGate's per-proposal None (set for every
+        # non-set_research action) can't clobber the real observed research speed.
+        **{k: v for k, v in flat_args.items() if k not in {"park", "action", "args", "research_speed"}},
     }
     return row
 
@@ -538,9 +545,10 @@ def main():
                         help="Invoke the micro analyzer after every N successful "
                              "steps (default 10 -> steps 10,20,...,90).")
     parser.add_argument("--reward-floor", type=int, default=DEFAULT_REWARD_FLOOR,
-                        help="cum_reward a run must plausibly clear by step 100. "
-                             "Passed to the micro, which judges 'doomed' against "
-                             "this and the best episode's trajectory.")
+                        help="Hard MINIMUM for the doom floor (default 0). The actual "
+                             "floor the micro judges 'doomed' against starts here and "
+                             "RISES to the best-ever clean episode's reward as the run "
+                             "progresses.")
     parser.add_argument("--reward-goal", type=int, default=DEFAULT_REWARD_GOAL,
                         help="North-star cum_reward target for the run; passed to "
                              "the micro for context.")
@@ -888,14 +896,18 @@ def main():
                     last_abort_reason = abort_reason
                     ep_reward = verified_after.get("cumulative_reward")
                     if champion_plan.promote_plan(aborting, ep_reward, args.reward_floor):
-                        print(f"[runner] New best clean episode (reward={ep_reward} >= "
-                              f"floor {args.reward_floor}) — promoted plan to champion.")
+                        print(f"[runner] New best clean episode (reward={ep_reward}) — promoted "
+                              f"plan to champion; doom floor now rises to it.")
                 elif (not aborting and micro_session is not None and args.micro_every > 0
                         and step_n > 0 and step_n % args.micro_every == 0):
+                    # Floor rises to the best-ever clean episode: 0 until the first
+                    # one lands, then the champion's reward. --reward-floor is a hard
+                    # minimum it never drops below.
+                    floor_now = max(args.reward_floor, champion_plan.best_reward())
                     advisory_for_next_turn = consult(
                         micro_session, micro_thread, "periodic",
                         verified_after, label="micro",
-                        extra=f"floor={args.reward_floor} goal={args.reward_goal}")
+                        extra=f"floor={floor_now:.0f} goal={args.reward_goal}")
                     # Fold the micro's health verdict into the abort guardrail.
                     verdict = _parse_verdict(advisory_for_next_turn)
                     doom_strikes, do_abort = _doom_decision(doom_strikes, verdict, step_n)

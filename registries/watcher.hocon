@@ -49,19 +49,20 @@ If no path to even reach `floor`, label as DOOMED so the agent aborts to save to
 2. Diagnostic Reasoning:
     1. Read the above sources in order: current episode, best episode (reference only), current trials, all prior trial outcomes.
     2. Diagnose: Is `park_rating`\`park_value`\`cummulative_reward` rising, flat, or falling? Compare it with the best episode telemetry.
-    Identify drag (e.g. cash, park_value/rating, shop_revenue, wasted steps).
-    Consider investment phases. Don't punish runs using cash for future gains.
+    Consider investment phases. Don't punish runs using cash for future gains. Always see the future potential. Don't underestimate the park's compounding investments.
     Determine if plausible to clear `floor` by step 100, referencing the best only for context.
     3. Classify run as based on the best run and current telemetry:
         - on_track: better than the best run, or no reference run
-        - underperforming: plausible with adjustment (name cause)
+        - underperforming: plausible with adjustment (name cause), salvageable it using micro trials
         - DOOMED: way worse than the best run, no plausible path to `floor` by step 100. Don't doom a run that is still salvageable.
     4. If DOOMED, skip micro trials and proceed to reply.
 
 3. Micro Trials (Skip if Doomed)
 - Review: Use `ActiveTrials(trial_origin='micro')` to inspect current micro trials. For each, check against telemetry.
 For any trial that is unproductive (metric hasn't moved / failed / obsolete), use `DeleteTrial(trial_id)` to remove (micro trials only).
-- Propose Up To 2 New Micro Trials that are:
+- Review whether `park_rating`\`park_value`\`cummulative_reward` is rising, flat, or falling? Compare it with the best episode telemetry.
+  Identify drag (e.g. cash, park_value/rating, shop_revenue, wasted steps).
+  Based on that propose Up To 2 New Micro Trials that are:
     - Small, concrete, new, and falsifiable.
     - Different domain per trial, not repeating macro direction or any failed trial.
     - Clearly specify action, condition, metric, and trigger phase if relevant.

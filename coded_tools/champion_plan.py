@@ -39,10 +39,12 @@ PLAN_CURRENT_PATH = os.path.join(_STATE_DIR, "plan_current.json")
 PLAN_LAST_GOOD_PATH = os.path.join(_STATE_DIR, "plan_last_good.json")
 CHAMPION_REWARD_PATH = os.path.join(_STATE_DIR, "champion_reward.json")
 
-# A champion below the doom floor is a useless fallback, so it must clear this to
-# be promoted. Matches the runner's DEFAULT_REWARD_FLOOR; the runner passes its
-# actual --reward-floor as min_reward, this is just the default.
-CHAMPION_MIN_REWARD = 300000
+# Minimum reward to promote a plan to champion. Defaults to 0 so the FIRST clean
+# episode always becomes the champion; from then on the "beats the current champion"
+# check below is the real gate, so the bar rises to the best episode on its own.
+# Matches the runner's DEFAULT_REWARD_FLOOR; the runner passes its actual
+# --reward-floor as min_reward, this is just the default.
+CHAMPION_MIN_REWARD = 0
 
 
 def _champion_reward() -> float | None:
@@ -52,6 +54,15 @@ def _champion_reward() -> float | None:
             return float(json.load(fh)["reward"])
     except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
         return None
+
+
+def best_reward() -> float:
+    """Best clean-episode reward promoted so far — the rising doom floor — or 0.0
+    if no episode has been promoted yet. The runner holds each new episode against
+    this: it starts at 0 (nothing is doomed before there's a baseline) and only
+    ever rises as better episodes land."""
+    reward = _champion_reward()
+    return reward if reward is not None else 0.0
 
 
 def promote_plan(aborted: bool, reward: float, min_reward: float = CHAMPION_MIN_REWARD) -> bool:

@@ -84,6 +84,21 @@ def test_champion_cycle() -> None:
         assert champion_plan.restore_last_good() is True
         assert _read(cur)["strategy_summary"] == "summary-D", "plan_current not reverted"
 
+        # 7. best_reward() is the rising floor: it tracks the current champion (D=400k).
+        assert champion_plan.best_reward() == 400000
+
+    # 8. Default floor is 0: with no --reward-floor, the FIRST clean episode is
+    #    promoted (nothing to clear), and best_reward() is 0.0 before any champion.
+    with tempfile.TemporaryDirectory() as tmp0:
+        WriteEpisodePlan.STATE_DIR = tmp0
+        champion_plan.PLAN_CURRENT_PATH = os.path.join(tmp0, "plan_current.json")
+        champion_plan.PLAN_LAST_GOOD_PATH = os.path.join(tmp0, "plan_last_good.json")
+        champion_plan.CHAMPION_REWARD_PATH = os.path.join(tmp0, "champion_reward.json")
+        assert champion_plan.best_reward() == 0.0, "no champion -> floor 0"
+        WriteEpisodePlan().invoke(_plan("F"), {})
+        assert champion_plan.promote_plan(aborted=False, reward=100) is True
+        assert champion_plan.best_reward() == 100
+
     # 7. No saved champion -> restore is a safe no-op.
     with tempfile.TemporaryDirectory() as tmp2:
         WriteEpisodePlan.STATE_DIR = tmp2
