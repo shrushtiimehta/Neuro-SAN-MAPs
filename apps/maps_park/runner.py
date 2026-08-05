@@ -124,8 +124,8 @@ DEFAULT_MICRO_EVERY = 10
 #     one 'doomed' is never an instant abort before halfway, it just starts the count.
 # Aborting fast-forwards the rest of the episode with wait()s — booking the loss
 # cheaply instead of burning LLM calls on a run that cannot clear the floor.
-# Rollback is emergent: the next episode's macro start regenerates the strategy
-# summary from the BEST episode, and the aborted trials are falsified at close-out.
+# Rollback: every episode's macro start restores the champion (best-known) plan as
+# its BASE and refines from there; the aborted trials are falsified at close-out.
 # Doom floor: the cum_reward a run must plausibly clear by step 100. Starts at 0
 # (episode 0 has no baseline, so nothing is ever judged 'doomed') and RISES to the
 # best-ever clean episode's reward as the run progresses — champion_plan.best_reward()
@@ -684,20 +684,26 @@ def main():
             # not a genuine new episode).
             if (preflight_mode == "fresh_episode" and macro_session is not None
                     and not (turn == 1 and args.resume)):
-                # If the PRIOR episode doomed, restore the champion plan as the BASE
-                # (deterministic, no LLM) and then run the macro to REFINE it — the
-                # macro is told (recovery=true) to treat the doomed run as a
-                # cautionary example, not a model, so we keep the champion's progress
-                # without letting the doomed data drive a fresh plan wholesale.
+                # Restore the champion plan as the BASE for EVERY episode start
+                # (deterministic, no LLM), then run the macro to REFINE it — so the
+                # macro always starts from the best-known strategy, not the last
+                # (possibly worse) run. On a doom the macro is additionally told
+                # (recovery=true) to treat the doomed run as a cautionary example,
+                # not a model. restore_last_good() is a no-op (returns False) when
+                # there is no champion yet, so the first episode plans from telemetry.
                 recovery_extra = ""
+                restored = champion_plan.restore_last_good()
                 if last_episode_aborted:
-                    if champion_plan.restore_last_good():
+                    if restored:
                         print(f"[runner] Prior episode doomed — restored champion as the base "
                               f"for ep{next_episode_num}; macro will refine it.")
                         recovery_extra = f"recovery=true doom_reason={last_abort_reason!r}"
                     else:
                         print("[runner] Prior episode doomed but no champion to restore; "
                               "macro plans from telemetry.")
+                elif restored:
+                    print(f"[runner] Restored champion as the base for ep{next_episode_num}; "
+                          f"macro will refine it.")
                 start_ctx = {"episode": next_episode_num, "step": 0,
                              "cumulative_reward": 0, "done": False}
                 consult(macro_session, macro_thread, "episode_start",

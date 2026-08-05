@@ -1,4 +1,4 @@
-| speed | points_gained | speed_cost |
+| speed | speed_progress | speed_cost |
 |---|---|---|
 | none | 0 | 0 |
 | slow | 25 | 2000 |

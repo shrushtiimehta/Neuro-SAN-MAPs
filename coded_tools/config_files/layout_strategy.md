@@ -2,7 +2,7 @@
 
 <!-- PLAYBOOK_SUMMARY:BEGIN -->
 ## Summary
-You own ALL (x,y) placement on the fixed path — place/remove only, never new paths or water. Put attractions on the guest flow (entrance→exit), place rides next to water for excitement, and never reuse a tile that was already rejected.
+You own ALL (x,y) resolution on the fixed path — you place and remove only, and never create paths or water. Prefer free tiles on the entrance→exit guest flow, and fall back to off-flow path tiles once the flow is full. Put rides next to water for +1 excitement, cluster shops beside the busiest rides, keep staff on a ride/shop tile, and never reuse a tile that was already rejected.
 <!-- PLAYBOOK_SUMMARY:END -->
 
 - Guests travel entrance → attractions → exit; place attractions to intercept this flow.

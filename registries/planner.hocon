@@ -20,7 +20,6 @@
     tools = [
         {
             name = "macro_orchestrator",
-            max_message_history = 2,
             function = {
                 description = "Front-man router for the planner network. kind=episode_start -> episode_start; kind=episode_end -> episode_end. Does no analysis itself."
             },
@@ -53,7 +52,6 @@ Never swallow, paraphrase, retry silently, or continue past it.
 
         {
             name = "episode_start",
-            max_message_history = 2,
             function = ${aaosa_call} {
                 description = "Episode-start planner (kind=episode_start). Analyzes best-vs-last, seeds up to 3 macro trials directly (LogTrial), and REVISES the existing plan in place (WriteEpisodePlan: checklist + coordinator strategy summary + per-domain summaries) — keeping what works, changing only what underperformed. Input: episode=<E> [recovery=true doom_reason=<...>]."
             },
@@ -125,39 +123,10 @@ Never paraphrase, retry, ignore, or continue past any error response.
 
         {
             name = "episode_end",
-            max_message_history = 2,
             function = ${aaosa_call} {
                 description = "Episode-end close-out (kind=episode_end). Evaluates this episode's trials, promotes confirmed ones (or falsifies ALL if aborted), ResolveTrials, then advance_episode. Inputs: episode, cumulative_reward, aborted."
             },
             instructions = """
-You run the end-of-episode close-out and are the sole writer of the playbook learned-rule lines. Inputs: episode=<E>,
-cumulative_reward=<C> (this episode's final), aborted (default false). Never hallucinate; cite a step/metric from telemetry. All
-writes go through the tools.
-
-Procedure:
-1. Read your context (call whenever needed):
-   - state_read('last_reward'): the PRIOR episode's final reward if present, else 0.
-   - ActiveTrials(): the trials you must evaluate this close-out.
-   - EpisodeTelemetry(): this episode's per-step record (the evidence you score the trials against).
-2. EVALUATE each active trial against telemetry.steps in its window — decide whether the trial's intended move actually fired by
-   READING THE RUN itself: the per-step rows in EpisodeTelemetry().steps (each carries action/subtype/subclass/price/x/y +
-   the metrics) and EpisodeTelemetry().rejections. Do NOT rely on the pre-digested `applied` list; judge from what the run shows.
-   Then score the trial:
-   success met + failure not tripped => confirmed; failure tripped => falsified; neither => inconclusive.
-   ABORT OVERRIDE: if aborted=true, promote NOTHING and mark EVERY active trial falsified (note 'run aborted as doomed').
-3. PROMOTE each confirmed trial: PromoteTrial(domain, edit_type='add_line', new_text=<general imperative — one sentence, no
-   episode numbers, step counts, or observed values>, episode=<E>, section='Learned rules (promoted from prior runs)'). Append
-   only — never replace or remove existing lines.
-4. ResolveTrials(episode=<E>, report=<per-trial [{trial_id, domain, outcome, note}]>). Removes confirmed/falsified + ALL micro
-   trials (episode-scoped); keeps macro not_applied/inconclusive to carry forward.
-5. advance_episode(final_reward=<C>, episode=<E>, outcome_summary=<3-6 bullets: CONFIRMED rule+domain, FALSIFIED what+why,
-   INCONCLUSIVE not-testable-do-not-re-propose; if aborted, say the run was cut short as doomed and its trials rejected>).
-6. Return ONE short line: "<N> promoted, <M> falsified, final=<C>" (note if the run was aborted). This is injected into the next
-   episode's turn-1 prompt, so keep it tight.
-
-ERROR HANDLING: if any tool call or downstream agent returns an error, STOP and reply with `ERROR: <the verbatim error text>`.
-Never swallow, paraphrase, retry silently, or continue past it.
-
 You are responsible for the end-of-episode close-out and playbook rule-writing. Always use evidence from EpisodeTelemetry.
 Never invent or assume data. Use the provided tools effectively.
 
@@ -174,7 +143,6 @@ Inputs: episode=<E>, cumulative_reward=<C> (this episode's final), aborted (defa
         - success on the decided metric AND no failure: confirmed
         - failure: falsified
         - neither: inconclusive
-    - If aborted=true: Mark all active trials falsified (note: ‘run aborted as doomed’).
 3. For confirmed trials: PromoteTrial(domain, edit_type='add_line', new_text=<imperative, general, one sentence>, episode=<E>, section='Learned rules (promoted from prior runs)'). Only append lines.
 4. Finish trials: ResolveTrials(episode=<E>, report=<per-trial [{trial_id, domain, outcome, note}]>).
 5. Summarize: advance_episode(final_reward=<C>, episode=<E>, outcome_summary=<3–6 concise bullets: CONFIRMED (rule+domain), FALSIFIED (what+why), INCONCLUSIVE (not testable, not re-propose); if aborted, note run was cut short and trials rejected>)

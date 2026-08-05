@@ -20,7 +20,6 @@
     tools = [
         {
             name = "mid_episode_analyst",
-            max_message_history = 2,
             function = {
                 description = "Mid-episode (kind=periodic) analyzer: diagnoses the live profit trajectory, logs its own (origin=micro) trials and prunes the ones that aren't working, and judges run health vs the best episode — replies with a VERDICT line the runner uses to abort doomed episodes."
             },

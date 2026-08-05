@@ -36,6 +36,7 @@ A higher tier of a role does its job faster/wider (e.g. red janitors/mechanics d
 Staff share tiles (many per tile), so placement is never tile-constrained.
 
 ## Learned rules (promoted from prior runs)
+When min_cleanliness slips below ~0.78 while cash allows, add a janitor within two turns to restore cleanliness so shop order_quantity scaling stays unthrottled. (learned ep5)
 Hire an additional mechanic when ride and shop count outgrows current mechanic coverage to hold min_uptime high before breakdowns cut revenue. (learned ep0)
 Hire a janitor immediately when min_cleanliness falls below the low-cleanliness threshold to arrest rating decay before it starves guest inflow. (learned ep0)
 Hire a mechanic and a janitor as soon as the first breakdown or dirt appears, and scale staff with fleet size so rides stay in service and tiles stay clean. (learned ep0)

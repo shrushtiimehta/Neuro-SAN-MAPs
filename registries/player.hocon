@@ -11,9 +11,15 @@
         ]
     },
 
-    include "config/llm_config.hocon",
+    include "config/llm_config.hocon"
 
-    llm_config = ${llm_config},
+    # player runs at MINIMAL reasoning (fast/cheap); planner + watcher keep global "high".
+    # Take the global llm_config, then block-merge just reasoning_effort. (A self-ref
+    # `llm_config = ${llm_config} {..}` trips pyhocon's cycle check across the include.)
+    llm_config = ${llm_config}
+    llm_config {
+        reasoning_effort = "none"   # reasoning off (gpt-5.5 has no "minimal"; values: none|low|medium|high|xhigh)
+    }
 
     max_steps = 40000,
     max_execution_seconds = 6000,

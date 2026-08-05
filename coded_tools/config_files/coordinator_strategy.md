@@ -19,4 +19,6 @@ You run one turn at a time: read park status + the current phase, consult the 5 
 - All numeric values in ActionDispatcher args MUST be quoted strings
 
 ## Learned rules (promoted from prior runs)
+Stop churning yellow rides via same-subtype place/remove once cash falls below ~2500; hold the fleet steady and spend turns on research and positive-return shop tuning until cash recovers above ~4000. (learned ep5)
+Limit ride removals to at most one per three-step window late in the run unless min_uptime is threatened, so guest throughput and shop_revenue keep compounding instead of collapsing during swap churn. (learned ep1)
 Do not raise any shop's order_quantity while cleanliness is below the low threshold, since guest inflow is throttled and the extra stock cannot be sold. (learned ep0)
