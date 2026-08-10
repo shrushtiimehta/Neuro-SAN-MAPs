@@ -47,10 +47,21 @@ def make_concise_obs(obs) -> dict:
     """
     Build the observation dict sent to agents.
 
-    Pre-computes valid_placement_coords: empty tiles 4-directionally adjacent
-    to path tiles that are REACHABLE FROM THE ENTRANCE (connected component).
-    This prevents agents from placing entities on disconnected islands where
-    guests can never reach them (which would earn $0 revenue forever).
+    Every derived field below hangs off one BFS: the path tiles reachable from
+    the entrance. Guests walk only that component, so it decides what can earn.
+
+      valid_placement_coords — empty tiles 4-directionally adjacent to a
+        REACHABLE path tile. The buildable set; anything placed here can earn.
+      unreachable_tiles — empty tiles beside a path island the guests never hit.
+        The env accepts a build (they ARE path-adjacent) but no guest ever
+        arrives, so these buy capacity, never revenue. Disjoint from the above.
+      water_adjacent — the subset of valid_placement_coords touching water, as
+        {x, y, water}, where `water` is the +1-excitement-per-adjacent-tile
+        bonus (it stacks). Sorted best first.
+      rides/shops entries — each stamped with `reachable`. The two tile lists
+        cover only EMPTY tiles, so once a tile is built on nothing else says
+        whether that asset can earn: a stranded ride reads $0 exactly like a
+        brand-new one.
     """
     d = obs.model_dump() if hasattr(obs, "model_dump") else obs
     park_size = 20
