@@ -102,7 +102,9 @@ pkill -f "nsflow"                         2>/dev/null || true
 pkill -f "neuro_san.*run"                 2>/dev/null || true
 sleep 2
 
-start "maps_node"   "$MAPS_REPO"       "node map_backend/server.js"
+# --vis mounts the backend's /v1 router, which is the ONLY thing the website
+# frontend reads. Without it http://localhost:3001 renders an empty park.
+start "maps_node"   "$MAPS_REPO"       "node map_backend/server.js --vis"
 sleep 2
 MAPS_STATE_FILE="${MAPS_STATE_FILE:-$STUDIO_DIR/coded_tools/state/park_state.pkl}"
 # Pass --resume only when the user invoked the script with it; default is fresh.

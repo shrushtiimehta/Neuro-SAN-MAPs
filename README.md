@@ -146,11 +146,16 @@ You're ready to run.
 From the `neuro-san-studio` root, with the venv activated:
 
 ```bash
-# Fresh run — resets playbooks to their config seeds, archives prior logs.
+# Default — starts from the best-known champion playbooks + plan and improves on them,
+# whether or not the last episode doomed. Archives prior logs.
 apps/maps_park/run_all.sh
 
-# Resume an in-flight episode — keeps learned playbook edits and the current episode log.
+# Resume an in-flight episode — keeps every state file and the current episode log.
 apps/maps_park/run_all.sh --resume
+
+# Start from nothing — moves all state (playbooks, trial ledgers, champion plan +
+# reward) into playbook_history/<ts>_prewipe/. Nothing is loaded; nothing is deleted.
+apps/maps_park/run_all.sh --fresh
 ```
 
 `run_all.sh` boots all four processes and tears them all down on Ctrl-C:
@@ -179,7 +184,13 @@ effects a normal episode end has.
 
 Run the loop directly with `python -m apps.maps_park.runner --help`. Notable options:
 
-- `--resume` — keep learned `playbook_*.md` (default resets them to the config seed).
+- `--resume` — continue the in-flight run untouched: every state file is kept, learned
+  `playbook_*.md` included.
+- `--fresh` — move every state file into `playbook_history/<ts>_prewipe/` (nothing is deleted) and
+  reset the playbooks to their config seeds, with promoted `(learned ep…)` rules stripped from those
+  seeds. Mutually exclusive with `--resume`.
+- With neither flag, the run restores the newest `playbook_history/*_champion/` snapshot and keeps
+  `plan_last_good.json` / `champion_reward.json`, so it always builds on the best run so far.
 - `--consult-only {macro,micro}` — no game loop; invoke one analyzer against the latest episode log
   and exit (`run_macro.sh` uses this).
 - `--micro-every N` — micro-analyst cadence (default 10 → steps 10, 20 … 90).

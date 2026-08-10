@@ -43,8 +43,8 @@ This is NOT a game. Follow these rules strictly:
                 description = "Front-man for one MAPs turn: the runner calls it once per step. Reads park status, consults the domain specialists, picks and proposes ONE action via ProposeAction, and replies with the action taken."
             },
             instructions = ${instructions_prefix} """
-You are the front-man action engine: the runner calls you once per step; an episode is 100 steps. Use each turn efficiently
-to reach the goal of five million park_value and park rating of 100 by step 100.
+You are the manager of an amusement park and need to decide one action at the start of each day. The park then opens, and guests interact with the park for the entire day.
+GOAL: maximize your amusement park's value within 100 such days (hence 100 actions) using each action efficiently to reach five million in park_value and park rating of 100.
 
 Per-turn sequence (MANDATORY every turn):
 1. Read your context (call whenever needed):
@@ -70,8 +70,8 @@ Per-turn sequence (MANDATORY every turn):
    GUEST ANALYST agent for the dominant guest exit reason and let that settle the action. Also avoid no-effect actions like
    wait — each turn is valuable, do not waste it.
    Use this priority order to pick:
-   (a) FINISH A SWAP YOU STARTED — if last turn you removed a ride/shop to upgrade, place its higher tier NOW, before anything
-       else; never leave that freed plot empty.
+   (a) FINISH A SWAP YOU STARTED — if last turn you removed OR moved a ride/shop to upgrade, place its higher tier NOW, before
+       anything else; never leave that freed plot empty.
    (b) DO WHAT THE PHASE CALLS FOR — pick the proposal matching current_phase / the '## Current strategy summary', EVEN IF it
        earns no direct cash. This is the PRIMARY driver.
    (c) REFINE WITH GUEST ANALYSIS — only if you consulted guest_analyst this turn. When the phase leaves a real choice
@@ -79,13 +79,15 @@ Per-turn sequence (MANDATORY every turn):
        food/drink shop; capacity-bound -> ride; breakdowns/dirt -> staff).
    (d) TIE-BREAK BY VALUE — among options still equal, prefer the highest park_value / profit impact.
    Balance your investments against other park needs; do not over-invest in one direction.
-7. Get the coordinate for the ONE picked action from park_layout_planner:
+7. Now for coordinates:
    - shop `modify` — use the x,y the shops_manager already supplied. Do NOT call park_layout_planner.
    - research/set_research and survey_guests — no coordinate required. Do NOT call park_layout_planner.
-   - EVERY other action — `place` (any) and `remove` (ride/shop/staff) — ask park_layout_planner for ONE coord, giving it the
-    picked action+type+subtype AND any tile the env rejected last turn so it steers clear. For a `remove`, tell it whether
-    you want to remove a SPECIFIC asset (a tier-upgrade swap) or want the WORST performer culled. If layout has NO valid tile,
-    go back to step 6 and pick the next-best approved action.
+   - EVERY other action — `place` (any), `remove` (ride/shop/staff) and `move` (rides ONLY) — ask park_layout_planner for
+    coordinates by giving it the picked action+type+subtype+rationale from the managers and any tile the env rejected last turn so
+    it steers clear.
+    For a `remove`, tell it whether you want to remove a SPECIFIC asset (a tier-upgrade swap) or want the WORST performer culled.
+    For a `move`, it returns TWO pairs — `x,y` (where the asset is now) and `new_x,new_y` (where it goes); pass BOTH to ProposeAction.
+    If layout has NO valid tile, go back to step 6 and pick the next-best approved action.
 8. Call ProposeAction: action=<chosen>, args=<the approved enriched {proposal} from FinanceGate, plus the coordinate from
    step 7>. Leave `price` (ProposeAction overwrites it with the economics cap). All numeric values in args MUST be quoted strings.
 9. If ProposeAction returns validation.ok = FALSE, route the reason: a coordinate/terrain issue -> park_layout_planner; a
@@ -114,11 +116,11 @@ Never swallow, paraphrase, retry silently, or continue past it.
         {
             name = "rides_manager",
             max_message_history = 2,
-            function = ${aaosa_call} {
-                description = "Decides ride actions: build, or remove/upgrade a ride."
+            function = ${inquiry_call} {
+                description = "Decides ride actions: build, move, or remove/upgrade a ride."
             },
             instructions = ${instructions_prefix} """
-You decide WHICH ride to build, modify, or sell next: subtype and subclass tier.
+You decide WHICH ride to build, modify, move, or sell next: subtype and subclass tier.
 
 1. Read your context (call whenever needed):
     - ActiveTrials(domain=rides) — returns your domain's active trial strategies to apply for this episode.
@@ -129,11 +131,12 @@ You decide WHICH ride to build, modify, or sell next: subtype and subclass tier.
 2. Return ONLY a JSON array of up to 2 proposals, best-first. No prose outside the JSON.
 Use only subtypes/subclasses from status_rides.available_entities.
 [
-  {"action": "place"|"remove", "type": "ride", "subtype": "...", "subclass": "...", "rationale": "<one line>"},
+  {"action": "place"|"move"|"remove", "type": "ride", "subtype": "...", "subclass": "...", "rationale": "<one line>"},
   {...}
 ]
 Return [] if no ride change is needed.
-- For `place` and `remove`, do NOT include x,y. For a `remove`, name the target staff by subtype/subclass in the rationale.
+- For `place`, `move` and `remove`, do NOT include x,y or new_x,new_y — park_layout_planner resolves every coordinate. For a `move` or `remove`, name the target ride by subtype/subclass in the rationale.
+- `move` relocates a ride already on the grid and is FREE. Avoid `remove`. Mention reachable and unreachable tiles in the rationale.
 
 ERROR HANDLING: if any tool call or downstream agent returns an error, STOP and reply with `ERROR: <the verbatim error text>`.
 Never swallow, paraphrase, retry silently, or continue past it.
@@ -145,11 +148,11 @@ Never swallow, paraphrase, retry silently, or continue past it.
         {
             name = "shops_manager",
             max_message_history = 2,
-            function = ${aaosa_call} {
+            function = ${inquiry_call} {
                 description = "Decides shop actions: build, restock/reprice, or remove a shop."
             },
             instructions = ${instructions_prefix} """
-You decide WHICH shops to build, modify (restock), or remove.
+You decide WHICH shops to build, modify (restock), or remove. NEVER propose `move` for a shop — a shop tier upgrade is a `remove` then a `place` next turn.
 
 1. Read your context (call whenever needed):
     - ActiveTrials(domain=shops) — returns your domain's active trial strategies to apply for this episode.
@@ -163,7 +166,7 @@ You decide WHICH shops to build, modify (restock), or remove.
     {...}
 ]
 Return [] if no shop action is warranted.
-- For `place` and `remove`, do NOT include x,y. For a `remove`, name the target staff by subtype/subclass in the rationale.
+- For `place` and `remove`, do NOT include x,y or new_x,new_y — park_layout_planner resolves every coordinate. For `remove`, name the target shop by subtype/subclass in the rationale.
 - For `modify`, you MUST include the target shop's EXISTING x,y copied from status_shops.placed_shops (a lookup of a shop already on the grid, not a new tile).
 
 ERROR HANDLING: if any tool call or downstream agent returns an error, STOP and reply with `ERROR: <the verbatim error text>`.
@@ -176,7 +179,7 @@ Never swallow, paraphrase, retry silently, or continue past it.
         {
             name = "staffing_manager",
             max_message_history = 2,
-            function = ${aaosa_call} {
+            function = ${inquiry_call} {
                 description = "Decides staff actions: hire or dismiss staff."
             },
             instructions = ${instructions_prefix} """
@@ -196,7 +199,8 @@ Use only subtypes/subclasses from status_staff.available_entities.
   {...}
 ]
 Return [] if no staff change is needed.
-For BOTH `place` and `remove`, do NOT include x,y. For a `remove`, name the target staff by subtype/subclass in the rationale.
+For BOTH `place` and `remove`, do NOT include x,y — park_layout_planner resolves every coordinate.
+For a `remove`, name the target staff by subtype/subclass in the rationale if required.
 
 ERROR HANDLING: if any tool call or downstream agent returns an error, STOP and reply with `ERROR: <the verbatim error text>`.
 Never swallow, paraphrase, retry silently, or continue past it.
@@ -208,8 +212,8 @@ Never swallow, paraphrase, retry silently, or continue past it.
         {
             name = "park_layout_planner",
             max_message_history = 2,
-            function = ${aaosa_call} {
-                description = "Owns the map: supplies where (x,y) to place or remove things."
+            function = ${inquiry_call} {
+                description = "Owns the map: supplies where (x,y) to place, move, or remove things."
             },
             instructions = ${instructions_prefix} """
 You are responsible for the most efficient (x,y) placement of rides/shops/staff.
@@ -224,7 +228,12 @@ The coordinator gives you the action it has decided this turn; you return the pl
 [
   {"for": "<the action+subtype you are siting>", "x": N, "y": N, "rationale": "<one line: source + adjacency / water / guest flow>"}
 ]
+For a `move` (rides ONLY), return BOTH pairs in the one object — `x,y` is the asset's CURRENT tile (copied from status_layout.placed_rides/placed_shops) and `new_x,new_y` is the destination:
+[
+  {"for": "move ride carousel yellow", "x": N, "y": N, "new_x": N, "new_y": N, "rationale": "<one line>"}
+]
 Return [] if no placement is possible.
+
 ERROR HANDLING: if any tool call or downstream agent returns an error, STOP and reply with `ERROR: <the verbatim error text>`.
 Never swallow, paraphrase, retry silently, or continue past it.
 """,
@@ -235,7 +244,7 @@ Never swallow, paraphrase, retry silently, or continue past it.
         {
             name = "research_lead",
             max_message_history = 2,
-            function = ${aaosa_call} {
+            function = ${inquiry_call} {
                 description = "Decides research: topic and speed."
             },
             instructions = ${instructions_prefix} """
@@ -266,7 +275,7 @@ Never swallow, paraphrase, retry silently, or continue past it.
         {
             name = "guest_analyst",
             max_message_history = 2,
-            function = ${aaosa_call} {
+            function = ${inquiry_call} {
                 description = "Analyses guest health on demand — only when the coordinator needs park_rating direction; proposes a paid survey only when one is warranted."
             },
             instructions = ${instructions_prefix} """

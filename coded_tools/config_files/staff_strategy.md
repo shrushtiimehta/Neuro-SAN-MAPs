@@ -5,38 +5,33 @@
 You hire and dismiss janitors, mechanics, and specialists (salary + path-adjacent placement). Staff are how you defend park_rating — janitors keep it clean, mechanics keep rides running, specialists lift happiness. Hire only once revenue supports it, and don't over- or under-staff.
 <!-- PLAYBOOK_SUMMARY:END -->
 
-Goal: Improve park rating by keeping the park clean, rides running and guests entertained.
+Staff are necessary for the smooth operation of your park, ensuring attractions run properly and guests remain satisfied. All staff carry a daily salary (and sometimes a per-action operating cost). They improve park rating.
 
-## Park status readouts (not set by you)
-- **min_cleanliness** — worst tile cleanliness in the park; low → hire a janitor.
-- **min_uptime** — worst uptime across rides and shops; low with `out_of_service` true → a ride is down (mechanic); low with `out_of_service` false → a shop ran dry (blue-specialist stocker).
-- **out_of_service** — true if any ride is out of service right now; true → hire/deploy a mechanic. A single park-wide breakdown flag, no per-ride list needed.
+## Subtypes of staff:
+- **Janitors:** Move through the park toward dirty areas to clean them. Red tier does preventive cleaning.
+- **Mechanics:** Move toward rides that are broken down to repair them. Red tier does preventive repairing.
+- **Specialists:** Perform different roles based on subclass:
+  - Yellow (Clowns): increase the happiness of guests waiting in line.
+  - Blue (Stockers): restock shops with low inventory. (10% of order quantity)
+  - Green (Park Criers): inform guests about out-of-service or dirty attractions, as well as the current line wait time for rides.
+  - Red (Vendors): provide food and drink to guests waiting in line.
+A dirty park, frequent out-of-service rides/shops, and long wait lines **significantly decrease park rating**.
 
-## Staff status readouts (`placed_staff` — reported per hire, not set by you)
-Use these to judge whether a hire is earning its keep; if not, dismiss the worst:
-- **salary** — fixed daily cost by role+tier.
-- **operating_cost** — extra cost per action performed.
-- **success_metric / success_metric_value** — work done so far (e.g. `amount_cleaned`).
-
-## Staff hiring
-All staff carry a daily salary (and sometimes a per-action operating cost). Hire only when there is dirt, a ride breakdown, or too many guests to defend rating.
-
-Types of staff:
-- **Janitor:** Cleans the park. A dirty park sharply lowers park_rating.
-- **Mechanic:** Repairs rides. Frequent out-of-service rides sharply lower park_rating.
-- **Specialist:** Lifts guest happiness, raising park_rating.
-  - Yellow (Clown): boosts happiness of guests queued/boarded at rides.
-  - Blue (Stocker): restocks shops below their inventory threshold.
-  - Green (Park Crier): gives guests status info — they avoid out-of-service/dirty attractions and favour shorter queues.
-  - Red (Vendor): serves food + drink to guests waiting at rides (reduces hunger & thirst).
+## Park current status (not set by you)
+- **salary** + **operating_cost** — fixed daily cost by role+tier plus extra cost per action performed.
+- **min_cleanliness** — worst tile cleanliness in the park; if low, hire a janitor whose `cleaning_threshold` is ABOVE the level you need it back at.
+  - **Dirt compounds:** unhappy guests litter → dirtier park → unhappier guests, and a too-dirty ride turns guests away. Cleanliness slipping is a janitor decision, not a wait-and-see.
+- **min_uptime** — worst uptime across rides/shops. If low:
+  - `out_of_service` = true, hire a mechanic
+  - otherwise a shop ran dry, hire blue specialist that triggers at <25% inventory, hauls 10% of order quanity (≤100 units), stops in the last 30 ticks — a safety net, not a substitute for right order_quantity
+  - or a ride broke earlier today and was already repaired (mechanic hired already).
+- **success_metric / success_metric_value** — work done so far (e.g. `amount_cleaned`). Dismiss the worst based on this metric.
+- **cleaning_threshold** (in `staff_economics`) — CEILING a janitor cleans a tile to. It skips tiles already at its threshold. Eg: yellow **cannot** lift `min_cleanliness` past 0.85. If you want better, upgrade the tier.
+- **next_unlock** — the next tier due and which subtype unlocks next, e.g. `"next_unlock": {"tier": "blue", "days": 2, "subtypes": ["carousel", "drink"]}`. `days` is the ETA for the first listed unlock. Absent = research off.
 
 ## Tier upgrades
-Tiers hierarchy: yellow < blue < green < red.
-A higher tier of a role does its job faster/wider (e.g. red janitors/mechanics do preventive work), so it defends rating harder per hire once you place it in the park. If a new tier unlocks in the `available_entities`, place it fast.
-Staff share tiles (many per tile), so placement is never tile-constrained.
+Tier hierarchy: yellow < blue < green < red.
+A higher tier of a role does its job faster/wider/better (e.g. red janitors/mechanics do preventive work), and specialists each have different responsibilities, defending park rating better. If a new tier unlocks in the `available_entities`, place it well.
+Each hire gets limited actions/day, one tile walked is 1 action. Blue & higher tier janitors/mechanics move at double speed. 
 
 ## Learned rules (promoted from prior runs)
-When min_cleanliness slips below ~0.78 while cash allows, add a janitor within two turns to restore cleanliness so shop order_quantity scaling stays unthrottled. (learned ep5)
-Hire an additional mechanic when ride and shop count outgrows current mechanic coverage to hold min_uptime high before breakdowns cut revenue. (learned ep0)
-Hire a janitor immediately when min_cleanliness falls below the low-cleanliness threshold to arrest rating decay before it starves guest inflow. (learned ep0)
-Hire a mechanic and a janitor as soon as the first breakdown or dirt appears, and scale staff with fleet size so rides stay in service and tiles stay clean. (learned ep0)

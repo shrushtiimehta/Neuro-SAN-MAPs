@@ -133,8 +133,16 @@ class LangfusePlugin(BasePlugin):
         try:
             setup_successful = self._try_langfuse_setup()
             if setup_successful:
+                # Report the URL the client actually RESOLVED, never a re-derived
+                # guess: the SDK reads LANGFUSE_BASE_URL first and only then the
+                # deprecated LANGFUSE_HOST, so re-reading one env var here printed
+                # "cloud.langfuse.com" for a self-hosted instance that was in fact
+                # being used correctly.
                 self._logger.info(
-                    "Traces will be sent to: %s", os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com")
+                    "Traces will be sent to: %s",
+                    getattr(self._langfuse_client, "_base_url", None)
+                    or os.getenv("LANGFUSE_BASE_URL")
+                    or os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com"),
                 )
                 self._logger.info("Project: %s", os.getenv("LANGFUSE_PROJECT_NAME", "default"))
                 self._initialized = True

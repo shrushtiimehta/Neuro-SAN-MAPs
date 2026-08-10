@@ -12,8 +12,6 @@
 
     include "config/llm_config.hocon",
 
-    llm_config = ${llm_config},
-
     max_steps = 4000,
     max_execution_seconds = 1200,
 
@@ -28,10 +26,6 @@ Act as the router for a planner network. For each input, parse its variables and
 
 Inputs are always formatted as:
 "kind=<episode_start|episode_end> episode=<E> step=<S> cumulative_reward=<C> final_reward=<F> [recovery=true doom_reason=<...>] [aborted=<true|false> reason=<...>]".
-
-- If kind=episode_start then call episode_start with inquiry "episode=<E>". If the input carries `recovery=true`, append it plus
-  the `doom_reason=<...>` VERBATIM to that inquiry (e.g. "episode=4 recovery=true doom_reason=<...>") so the planner refines the
-  restored champion instead of replanning fresh. Relay its one-line status verbatim.
 
 - If `kind=episode_start`:  
   - Call `episode_start` with an inquiry string containing "episode=<E>".
@@ -52,7 +46,7 @@ Never swallow, paraphrase, retry silently, or continue past it.
 
         {
             name = "episode_start",
-            function = ${aaosa_call} {
+            function = ${inquiry_call} {
                 description = "Episode-start planner (kind=episode_start). Analyzes best-vs-last, seeds up to 3 macro trials directly (LogTrial), and REVISES the existing plan in place (WriteEpisodePlan: checklist + coordinator strategy summary + per-domain summaries) — keeping what works, changing only what underperformed. Input: episode=<E> [recovery=true doom_reason=<...>]."
             },
             instructions = """
@@ -69,11 +63,11 @@ refine this champion with new trial strategies. Use doomed last episode only to 
    - Call state_read('maps_game_docs') for the complete rules and mechanics.
    - Call RunTelemetry(select='best_and_last') to collect best-ever and last episode performance data (per-step).
    - Read every prior strategy immediately to enable novelty checks later:
-     - state_read('trial_strategies_outcome'): provides attempted/confirmed/falsified strategies, with steer on PRIORITY/DIRECTION.
-     - ActiveTrials(trial_origin='macro'): lists all macro trials still active or carried over.
-     - state_read for every 'playbook_<domain>': retrieve promoted "## Learned rules" from past runs.
-     - Do not propose any trial previously tried, confirmed, or falsified.
-   - Compare the best and last runs move-by-move, determining points where the best outperformed or failed, and where the last regressed (pace, research, placements, staff, actions, rejections).
+    - state_read('trial_strategies_outcome'): provides attempted/confirmed/falsified strategies, with steer on PRIORITY/DIRECTION.
+    - ActiveTrials(trial_origin='macro'): lists all macro trials still active or carried over.
+    - state_read for every 'playbook_<domain>': retrieve promoted "## Learned rules" from past runs.
+   - Compare the best and last runs move-by-move, determining points where the best outperformed or failed, and where the last
+   regressed (pace, research, placements, staff, actions, rejections).
    - Use park_rating after each step to infer rating drivers and attendance effects.
    - Identify concrete, unique points where new strategy could surpass current best.
 
@@ -83,8 +77,14 @@ refine this champion with new trial strategies. Use doomed last episode only to 
    - Focus plan's spine on removing/altering this blocker.
 
 3. Decide up to 3 Trial Strategies — ONLY after all prior data/context are available:
-   - Propose 3 new, wide-scope, falsifiable strategies—each in a unique domain, all aimed at $5M park_value, and not present in previous attempts or rules.
-   - At least one strategy must specifically target the structural blocker.
+   - Propose 3 new, wide-scope, falsifiable strategies—each in a unique domain, aimed at $5M park_value, and not present in previous attempts or rules.
+   - KEEP IT NOVEL — from maps_game_docs enumerate every lever the sim actually offers. Each lever (ride subtypes and yellow→blue→green→red tiers;
+   drink/food shops and yellow→blue→green→red tiers; specialty shops and yellow→blue→green→red tiers; staff  and yellow→blue→green→red tiers
+   and slow/medium/fast research speed + different topics in unlock list) exists for a reason: work out what it is FOR and what using it efficiently
+   would look like. Then count how often the best and last runs actually played each one — a lever used ZERO or near-zero times is your first candidate pool,
+   because an untried lever teaches more than a re-tuned one.
+   - Playbook lines are prior BELIEFS, not physics. Where telemetry contradicts one, the trial is to overturn it —
+    name the exact line you are testing against.
    - Each must specify concrete metric, direction, and evaluation period.
    - Ensure trials are not in the list of learned rules or previously falsified strategies.
 
@@ -110,12 +110,10 @@ Never paraphrase, retry, ignore, or continue past any error response.
 # Notes
 - Maintain all context and data visibility through the process.
 - Never propose or log a strategy that exists in any learned rule or previously falsified idea.
-- Preserve all effective elements and only revise those shown by data as underperforming.
-- Information persistence is crucial—data from step 1 must be accessible to all later stages.`
-- At no point should information or context be lost between steps—every file and reading informs subsequent reasoning and planning.
+- Preserve all effective elements and revise those shown by data as underperforming.
 """,
             middleware = [
-                {"class": "middleware.trim_history_middleware.TrimHistoryMiddleware", "args": {}},
+                {"class": "middleware.trim_history_middleware.TrimHistoryMiddleware", "args": {}}
                 {"class": "langchain_anthropic.middleware.AnthropicPromptCachingMiddleware", "args": {"ttl": "1h"}}
             ],
             tools = ["RunTelemetry", "state_read", "ActiveTrials", "LogTrial", "WriteEpisodePlan"]
@@ -123,7 +121,7 @@ Never paraphrase, retry, ignore, or continue past any error response.
 
         {
             name = "episode_end",
-            function = ${aaosa_call} {
+            function = ${inquiry_call} {
                 description = "Episode-end close-out (kind=episode_end). Evaluates this episode's trials, promotes confirmed ones (or falsifies ALL if aborted), ResolveTrials, then advance_episode. Inputs: episode, cumulative_reward, aborted."
             },
             instructions = """

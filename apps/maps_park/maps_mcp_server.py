@@ -93,6 +93,20 @@ def make_concise_obs(obs) -> dict:
                     reachable.add(nb)
                     frontier.append(nb)
 
+    # Stamp reachability on each PLACED ride/shop. free_tiles/unreachable_tiles
+    # only ever list EMPTY tiles, so once a tile is built on nothing tells the
+    # agent whether that asset can earn ($0 profit reads the same on a stranded
+    # ride and a brand-new one). An asset earns only if it touches a path tile
+    # in the entrance-connected component.
+    for entity_list in [
+        (d.get("rides") or {}).get("ride_list", []),
+        (d.get("shops") or {}).get("shop_list", []),
+    ]:
+        for e in entity_list:
+            if isinstance(e, dict) and "x" in e and "y" in e:
+                e["reachable"] = any((e["x"] + dx, e["y"] + dy) in reachable
+                                     for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)])
+
     candidates: set[tuple[int, int]] = set()
     for px, py in reachable:
         for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
@@ -102,6 +116,30 @@ def make_concise_obs(obs) -> dict:
 
     invalid = path_set | water_set | blocked | occupied
     valid_placements = sorted(candidates - invalid)
+
+    # Empty tiles beside a path island that is NOT connected to the entrance.
+    # The env still accepts a build there (they are path-adjacent), guests just
+    # never walk to them — a cheap ride here adds park capacity but earns nothing.
+    stranded: set[tuple[int, int]] = set()
+    for px, py in path_set - reachable:
+        for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            nx, ny = px + dx, py + dy
+            if 0 <= nx < park_size and 0 <= ny < park_size:
+                stranded.add((nx, ny))
+    unreachable_tiles = sorted(stranded - invalid - candidates)
+
+    # Buildable tiles touching water: +1 excitement per adjacent water tile, and
+    # it STACKS — a tile between two water tiles is +2. Carry the count and sort
+    # it highest-first so layout spends the best tiles on rides before the rest.
+    water_adjacent = sorted(
+        (
+            {"x": x, "y": y, "water": n}
+            for x, y in valid_placements
+            if (n := sum((x + dx, y + dy) in water_set
+                         for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]))
+        ),
+        key=lambda t: (-t["water"], t["x"], t["y"]),
+    )
 
     staff_occupied = {
         (e["x"], e["y"])
@@ -123,6 +161,8 @@ def make_concise_obs(obs) -> dict:
         "entrance":                d.get("entrance"),
         "exit":                    d.get("exit"),
         "valid_placement_coords":  [[x, y] for x, y in valid_placements],
+        "water_adjacent":          water_adjacent,
+        "unreachable_tiles":       [[x, y] for x, y in unreachable_tiles],
         "path_coords":             [[x, y] for x, y in available_path_coords],
         "rides":                   d.get("rides"),
         "shops":                   d.get("shops"),

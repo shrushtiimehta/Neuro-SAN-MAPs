@@ -95,6 +95,7 @@ from coded_tools import champion_plan
 from coded_tools.action_dispatcher import ActionDispatcher
 from coded_tools.park_status import ParkStatus
 from coded_tools.seed_observation import SeedObservation
+from coded_tools.promote_trial import PromoteTrial
 from coded_tools.seed_playbooks import SeedPlaybooks
 
 
@@ -178,11 +179,11 @@ LAST_REWARD_PATH = os.path.normpath(os.path.join(
     "coded_tools", "state", "last_reward.md",
 ))
 
-# Playbook state dir + snapshot archive. Playbooks evolve each episode
-# (start-of-episode plan + close-out promotions), so we snapshot them into
-# state/playbook_history/<ts>_<tag>/ at both the start (ep<NNN>_pre) and end
-# (ep<NNN>_post) of every episode — plus once before a fresh run reseeds them
-# (prerun). Snapshots are append-only; nothing is ever deleted.
+# Playbook state dir + snapshot archive. Playbooks evolve each episode, but
+# only a CHAMPION is archived into state/playbook_history/<ts>_ep<NNN>_champion/
+# — an episode that beat the best-so-far reward. Every other boundary (pre/post
+# per episode, prerun) is noise: those playbook versions lost, so keeping them
+# just buried the winners. Snapshots are append-only; nothing is ever deleted.
 PLAYBOOK_STATE_DIR = os.path.normpath(os.path.join(
     os.path.dirname(__file__), "..", "..", "coded_tools", "state",
 ))
@@ -192,13 +193,19 @@ PLAYBOOK_HISTORY_DIR = os.path.join(PLAYBOOK_STATE_DIR, "playbook_history")
 # ── Bootstrap ────────────────────────────────────────────────────────────────
 
 
-def snapshot_playbooks(tag: str) -> str | None:
+def snapshot_playbooks(tag: str, stats: dict[str, Any] | None = None) -> str | None:
     """Copy state/playbook_*.md into state/playbook_history/<ts>_<tag>/.
 
-    Called at each episode boundary (tag ep<NNN>_pre / ep<NNN>_post) and once
-    before a fresh run reseeds (tag 'prerun'). Append-only — never deletes. The
-    timestamp prefix keeps every snapshot distinct. Returns the snapshot dir,
-    or None if there were no non-empty playbooks to save.
+    Called ONLY when an episode is promoted to champion (tag ep<NNN>_champion),
+    so the archive is a ladder of best-ever strategies rather than a log of every
+    boundary. Append-only — never deletes. The timestamp prefix keeps every
+    snapshot distinct. Returns the snapshot dir, or None if there were no
+    non-empty playbooks to save.
+
+    `stats` (the episode's verified final row) is written beside the playbooks
+    as summary.json — cumulative_reward, cash and park_value — so a snapshot
+    records what that playbook version actually EARNED, and versions can be
+    ranked later without replaying the run.
     """
     sources = [p for p in sorted(glob.glob(os.path.join(PLAYBOOK_STATE_DIR, "playbook_*.md")))
                if os.path.getsize(p) > 0]
@@ -208,7 +215,81 @@ def snapshot_playbooks(tag: str) -> str | None:
     os.makedirs(dest, exist_ok=True)
     for src in sources:
         shutil.copy2(src, os.path.join(dest, os.path.basename(src)))
+    if stats:
+        summary = os.path.join(dest, "summary.json")
+        with open(summary, "w", encoding="utf-8") as handle:
+            json.dump(stats, handle, indent=2, default=str)
     return dest
+
+
+def restore_champion_playbooks() -> str | None:
+    """Copy the newest playbook_history/*_champion/ snapshot over state/playbook_*.md.
+
+    This is the DEFAULT run mode: every run starts from the best-known playbooks
+    and improves on them, whether or not the last episode doomed. Timestamped
+    names sort chronologically, so the last one is the most recent champion.
+    Returns the snapshot dir used, or None if no champion has ever been archived
+    (first run ever — the caller then falls back to the config seeds).
+    """
+    for latest in sorted(glob.glob(os.path.join(PLAYBOOK_HISTORY_DIR, "*_champion")), reverse=True):
+        sources = glob.glob(os.path.join(latest, "playbook_*.md"))
+        if sources:
+            for src in sources:
+                shutil.copy2(src, os.path.join(PLAYBOOK_STATE_DIR, os.path.basename(src)))
+            return latest
+    return None
+
+
+def archive_state() -> str | None:
+    """Clear the working state dir the --fresh way: MOVE every file into
+    playbook_history/<ts>_prewipe/ rather than delete it.
+
+    --fresh means nothing from a prior run is LOADED — champion, plan, trial
+    ledgers and learned playbooks all leave the working dir — but nothing is
+    destroyed: the whole prior run stays recoverable by hand in one dated dir.
+    The name ends in _prewipe, not _champion, so restore_champion_playbooks()
+    never picks it up.
+
+    Two entries stay put: playbook_history/ itself, and park_state.pkl (owned by
+    the MAPs env process, which run_all.sh already restarts clean without
+    --resume). Returns the archive dir, or None if there was nothing to move.
+    """
+    keep = {"playbook_history", "park_state.pkl"}
+    movable = [n for n in sorted(os.listdir(PLAYBOOK_STATE_DIR)) if n not in keep]
+    if not movable:
+        return None
+    dest = os.path.join(PLAYBOOK_HISTORY_DIR, f"{time.strftime('%Y%m%d-%H%M%S')}_prewipe")
+    os.makedirs(dest, exist_ok=True)
+    for name in movable:
+        shutil.move(os.path.join(PLAYBOOK_STATE_DIR, name), os.path.join(dest, name))
+    return dest
+
+
+def strip_learned_from_seeds() -> int:
+    """Drop every promoted rule from the config_files seeds — the other half of
+    the --fresh contract.
+
+    PromoteTrial mirrors each confirmed rule into the SEED as well as the working
+    playbook, so wiping state alone still carries prior runs' lessons back in the
+    moment SeedPlaybooks re-copies the seeds. Only lines carrying LEARNED_MARKER
+    go — the same guard PromoteTrial.remove_line uses — so the hand-authored
+    baseline and the section header both survive. Returns the lines dropped.
+    """
+    dropped = 0
+    for fname in sorted(set(PromoteTrial.SEED_FILES.values())):
+        path = os.path.join(PromoteTrial.SEED_DIR, fname)
+        try:
+            with open(path, encoding="utf-8") as handle:
+                lines = handle.read().splitlines(keepends=True)
+        except OSError:
+            continue
+        kept = [ln for ln in lines if PromoteTrial.LEARNED_MARKER not in ln]
+        if len(kept) != len(lines):
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.writelines(kept)
+            dropped += len(lines) - len(kept)
+    return dropped
+
 
 def _bootstrap_env_and_plugins() -> None:
     try:
@@ -562,10 +643,19 @@ def main():
                              "effects as a normal episode end. Pass 'micro' for the "
                              "mid-episode analyzer instead. Use apps/maps_park/run_macro.sh "
                              "to boot the backend (in --resume mode) and run this in one step.")
-    parser.add_argument("--resume", action="store_true",
-                        help="Continuing a prior run: keep existing state/playbook_*.md "
-                             "(learned edits survive). Default (fresh start) resets every "
-                             "playbook to its config_files seed.")
+    # Three run modes. Default (neither flag) starts from the best-known
+    # champion; the two flags are the escapes at either end of that.
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--resume", action="store_true",
+                      help="Continue the in-flight run as is: keep every state file, "
+                           "including state/playbook_*.md, so learned edits survive.")
+    mode.add_argument("--fresh", action="store_true",
+                      help="Start from nothing: MOVE every state file (playbooks, trial "
+                           "ledgers, champion plan and reward) into "
+                           "playbook_history/<ts>_prewipe/ and reset the playbooks to their "
+                           "config_files seeds. Nothing is deleted; nothing from a prior run "
+                           "is loaded, doomed or not — not even the best episode in the "
+                           "playbook_history archive.")
     args = parser.parse_args()
 
     # One-shot analyzer mode: invoke a single network and exit, running none of
@@ -584,16 +674,6 @@ def main():
         if os.path.exists(PROPOSAL_PATH):
             os.remove(PROPOSAL_PATH)
 
-
-    # Archive the prior run's learned playbooks BEFORE anything that can fail
-    # (session-open, backend down): it's a local file copy with no session
-    # dependency, so a boot failure must never cost us the snapshot. Fresh start
-    # reseeds them below (overwrite=True), discarding the finished run's edits;
-    # --resume keeps the working copies, so there is nothing to save.
-    if not args.resume:
-        snap = snapshot_playbooks("prerun")
-        if snap:
-            print(f"[runner] Snapshotted prior-run playbooks to {snap}")
 
     runner_session, runner_thread = open_session(args.runner_agent, args.host, args.port)
     # Two analyzer sessions: micro (mid-episode) and macro (episode-end). Each
@@ -614,25 +694,52 @@ def main():
         macro_session = None
 
     advisory_for_next_turn: str | None = None
+    # Kept SEPARATE from advisory_for_next_turn: a rejected action and a watcher
+    # verdict can both land on the same step (10, 20, ... 90), and sharing one slot
+    # meant the consult() result silently clobbered the rejection every time.
+    feedback_for_next_turn: str | None = None
     user_input = "Start the run. Take one action on park 0."
     turn = 0
 
-    # Startup seed: lay down the six playbooks before the first turn via the
-    # SeedPlaybooks coded tool (deterministic file copy, no LLM). A fresh start
-    # resets every playbook to its config_files seed; --resume keeps the
-    # existing working copies so learned edits survive.
-    seed_result = SeedPlaybooks().invoke({"overwrite": not args.resume}, {})
+    # Startup seed: lay down the seven playbooks before the first turn via the
+    # SeedPlaybooks coded tool (deterministic file copy, no LLM). Which base they
+    # start from is the whole difference between the three run modes:
+    #   --fresh    move the whole state dir into the archive, reset to the seeds.
+    #   --resume   keep the working copies — an in-flight run continues untouched.
+    #   (default)  restore the newest champion snapshot and improve on THAT, so a
+    #              run never regresses to the seeds just because the last episode
+    #              doomed. The champion plan + reward on disk survive too, so
+    #              restore_last_good() below re-applies the best-known plan.
+    if args.fresh:
+        archived = archive_state()
+        print(f"[runner] --fresh: moved the prior run's state to {archived} — nothing deleted, "
+              f"nothing carried in." if archived else "[runner] --fresh: state dir already empty.")
+        print(f"[runner] --fresh: dropped {strip_learned_from_seeds()} promoted rule(s) "
+              f"from the config seeds (the archived copies still carry them).")
+        overwrite = True
+    elif args.resume:
+        overwrite = False
+    else:
+        champion = restore_champion_playbooks()
+        if champion:
+            print(f"[runner] Restored champion playbooks from {champion}; this run improves on them.")
+        else:
+            print("[runner] No champion archived yet — starting from the config_files seeds.")
+        overwrite = champion is None
+    seed_result = SeedPlaybooks().invoke({"overwrite": overwrite}, {})
     print(f"[runner] Playbooks seeded={seed_result['seeded']} "
           f"skipped={seed_result['skipped']} errors={seed_result['errors']}")
 
-    # Fresh start (not --resume): drop the env-coupled episode state so the run
-    # doesn't inherit the prior run's reward baseline. A missing last_reward
-    # makes episode-0 prior_reward default to 0. --resume keeps it to continue
-    # the in-flight episode.
+    # Any new run (--fresh or default): drop the env-coupled episode state so it
+    # doesn't inherit the prior run's reward baseline. A missing last_reward makes
+    # episode-0 prior_reward default to 0. This is per-EPISODE telemetry, not
+    # strategy — the champion playbooks/plan a default run just restored are
+    # deliberately untouched here. --resume keeps it to continue the in-flight
+    # episode.
     if not args.resume:
         if os.path.exists(LAST_REWARD_PATH):
             os.remove(LAST_REWARD_PATH)
-            print(f"[runner] Fresh start: cleared {os.path.basename(LAST_REWARD_PATH)}")
+            print(f"[runner] New run: cleared {os.path.basename(LAST_REWARD_PATH)}")
 
     prev_episode_done = False
     # Episode number for the upcoming episode's start-of-episode macro pass.
@@ -709,14 +816,6 @@ def main():
                 consult(macro_session, macro_thread, "episode_start",
                         start_ctx, label="macro-start", extra=recovery_extra)
 
-            # BEFORE the episode starts: snapshot the playbooks the game-runner
-            # will act on (the start-of-episode plan just written, plus the prior
-            # episode's close-out promotions) as ep<NNN>_pre.
-            if preflight_mode == "fresh_episode":
-                snap = snapshot_playbooks(f"ep{next_episode_num:03d}_pre")
-                if snap:
-                    print(f"[runner] Snapshotted ep{next_episode_num} pre-episode playbooks to {snap}")
-
             # Seed turn-1's observation deterministically (moved out of park_director's
             # instructions): world_observe caches the park's current state WITHOUT
             # stepping, so the first ParkStatus returns real state instead of "No
@@ -749,6 +848,9 @@ def main():
                     + prompt
                 )
                 advisory_for_next_turn = None
+            if feedback_for_next_turn:
+                prompt = feedback_for_next_turn + "\n\n" + prompt
+                feedback_for_next_turn = None
             turn_done = False
             last_proposed: dict = {}
             verified_after: dict | None = verified_before
@@ -847,8 +949,10 @@ def main():
                     + ("  EPISODE DONE" if candidate.get("done") else "")
                 )
                 if env_err:
-                    advisory_for_next_turn = (
-                        f"NOTE: your previous action ({candidate.get('rejected_action')}) was "
+                    # Literal "feedback:" — strategy_coordinator's step 2 keys on
+                    # that token to route the cause back to the owning specialist.
+                    feedback_for_next_turn = (
+                        f"feedback: your previous action ({candidate.get('rejected_action')}) was "
                         f"rejected by the env: {env_err}. It counted as a wait — pick a valid action."
                     )
 
@@ -884,14 +988,11 @@ def main():
                         advisory_for_next_turn = consult(
                             macro_session, macro_thread, "episode_end",
                             verified_after, label="macro", extra=extra)
-                    # AFTER the episode ends: snapshot the playbooks the close-out
-                    # just promoted into (its confirmed-trial learned rules) as
-                    # ep<NNN>_post — the episode's final learned state.
                     ended_ep = verified_after.get("episode") or 0
-                    snap = snapshot_playbooks(f"ep{ended_ep:03d}_post")
-                    if snap:
-                        print(f"[runner] Snapshotted ep{ended_ep} post-episode playbooks to {snap}")
                     prev_episode_done = True
+                    # A rejection on the final step describes a park that no longer
+                    # exists; don't carry it into the fresh episode's turn 1.
+                    feedback_for_next_turn = None
                     # Next loop iteration is a fresh episode; its start pass
                     # plans episode (ended_episode + 1).
                     next_episode_num = (verified_after.get("episode") or 0) + 1
@@ -904,6 +1005,16 @@ def main():
                     if champion_plan.promote_plan(aborting, ep_reward, args.reward_floor):
                         print(f"[runner] New best clean episode (reward={ep_reward}) — promoted "
                               f"plan to champion; doom floor now rises to it.")
+                        # ONLY a champion is archived. The playbooks on disk right
+                        # now are the ones that earned ep_reward (the close-out's
+                        # promotions already landed above), so this snapshot IS the
+                        # winning strategy — history holds best-ever versions only,
+                        # not one dir per episode boundary.
+                        snap = snapshot_playbooks(f"ep{ended_ep:03d}_champion", verified_after)
+                        if snap:
+                            print(f"[runner] Archived champion playbooks to {snap} "
+                                  f"(reward={ep_reward} cash={verified_after.get('cash')} "
+                                  f"park_value={verified_after.get('park_value')})")
                 elif (not aborting and micro_session is not None and args.micro_every > 0
                         and step_n > 0 and step_n % args.micro_every == 0):
                     # Floor rises to the best-ever clean episode: 0 until the first

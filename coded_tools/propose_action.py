@@ -426,17 +426,55 @@ class ProposeAction(CodedTool):
         coords = obs.get("valid_placement_coords")
         if not isinstance(coords, list) or not coords:
             return True, ""  # no signal available; let the env decide
+        # unreachable_tiles are buildable too — they sit beside a path island the
+        # entrance can't reach, so the env accepts them and guests never arrive
+        # (a deliberate capacity-only play, see layout_strategy.md).
+        stranded = {(c[0], c[1]) for c in (obs.get("unreachable_tiles") or [])
+                    if isinstance(c, (list, tuple)) and len(c) >= 2}
         try:
             x, y = int(action_args.get("x")), int(action_args.get("y"))
         except (TypeError, ValueError):
             return True, ""  # x/y validity handled by _check_place_bounds
         valid = {(c[0], c[1]) for c in coords if isinstance(c, (list, tuple)) and len(c) >= 2}
-        if (x, y) not in valid:
+        if (x, y) not in valid | stranded:
             return False, (
                 f"({x},{y}) is not a buildable tile for a {action_args.get('type')}; "
-                f"choose one of free_tiles from ParkStatus (empty tiles next to the path)."
+                f"choose one of free_tiles or unreachable_tiles from ParkStatus "
+                f"(empty tiles next to a path)."
             )
-        return True, ""
+        return self._check_stranded_tier(action_args, obs, x, y)
+
+    def _check_stranded_tier(self, action_args: dict, obs: dict, x: int, y: int) -> tuple[bool, str]:
+        """The BEST unlocked tier may never end up on a tile guests can't reach.
+
+        A stranded tile earns $0 for the rest of the run, so the top tier
+        belongs on a reachable one. ``available_entities`` lists subclasses in
+        unlock order, so ``[-1]`` is the best currently unlocked. Anything below
+        it is fair game — a stranded tile bought purely for capacity is better
+        spent on a mid-tier ride than on tier-1. Without this the reachable core
+        fills with tier-1 early and every later unlock lands stranded.
+        Shared by `place` and by `move`'s destination.
+        """
+        stranded = {(c[0], c[1]) for c in (obs.get("unreachable_tiles") or [])
+                    if isinstance(c, (list, tuple)) and len(c) >= 2}
+        if (x, y) not in stranded:
+            return True, ""
+        subtype, subclass = action_args.get("subtype"), action_args.get("subclass")
+        tiers = (obs.get("available_entities") or {}).get(subtype) or []
+        if len(tiers) < 2 or subclass != tiers[-1]:
+            return True, ""
+        # Shops are never moved (see shops_strategy.md) — they free a tile by `remove`.
+        evict = ("`move` the least profitable reachable ride onto an unreachable tile "
+                 "(free, no 34% sale loss)"
+                 if (action_args.get("type") or "").lower() == "ride" else
+                 "`remove` the least profitable shop")
+        return False, (
+            f"({x},{y}) is unreachable — guests never walk there, so a {subclass} "
+            f"{subtype} earns $0 for the rest of the run, and {subclass} is your "
+            f"BEST unlocked tier. Put it on a free_tile; if free_tiles is empty, "
+            f"{evict} and build the {subclass} on the tile it "
+            f"vacated. Only tiers below {subclass} may go on unreachable_tiles."
+        )
 
     def _check_subclass_available(self, action_args: dict, obs: dict) -> tuple[bool, str]:
         """Reject placing a subclass that research has not unlocked yet.
@@ -517,6 +555,13 @@ class ProposeAction(CodedTool):
             return False, (
                 f"move 'type' must be one of {sorted(_VALID_TYPES)}; got {action_args.get('type')!r}"
             )
+        # The env's move DSL identifies the asset by type+subtype+subclass+x,y.
+        missing = [k for k in ("subtype", "subclass") if not action_args.get(k)]
+        if missing:
+            return False, (
+                f"move is missing {missing}; identify the asset by its subtype and "
+                f"subclass as listed in placed_{atype}s in ParkStatus."
+            )
         x, y = action_args.get("x"), action_args.get("y")
         try:
             ix, iy = int(x), int(y)
@@ -547,15 +592,18 @@ class ProposeAction(CodedTool):
                             f"check placed_{atype}s in ParkStatus for valid current coords."
                         )
             if atype in ("ride", "shop"):
-                # Destination must be adjacent to a path (valid_placement_coords).
+                # Destination must be adjacent to a path — reachable
+                # (valid_placement_coords) or stranded (unreachable_tiles).
                 coords = obs.get("valid_placement_coords")
                 if isinstance(coords, list) and coords:
+                    coords = coords + list(obs.get("unreachable_tiles") or [])
                     valid = {(c[0], c[1]) for c in coords if isinstance(c, (list, tuple)) and len(c) >= 2}
                     if (inx, iny) not in valid:
                         return False, (
                             f"({inx},{iny}) is not a buildable destination for a {atype}; "
-                            f"choose a tile from free_tiles in ParkStatus."
+                            f"choose a tile from free_tiles or unreachable_tiles in ParkStatus."
                         )
+                    return self._check_stranded_tier(action_args, obs, inx, iny)
             elif atype == "staff":
                 # Staff must land on a path or attraction tile, not empty/water.
                 path_coords = obs.get("path_coords")

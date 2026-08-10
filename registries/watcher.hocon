@@ -1,5 +1,6 @@
 {
-    include "registries/aaosa_basic.hocon"
+    # No aaosa_basic include: mid_episode_analyst is the only agent here and it is
+    # the front-man, so nothing in this network references an ${...}_call schema.
 
     metadata = {
         description = "The watcher network. Owns mid-episode strategic analysis WITHIN the current episode. The runner invokes this network every N successful steps (kind=periodic) — i.e. at steps 10,20,...,90 of the 100-step episode. It reads the cumulative per-episode telemetry and logs actionable trials so the game-runner's specialists can act on them next turn. End-of-episode close-out and whole-run synthesis live in the separate planner network.",
@@ -11,8 +12,6 @@
     },
 
     include "config/llm_config.hocon",
-
-    llm_config = ${llm_config},
 
     max_steps = 4000,
     max_execution_seconds = 1200,
@@ -31,7 +30,7 @@ Your input looks like:
 - `floor`: The minimum reward to plausibly reach by step 100.
 - `goal`: The target maximizing north-star reward.
 
-GOAL: For each provided episode, judge if the run is on pace to plausibly surpass `floor` by step 100 using only current and best run telemetry as evidence.
+GOAL: For each provided episode, judge if the run is on pace to plausibly surpass `floor` by step 100 using only current and best run telemetry as evidence if available.
 If the run is underperforming but salvageable, identify the main issue and design targeted micro trials.
 Micro trials must be new, concrete, and falsifiable — never a repeat of a macro or falsified strategy, and never trading the park's compounding investments for a short-term gain.
 Always cite evidence (step + metric) from the telemetry, no outside knowledge.
@@ -59,6 +58,8 @@ If no path to even reach `floor`, label as DOOMED so the agent aborts to save to
 3. Micro Trials (Skip if Doomed)
 - Review: Use `ActiveTrials(trial_origin='micro')` to inspect current micro trials. For each, check against telemetry.
 For any trial that is unproductive (metric hasn't moved / failed / obsolete), use `DeleteTrial(trial_id)` to remove (micro trials only).
+If the park is not using any of the unlocked levers like an unlocked ride, shop, or staff, propose a new micro trial to test it.
+If the park is using a lever but not enough, propose a new micro trial to test it more aggressively. Keep it based on the macro trial direction.
 - Review whether `park_rating`\`park_value`\`cummulative_reward` is rising, flat, or falling? Compare it with the best episode telemetry.
   Identify drag (e.g. cash, park_value/rating, shop_revenue, wasted steps).
   Based on that propose Up To 2 New Micro Trials that are:

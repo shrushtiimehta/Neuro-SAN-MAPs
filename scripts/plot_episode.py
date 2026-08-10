@@ -28,9 +28,15 @@ for r in rows:
         cur[2] = r["step"]
 
 # tier events (non-yellow placements/removals) and errors
+TIERS = ("blue", "green", "red")
+LANE = {"blue": 0.2, "green": 0.4, "red": 0.6}
 tier_events = [(r["step"], r["subclass"], r["action"]) for r in rows
-               if r.get("subclass") and r["subclass"] != "yellow"]
-red_steps = [r["step"] for r in rows if r.get("subclass") == "red"]
+               if r.get("subclass") in TIERS]
+# unlock = first successful placement of each tier
+unlocks = {}
+for step, tier, action in tier_events:
+    if action == "place" and tier not in unlocks:
+        unlocks[tier] = step
 err_steps = [r["step"] for r in rows if r.get("error")]
 
 fig, ax = plt.subplots(5, 1, figsize=(14, 16), sharex=True,
@@ -44,9 +50,9 @@ def shade_research(a):
         a.axvspan(x0 - 0.5, x1 + 0.5, color=RSPEED[sp], alpha=0.5, lw=0, zorder=0)
 
 
-def red_guides(a):
-    for s in red_steps:
-        a.axvline(s, color=TIER["red"], ls=":", lw=1, alpha=0.6, zorder=1)
+def unlock_guides(a):
+    for tier, s in unlocks.items():
+        a.axvline(s, color=TIER[tier], ls=":", lw=1.2, alpha=0.7, zorder=1)
 
 
 # ---- panel 0: research + tier-unlock timeline ----
@@ -55,23 +61,26 @@ shade_research(a)
 for step, tier, action in tier_events:
     marker = "^" if action == "place" else "v"
     face = TIER[tier] if action == "place" else "none"
-    a.scatter(step, 0.5, marker=marker, s=170, color=TIER[tier],
+    a.scatter(step, LANE[tier], marker=marker, s=170, color=TIER[tier],
               facecolors=face, edgecolors=TIER[tier], linewidths=1.8, zorder=3)
 for s in err_steps:
-    a.scatter(s, 0.5, marker="x", s=90, color="#d03b3b", zorder=3)
-red_guides(a)
-a.set_ylim(0, 1); a.set_yticks([])
+    a.scatter(s, 0.85, marker="x", s=90, color="#d03b3b", zorder=3)
+unlock_guides(a)
+a.set_ylim(0, 1)
+a.set_yticks([LANE[t] for t in TIERS] + [0.85])
+a.set_yticklabels([t.upper() for t in TIERS] + ["invalid"], fontsize=8)
 a.set_title("Research speed (shading) & attraction-tier unlocks — ▲ placed  ▽ removed  ✕ invalid",
             fontsize=11, loc="left", pad=6)
-# annotate the two red unlocks (stagger so labels don't collide)
-for i, s in enumerate(red_steps):
+# annotate each tier's unlock (stagger so labels don't collide)
+for i, tier in enumerate(t for t in TIERS if t in unlocks):
+    s = unlocks[tier]
     dx, ha = (-6, "right") if i % 2 == 0 else (6, "left")
-    a.annotate(f"RED @ {s}", (s, 0.5), textcoords="offset points", xytext=(dx, 16),
-               ha=ha, fontsize=9, fontweight="bold", color=TIER["red"])
+    a.annotate(f"{tier.upper()} unlock @ {s}", (s, LANE[tier]), textcoords="offset points",
+               xytext=(dx, 14), ha=ha, fontsize=9, fontweight="bold", color=TIER[tier])
 
 # ---- panel 1: cash & park value ----
 a = ax[1]
-shade_research(a); red_guides(a)
+shade_research(a); unlock_guides(a)
 a.plot(steps, [r["cash"] for r in rows], color="#2a78d6", lw=2, label="cash")
 a.plot(steps, [r["park_value"] for r in rows], color="#4a3aa7", lw=1.6, ls="--", label="park value")
 a.set_ylabel("$"); a.set_title("Cash & park value", fontsize=11, loc="left")
@@ -80,26 +89,27 @@ a.ticklabel_format(axis="y", style="plain")
 
 # ---- panel 2: park rating ----
 a = ax[2]
-shade_research(a); red_guides(a)
+shade_research(a); unlock_guides(a)
 a.plot(steps, [r["park_rating"] for r in rows], color="#1baf7a", lw=2)
 a.fill_between(steps, [r["park_rating"] for r in rows], color="#1baf7a", alpha=0.12)
 a.set_ylabel("rating"); a.set_title("Park rating", fontsize=11, loc="left")
 
 # ---- panel 3: reward per step (diverging bars) ----
 a = ax[3]
-shade_research(a); red_guides(a)
+shade_research(a); unlock_guides(a)
 rw = [r["reward"] for r in rows]
 a.bar(steps, rw, color=["#2a78d6" if v >= 0 else "#d03b3b" for v in rw], width=0.8)
 a.axhline(0, color="#888", lw=0.8)
 a.set_ylabel("reward"); a.set_title("Reward per step (blue = gain, red = loss)", fontsize=11, loc="left")
 worst = min(rows, key=lambda r: r["reward"])
-a.annotate(f"{worst['reward']:.0f}  (place {worst['subtype']})", (worst["step"], worst["reward"]),
+a.annotate(f"{worst['reward']:.0f}  ({worst['action']} {worst.get('subtype', '')})".rstrip(),
+           (worst["step"], worst["reward"]),
            textcoords="offset points", xytext=(8, 12), fontsize=8, color="#d03b3b",
            va="center", ha="left")
 
 # ---- panel 4: cumulative reward ----
 a = ax[4]
-shade_research(a); red_guides(a)
+shade_research(a); unlock_guides(a)
 a.plot(steps, [r["cumulative_reward"] for r in rows], color="#4a3aa7", lw=2)
 a.fill_between(steps, [r["cumulative_reward"] for r in rows], color="#4a3aa7", alpha=0.12)
 a.set_ylabel("cum. reward"); a.set_title("Cumulative reward", fontsize=11, loc="left")
@@ -114,6 +124,7 @@ tlegend = [Line2D([0], [0], marker="^", color="none", markerfacecolor=TIER[k],
 fig.legend(handles=rlegend + tlegend, loc="lower center", ncol=8, fontsize=9,
            frameon=False, bbox_to_anchor=(0.5, -0.005))
 
-fig.tight_layout(rect=[0, 0.02, 1, 0.985])
+# ponytail: no tight_layout — the figure legend sits outside the axes, and
+# savefig(bbox_inches="tight") already expands the canvas to include it
 fig.savefig(out, dpi=130, bbox_inches="tight")
 print("wrote", out)

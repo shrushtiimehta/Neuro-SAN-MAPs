@@ -50,11 +50,16 @@ Rules applied per proposal, in priority order:
   7. Everything else                      → APPROVE when:
        cash - one_time_cost >= daily_operating_cost (keep 1-day buffer)
 
-Break-even days are derived from rides_economics.yaml at 5 ops/day
-(moderate-park assumption). Values:
-  carousel:      yellow=3  blue=4   green=7  red=9
-  ferris_wheel:  yellow=3  blue=13  green=19 red=20
-  roller_coaster:yellow=7  blue=17  green=14 red=20
+daily_operating_cost is the park's REAL daily burn — staff salaries + research
+speed cost + the sim's realized per-day operating_cost of every placed ride and
+shop. See FinanceGate.operating_cost for why the last two are read back from the
+observation rather than estimated from the economics tables.
+
+Break-even days come from the `break_even_days` column of
+config_files/rides_economics.md — the single source of truth. They were derived
+at 5 ops/day (moderate-park assumption):
+  break_even_ops  = ceil(building_cost / (max_ticket_price * capacity - operating_cost))
+  break_even_days = ceil(break_even_ops / 5)
 """
 
 from __future__ import annotations
@@ -222,15 +227,9 @@ class FinanceGate(CodedTool):
     # >= this requirement so consultation and approval clear together.
     RESEARCH_UPFRONT_DAYS: ClassVar[int] = 3
 
-    # Break-even days per (subtype, subclass) at 5 ops/day.
-    # Derived from rides_economics.yaml:
-    #   break_even_ops = ceil(building_cost / (max_ticket_price * capacity - cost_per_operation))
-    #   break_even_days = ceil(break_even_ops / 5)
-    BREAK_EVEN_DAYS: ClassVar[dict[str, dict[str, int]]] = {
-        "carousel":       {"yellow": 3,  "blue": 4,  "green": 7,  "red": 9},
-        "ferris_wheel":   {"yellow": 3,  "blue": 13, "green": 19, "red": 20},
-        "roller_coaster": {"yellow": 7,  "blue": 17, "green": 14, "red": 20},
-    }
+    # Break-even days are NOT duplicated here: _enrich reads the break_even_days
+    # column out of rides_economics.md, the same file the costs come from, so the
+    # table and the gate can never drift apart.
 
     async def async_invoke(
         self, args: dict[str, Any], sly_data: dict[str, Any]
@@ -272,7 +271,8 @@ class FinanceGate(CodedTool):
             daily_operating_cost = self._int(args.get("daily_operating_cost"))
         else:
             daily_operating_cost = self.operating_cost(
-                placed_staff, research_speed, staff_econ, research_econ
+                placed_staff, research_speed, staff_econ, research_econ,
+                placed_rides, placed_shops,
             )
 
         results: list[dict[str, Any]] = []
@@ -302,6 +302,7 @@ class FinanceGate(CodedTool):
                 has_food_or_atm=enriched["has_food_or_atm"],
                 has_profitable_ride=enriched["has_profitable_ride"],
                 num_guests=enriched["num_guests"],
+                break_even_days=enriched["break_even_days"],
             )
             row: dict[str, Any] = {
                 "label":    enriched["label"],
@@ -325,13 +326,25 @@ class FinanceGate(CodedTool):
 
     @staticmethod
     def operating_cost(
-        placed_staff: Any, research_speed: str, staff_econ: dict, research_econ: dict
+        placed_staff: Any, research_speed: str, staff_econ: dict, research_econ: dict,
+        placed_rides: Any = None, placed_shops: Any = None,
     ) -> int:
-        """Per-day operating cost = sum of placed-staff salaries + research speed cost.
+        """The park's real per-day burn: staff salaries + research speed cost +
+        the realized daily operating_cost of every placed ride and shop.
 
-        This is the former DailyOperatingCost tool, merged in. Reads salaries
-        from the staff economics table and the speed cost from the research
-        table — the same files FinanceGate already loads.
+        Salaries and the speed cost are contractual, so they come from the
+        economics tables. Ride and shop costs are NOT: a ride is charged
+        cost_per_operation per operation and a shop is charged
+        order_quantity x item_cost at stock time, both of which depend on how the
+        day actually ran. So we take the sim's own realized `operating_cost` off
+        each placed entity rather than estimating ops/day.
+
+        ponytail: yesterday's realized figure, one day stale by construction —
+        a ride placed or a shop re-ordered this turn reads 0 until it has run a
+        day. Fixing that properly needs a forward cost estimate from the sim.
+        Previously this counted ONLY salaries + research, which understated the
+        burn by the two largest costs in a mature park (~$10k/day of ride ops
+        alone in the best run), making the "1-day buffer" rule vacuous.
         """
         total = 0
         for entry in placed_staff or []:
@@ -343,6 +356,10 @@ class FinanceGate(CodedTool):
             total += FinanceGate._int(salary)
         speed = str(research_speed or "none").lower().strip()
         total += FinanceGate._int(research_econ.get(("speed_cost", speed), 0))
+        for placed in (placed_rides, placed_shops):
+            for entry in placed or []:
+                if isinstance(entry, dict):
+                    total += FinanceGate._int(entry.get("operating_cost", 0))
         return total
 
     def _enrich(
@@ -372,9 +389,17 @@ class FinanceGate(CodedTool):
         # is_research only for set_research with a non-none speed.
         is_research = (action == "set_research" and research_speed != "none")
 
+        # Runway a ride needs to recoup its build cost, read straight off the
+        # economics table. 0 for anything that isn't a known ride tier (shops,
+        # staff, a subtype the table doesn't carry) — the gate then skips the rule.
+        break_even_days = self._int(
+            ride_econ.get(("rides", subtype, subclass), {}).get("break_even_days", 0)
+        )
+
         # Research cost is a FLAT per-speed daily fee — the sim charges it once
-        # regardless of how many research_topics are selected (topics only set
-        # priority order). Confirmed against the MAPs simulator (research.js).
+        # regardless of how many research_topics are selected (topics only pick
+        # WHICH subtypes are eligible; the sim researches them in its own fixed
+        # order). Confirmed against the MAPs simulator (research.js).
         research_daily_cost = self._int(research_econ.get(("speed_cost", research_speed), 0))
         if is_research:
             target_tier = str(proposal.get("target_tier") or "blue").lower()
@@ -416,6 +441,7 @@ class FinanceGate(CodedTool):
             "research_speed":      research_speed if action == "set_research" else None,
             "research_topics":     proposal.get("research_topics") if action == "set_research" else None,
             "one_time_cost":       one_time_cost,
+            "break_even_days":     break_even_days,
             "is_research":         is_research,
             "research_daily_cost": research_daily_cost,
             "research_days":       research_days,
@@ -441,6 +467,15 @@ class FinanceGate(CodedTool):
 
     @staticmethod
     def _scan_profitable_ride(placed_rides: Any) -> bool:
+        """True when ANY placed ride is in service.
+
+        Despite the `has_profitable_ride` key it feeds (kept for wire
+        compatibility with player.hocon), this is an in-service check, not a
+        revenue>cost one — the coordinator's status slice carries no per-ride
+        revenue. It gates research on "the park has something earning", which is
+        deliberately loose: research is already the latest-firing lever in the
+        run (step 31 in the best episode), so tightening this would delay it further.
+        """
         if not isinstance(placed_rides, list):
             return False
         for ride in placed_rides:
@@ -466,6 +501,7 @@ class FinanceGate(CodedTool):
         has_food_or_atm: bool,
         has_profitable_ride: bool,
         num_guests: int = 0,
+        break_even_days: int = 0,
     ) -> tuple[bool, str]:
         # wait is always approved
         if action == "wait":
@@ -509,13 +545,11 @@ class FinanceGate(CodedTool):
                 )
 
         # Rule 6b — ride break-even: too late in episode to recoup build cost
-        if action == "place" and (entity_type == "ride" or subtype in self.BREAK_EVEN_DAYS):
-            be_days = self.BREAK_EVEN_DAYS.get(subtype, {}).get(subclass)
-            if be_days is not None and days_remaining < be_days:
-                return False, (
-                    f"{subtype}/{subclass} needs ~{be_days} days to break even "
-                    f"but only {days_remaining} steps remain"
-                )
+        if action == "place" and break_even_days and days_remaining < break_even_days:
+            return False, (
+                f"{subtype}/{subclass} needs ~{break_even_days} days to break even "
+                f"but only {days_remaining} steps remain"
+            )
 
         # Rule 7 — research: capital investment, strict approval criteria
         if action == "set_research" and not is_research:
@@ -524,8 +558,8 @@ class FinanceGate(CodedTool):
         if is_research:
             if not has_profitable_ride:
                 return False, (
-                    "research requires at least one profitable ride first "
-                    "(confirmed revenue > operating cost)"
+                    "research requires at least one ride IN SERVICE first; "
+                    "every placed ride is out of service (or none is placed)"
                 )
             min_runway = research_days + self.POST_UNLOCK_MIN_DAYS
             if days_remaining < min_runway:

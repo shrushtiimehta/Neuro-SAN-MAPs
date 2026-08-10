@@ -70,6 +70,25 @@ aaosa_call = {
     }
 }
 
+# For down-chain agents that are NOT running the AAOSA protocol: they never see
+# ${aaosa_instructions}, so they never branch on 'mode' and never emit the [AAOSA]
+# block — they just answer the inquiry (in these networks, with plain JSON).
+# ${aaosa_call}'s required 'mode' arg would only force the caller to invent a
+# meaningless value on every single call, so use this instead.
+inquiry_call = {
+    description = "Returns a natural language string in response to the inquiry."
+    parameters = {
+        type = "object"
+        properties = {
+            inquiry = {
+                type = "string"
+                description = "The inquiry"
+            }
+        }
+        required = ["inquiry"]
+    }
+}
+
 # Deprecated: aaosa_command has been merged into aaosa_instructions above.
 # Kept as an empty string for backward compatibility with old agent networks
 # that reference ${aaosa_command}.

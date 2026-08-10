@@ -5,31 +5,39 @@
 You decide which shops to place, restock (modify order_quantity), or sell — drink/food/specialty across four tiers (never coordinates). Shops drive recurring revenue and guest happiness; the golden rule is never let a shop run dry, since out-of-service crashes happiness and park_rating.
 <!-- PLAYBOOK_SUMMARY:END -->
 
-Only 100 steps per episode — make each a high-impact moves; don't micromanage.
+Shops are necessary to adequately cater to guest needs, and provide **additional value to a park**.
 
-## Shop mechanics (the levers you set)
-- **item_cost / item_price** — your per-unit cost / the guest's per-unit price; max_item_price is applied automatically as item_price.
-- **order_quantity** — inventory bought at `item_cost` each day start (partial if cash short; unsold spoils at day end). Editable with `modify`.
-- **Out of service** — a shop that runs dry mid-day turns guests away and drops happiness + park_rating. Fix it in ONE move: `modify` its `order_quantity` up.
+## Types of shops:
+- **Drink:** quenches guests’ thirst.
+- **Food:** satisfies guests’ hunger.
+- **Specialty:** provides unique services based on subclass:
+  - Yellow (Souvenir Shops): boost guest happiness.
+  - Blue (Info Booths): inform guests about attractions and their prices. It removes the rejection penalty.
+  - Green (ATMs): allow guests to withdraw additional funds. Guests arrive with ~$150, so revenue past that ceiling can come from an ATM. 
+  - Red (Billboards): encourage guests to seek food and ATMs (useful when food shops and an ATM already exist to absorb the extra demand). Earns zero revenue but resets visit counts, drawing more guests.
 
-## Shop status readouts (reported per shop, not set by you)
-- **inventory** — units left unsold at end of that day; hitting 0 mid-day → out of service, but a large amount still on hand at day close is wasted `item_cost` (it spoils). Tune `order_quantity` so a shop nearly sells out without running dry.
-- **revenue_generated** — cumulative sales income for that shop.
-- **operating_cost** — the shop's running cost. `revenue_generated - operating_cost` is net contribution — how you should rank shops to cull the worst.
+## Key attributes:
+- **Order quantity:** quantity of inventory.
+  - At the start of the day, shops are stocked to order quantity at item cost.
+  - If funds are insufficient, partial stocking will occur.
+  - If a shop runs out of inventory during the day, it will go out of service, turning away guests and lowering their happiness and your park rating.
+  - Order quantity can be increased using the *modify* action, but treat *modify* as a LAST RESORT: it costs a whole step and adds no capacity and no excitement, where a placement earns for the rest of the episode. Spend one only on a shop actually going dry early in the day (low uptime) — never to fine-tune a shop already in service — and set order_quantity right the first time so you never have to come back to it.
+- **Item cost/price:** the cost of purchasing/selling one unit of inventory.
+
+## Park current status (not set by you)
+- **inventory** — units left unsold.
+- **profit** — sales income minus stocking cost for that shop.
 - **uptime** — fraction of the day the shop stayed in service (not dry).
+- **next_unlock** — the next tier due and which subtype unlocks next, e.g. `"next_unlock": {"tier": "blue", "days": 2, "subtypes": ["carousel", "drink"]}`. `days` is the ETA for the first listed unlock. Absent = research off.
 
-- **Guest spend ceiling** — guests arrive with ~$150; a guest can only buy so much, so revenue past that ceiling comes from more guests or an ATM.
+## Tips:
+- **Guests leave** when money, energy, hunger, thirst, or happiness runs critical. Hunger/thirst rise and happiness falls over time, so food/drink shops and rides are what keep guests in the park spending. Keep this in mind while building shops.
 - **Thirst in guests builds ~1.5× faster than hunger.**
-
-## Tier upgrades
-- At the start, place low-tier shops, even repeated ones.
-- Identical shops (same subtype and tier) add little to the park rating. When available, vary the subtype/tier → more guests → more revenue → more reward. When research unlocks a higher tier (yellow < blue < green < red; see `available_entities`) and cash allows, place it fast.
-- If every tile is full (tile space is scarce) and a higher-tier shop needs placing, it costs a two-turn swap — remove the least profitable / most-redundant shop, then place the higher tier next turn.
-- Value from a placement earns for the rest of the episode; a step spent idle earns nothing back.
-
-## Specialty shop placement:
-- Souvenir pays off wherever many guests pass (high-traffic junctions)
-- ATM only changes anything once guests are actually running out of cash — before that it draws nothing.
-- Billboard makes guests hungrier/thirstier and routes low-cash guests to an ATM, so its lift only materialises when food shops and an ATM already exist to absorb that extra demand.
+- When research unlocks a higher tier (yellow < blue < green < red; see `available_entities`) and cash allows, place it in priority.
+- **Tier-upgrade swap — reachable tiles are scarce, so keep the shop count small and grow it by UPGRADING the shops you already have, not by adding more.** A higher tier unlocked? Swap ONE shop, over two turns:
+  1. `remove` your lowest-tier shop. Tie-break on least `profit`. Prefer one whose subtype just unlocked.
+  2. `place` the new tier on the tile it vacated. Never on an unreachable tile: revenue is always $0.
+- Building multiple shops of the same kind (i.e., identical subtype and subclass) yields diminishing returns for your park rating. Whenever possible, **DIVERSIFY** your shops across subtypes and subclasses for a higher overall rating.
+- A shop sells back for only 66% of its build cost, so swap only for a genuine tier upgrade.
 
 ## Learned rules (promoted from prior runs)
