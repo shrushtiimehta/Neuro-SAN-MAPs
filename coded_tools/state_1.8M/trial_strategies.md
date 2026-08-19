@@ -1,0 +1,6 @@
+- t3_1: Favor ferris wheel upgrades over roller coaster upgrades until upgraded mechanics are working.
+- t3_2: Unlock premium drink or food shops before adding ATMs or repeating basic shop modifications.
+- t3_3: Unlock blue janitors and mechanics before stacking yellow staff around premium rides.
+- t3_4: Preserve and expand capacity with unreachable cheap rides whenever earning tiles are full.
+- t3_5: Escalate to fast research for a single buildable premium target once earnings can survive the burn.
+- t3_6: For the final cash-surplus phase, if no reachable shop tile is empty, replace the lowest-served reachable yellow shop with one unlocked red or green drink on the same main-flow site before any ATM or more basic stock tuning.

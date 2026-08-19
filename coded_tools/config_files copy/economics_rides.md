@@ -1,4 +1,4 @@
-| subtype | subclass | building_cost | operating_cost | capacity | max_ticket_price | excitement | intensity | breakdown_rate | break_even_days |
+| subtype | subclass | building_cost | cost_per_operation | capacity | max_ticket_price | excitement | intensity | breakdown_rate | break_even_days |
 |---|---|---|---|---|---|---|---|---|---|
 | carousel | yellow | 250 | 1 | 6 | 4 | 1 | 1 | 0.001 | 3 |
 | carousel | blue | 1500 | 2 | 14 | 6 | 4 | 3 | 0.002 | 4 |

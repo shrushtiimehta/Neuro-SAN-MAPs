@@ -44,6 +44,7 @@ from coded_tools.finance_gate import _RIDES_ECONOMICS_PATH
 from coded_tools.finance_gate import _SHOPS_ECONOMICS_PATH
 from coded_tools.finance_gate import _STAFF_ECONOMICS_PATH
 from coded_tools.finance_gate import _read_lookup_lines
+from coded_tools.finance_gate import normalize_price_key
 from coded_tools.latest_observation import LatestObservation
 
 
@@ -121,6 +122,11 @@ class ProposeAction(CodedTool):
         if not isinstance(action_args, dict):
             reasons.append(f"args must be an object/dict, got {type(action_args).__name__}")
             action_args = {}
+        # The observation names a ride's price `ticket_price` and a shop's
+        # `item_price`; the env action takes plain `price`. Fold either alias in so
+        # a proposal that echoed one back from the obs doesn't reach the env as an
+        # unknown arg. _force_econ_price overwrites the value regardless.
+        normalize_price_key(action_args)
 
         latest = self._read_latest_obs(park if isinstance(park, int) else 0)
 
@@ -142,7 +148,15 @@ class ProposeAction(CodedTool):
             # needs type+x+y plus whatever it is changing — the env's "missing
             # arg" / price=None rejections are filled in here instead.
             if action == "modify" and atype in _VALID_TYPES:
-                if action_args.get("x") is None or action_args.get("y") is None:
+                # A ride's only mutable field is its ticket price, and that comes
+                # from the economics table — so a ride modify cannot change
+                # anything and would spend one of the run's ~100 turns doing it.
+                if atype == "ride":
+                    reasons.append(
+                        "modify does not apply to a ride — nothing about a placed ride can "
+                        "change. Use place / move / remove instead."
+                    )
+                elif action_args.get("x") is None or action_args.get("y") is None:
                     reasons.append("modify needs integer x and y to locate the asset")
                 elif latest and self._matched_asset(action_args, latest) is None:
                     reasons.append(
@@ -152,21 +166,14 @@ class ProposeAction(CodedTool):
                 else:
                     self._carry_forward_modify(action_args, latest)
 
-            # Price is NEVER taken from the agent: overwrite it deterministically
-            # from the economics files (max cap for ride/shop, salary for staff).
-            # This is the authoritative chokepoint — the runner steps the env from
-            # the proposal this tool persists — so a wrong agent price (e.g. the
-            # food cap 5 leaking onto a drink shop capped at 3) can't reach the env.
+            # Price is never the agent's call: it comes straight from the
+            # economics table for every type (subclass ceiling for rides/shops,
+            # salary for staff), so nothing here needs capping or correcting.
             self._force_econ_price(action_args)
 
             price_ok, price_reason = self._check_price_cap(action_args, latest)
             if not price_ok:
                 reasons.append(price_reason)
-            # Per-subclass price cap from the economics table (max_ticket_price
-            # for rides, max_item_price for shops) — not present in the obs.
-            cap_ok, cap_reason = self._check_price_cap_econ(action_args)
-            if not cap_ok:
-                reasons.append(cap_reason)
             # All env-required fields present (after modify carry-forward).
             req_ok, req_reason = self._check_required_fields(action, action_args)
             if not req_ok:
@@ -194,7 +201,7 @@ class ProposeAction(CodedTool):
                 reasons.append(move_reason)
 
         if action == "set_research":
-            sr_ok, sr_reason = self._check_set_research_fields(action_args)
+            sr_ok, sr_reason = self._check_set_research_fields(action_args, latest)
             if not sr_ok:
                 reasons.append(sr_reason)
 
@@ -303,8 +310,9 @@ class ProposeAction(CodedTool):
                 action_args["order_quantity"] = oq
 
     # Where each entity type's authoritative price lives in the economics
-    # tables. Rides/shops are capped (we always charge the cap); staff "price"
-    # is the fixed salary.
+    # tables. Price is NOT an agent-facing decision: every type resolves to a
+    # fixed number here, so a proposal only ever names what to build, never
+    # what to charge for it.
     _ECON_PRICE_FIELD: ClassVar[dict[str, tuple[str, str]]] = {
         # type -> (economics domain, field name)
         "ride":  ("rides", "max_ticket_price"),
@@ -313,16 +321,14 @@ class ProposeAction(CodedTool):
     }
 
     def _force_econ_price(self, action_args: dict) -> None:
-        """Authoritatively set ``price`` from the economics files; the agent's
-        value is always discarded.
+        """Set ``price`` from the economics tables for every entity type.
 
-        Rides/shops use the per-subclass max cap (max_ticket_price /
-        max_item_price) — the network design always charges the max and the env
-        rejects anything above it. Staff use their fixed salary. Mutates
-        ``action_args`` in place so the persisted proposal (which the runner
-        steps the env from) carries the correct price.
+        Rides and shops charge their subclass ceiling; staff carry their fixed
+        salary (the env ignores it, but the proposal's own cost accounting
+        wants it). Whatever a caller passed in is overwritten — the economics
+        table is the only source of truth. Mutates ``action_args`` in place.
 
-        Leaves ``price`` untouched only when the type/subtype/subclass can't be
+        Leaves ``price`` untouched when the type/subtype/subclass can't be
         resolved to an economics row (e.g. a modify whose asset wasn't found, or
         a typo'd subtype) — those cases are rejected by the other checks.
         """
@@ -353,39 +359,6 @@ class ProposeAction(CodedTool):
             return False, "price must be an integer, not a boolean"
         return True, ""
 
-    def _check_price_cap_econ(self, action_args: dict) -> tuple[bool, str]:
-        """Reject a price above the subclass's economics max.
-
-        The env enforces a per-subclass cap — max_ticket_price for rides,
-        max_item_price for shops — that is NOT in the observation, so we read
-        it from the economics tables (the same the agent consults). Staff have
-        no such cap.
-        """
-        atype = (action_args.get("type") or "").lower()
-        if atype == "ride":
-            econ, max_field, domain, label = _ride_economics(), "max_ticket_price", "rides", "ticket price"
-        elif atype == "shop":
-            econ, max_field, domain, label = _shop_economics(), "max_item_price", "shops", "item price"
-        else:
-            return True, ""
-        subtype = (action_args.get("subtype") or "").lower()
-        subclass = (action_args.get("subclass") or "").lower()
-        price = action_args.get("price")
-        if not subtype or not subclass or price is None:
-            return True, ""  # presence/type handled elsewhere
-        try:
-            price = int(price)
-        except (TypeError, ValueError):
-            return True, ""
-        entry = econ.get((domain, subtype, subclass))
-        cap = entry.get(max_field) if entry else None
-        if isinstance(cap, (int, float)) and price > cap:
-            return False, (
-                f"{label} {price} exceeds {max_field} {cap} for "
-                f"{subtype} {subclass}; set it to {cap} or lower"
-            )
-        return True, ""
-
     def _check_required_fields(self, action: str, action_args: dict) -> tuple[bool, str]:
         """Ensure every env-required field is present for place/modify.
 
@@ -411,38 +384,115 @@ class ProposeAction(CodedTool):
             )
         return True, ""
 
-    def _check_placement_tile(self, action_args: dict, obs: dict) -> tuple[bool, str]:
-        """Reject a ride/shop placement on a tile that is not buildable.
+    @staticmethod
+    def _occupied_tiles(obs: dict) -> set[tuple[int, int]]:
+        """Tiles already holding a ride or a shop.
 
-        valid_placement_coords (surfaced to the agent as `free_tiles` in
+        Derived from placed_rides/placed_shops, so unlike valid_placement_coords
+        it is ALWAYS available — including the full-park late game where the env
+        reports no buildable tiles at all and the old check gave up. Staff are
+        excluded on purpose: they stand on paths and inside attractions, so they
+        never block a build.
+        """
+        out = set()
+        for section_key, list_key in (("rides", "ride_list"), ("shops", "shop_list")):
+            section = obs.get(section_key)
+            items = section.get(list_key) if isinstance(section, dict) else None
+            for item in items or []:
+                if (isinstance(item, dict) and isinstance(item.get("x"), int)
+                        and isinstance(item.get("y"), int)):
+                    out.add((item["x"], item["y"]))
+        return out
+
+    @staticmethod
+    def _check_staff_tile(obs: dict, x: int, y: int, verb: str) -> tuple[bool, str]:
+        """Staff belong on a path tile or inside an existing attraction.
+
+        The env rejects anything else with "Invalid location for staff", and that
+        rejection costs a full turn — it was the single most common one in the
+        logs because `place` never checked, only `move` did.
+        """
+        path_coords = obs.get("path_coords")
+        if not isinstance(path_coords, list) or not path_coords:
+            return True, ""
+        valid = {(c[0], c[1]) for c in path_coords
+                 if isinstance(c, (list, tuple)) and len(c) >= 2}
+        valid |= {
+            (item["x"], item["y"])
+            for section_key in ("rides", "shops", "staff")
+            for list_key in (f"{section_key.rstrip('s')}_list",)
+            for item in (obs.get(section_key) or {}).get(list_key, [])
+            if isinstance(item, dict) and "x" in item and "y" in item
+        }
+        if valid and (x, y) not in valid:
+            return False, (
+                f"({x},{y}) is not a valid {verb} location for staff; staff must be "
+                "on a path tile (path_coords) or inside an existing attraction."
+            )
+        return True, ""
+
+    def _check_placement_tile(self, action_args: dict, obs: dict) -> tuple[bool, str]:
+        """Reject a placement the env would reject, costing a turn.
+
+        valid_placement_coords (surfaced to the agent as `reachable_tiles` in
         ParkStatus) lists the empty tiles adjacent to the reachable path — i.e.
         exactly where rides/shops may go. Enforcing it pre-empts the env's
-        "must be adjacent to a path" and "tile already contains a ride"
-        rejections. Staff have a different rule (on a path / in an attraction),
-        so they are left to the env. Skipped when the list is unavailable.
+        "must be adjacent to a path" rejection, but the env empties that list
+        once the park is full — precisely when misplacement is most likely — so
+        occupancy is checked separately from placed_rides/placed_shops, which is
+        always present. Staff get their own rule (path / inside an attraction).
         """
-        if (action_args.get("type") or "").lower() not in ("ride", "shop"):
+        atype = (action_args.get("type") or "").lower()
+        try:
+            x, y = int(action_args.get("x")), int(action_args.get("y"))
+        except (TypeError, ValueError):
+            return True, ""  # x/y validity handled by _check_place_bounds
+        if atype == "staff":
+            return self._check_staff_tile(obs, x, y, "placement")
+        if atype not in ("ride", "shop"):
             return True, ""
+        if (x, y) in self._occupied_tiles(obs):
+            return False, (
+                f"({x},{y}) already contains a ride or shop; one attraction per tile. "
+                f"Pick a free tile, or `move`/`remove` the occupant first."
+            )
         coords = obs.get("valid_placement_coords")
         if not isinstance(coords, list) or not coords:
             return True, ""  # no signal available; let the env decide
         # unreachable_tiles are buildable too — they sit beside a path island the
         # entrance can't reach, so the env accepts them and guests never arrive
-        # (a deliberate capacity-only play, see layout_strategy.md).
+        # (a deliberate capacity-only play, see seed_playbook_layout.md).
         stranded = {(c[0], c[1]) for c in (obs.get("unreachable_tiles") or [])
                     if isinstance(c, (list, tuple)) and len(c) >= 2}
-        try:
-            x, y = int(action_args.get("x")), int(action_args.get("y"))
-        except (TypeError, ValueError):
-            return True, ""  # x/y validity handled by _check_place_bounds
         valid = {(c[0], c[1]) for c in coords if isinstance(c, (list, tuple)) and len(c) >= 2}
         if (x, y) not in valid | stranded:
             return False, (
                 f"({x},{y}) is not a buildable tile for a {action_args.get('type')}; "
-                f"choose one of free_tiles or unreachable_tiles from ParkStatus "
+                f"choose one of reachable_tiles or unreachable_tiles from ParkStatus "
                 f"(empty tiles next to a path)."
             )
-        return self._check_stranded_tier(action_args, obs, x, y)
+        return self._check_shop_reachable(action_args, x, y, stranded) if atype == "shop" \
+            else self._check_stranded_tier(action_args, obs, x, y)
+
+    @staticmethod
+    def _check_shop_reachable(action_args: dict, x: int, y: int, stranded: set) -> tuple[bool, str]:
+        """A shop may NEVER sit on an unreachable tile, at any tier.
+
+        A stranded ride still earns its capacity, which is the whole point of the
+        eviction play. A shop contributes nothing but revenue, and a guest who
+        cannot walk to it buys nothing — so a stranded shop is pure loss: its
+        build cost, plus a restock at item_cost every morning that is destroyed
+        unsold at close. Rides keep the softer tier-only rule.
+        """
+        if (x, y) not in stranded:
+            return True, ""
+        return False, (
+            f"({x},{y}) is unreachable, and a shop there earns $0 for the rest of "
+            f"the run while still paying to restock every morning. Shops go on "
+            f"reachable_tiles ONLY. If reachable_tiles is empty, `remove` your "
+            f"LOWEST-tier shop and build on the tile it frees — unreachable "
+            f"tiles are for rides, which at least keep their capacity."
+        )
 
     def _check_stranded_tier(self, action_args: dict, obs: dict, x: int, y: int) -> tuple[bool, str]:
         """The BEST unlocked tier may never end up on a tile guests can't reach.
@@ -463,15 +513,15 @@ class ProposeAction(CodedTool):
         tiers = (obs.get("available_entities") or {}).get(subtype) or []
         if len(tiers) < 2 or subclass != tiers[-1]:
             return True, ""
-        # Shops are never moved (see shops_strategy.md) — they free a tile by `remove`.
-        evict = ("`move` the least profitable reachable ride onto an unreachable tile "
+        # Shops are never moved (see seed_playbook_shops.md) — they free a tile by `remove`.
+        evict = ("`move` your LOWEST-tier reachable ride onto an unreachable tile "
                  "(free, no 34% sale loss)"
                  if (action_args.get("type") or "").lower() == "ride" else
-                 "`remove` the least profitable shop")
+                 "`remove` your LOWEST-tier shop")
         return False, (
             f"({x},{y}) is unreachable — guests never walk there, so a {subclass} "
             f"{subtype} earns $0 for the rest of the run, and {subclass} is your "
-            f"BEST unlocked tier. Put it on a free_tile; if free_tiles is empty, "
+            f"BEST unlocked tier. Put it on a reachable_tile; if reachable_tiles is empty, "
             f"{evict} and build the {subclass} on the tile it "
             f"vacated. Only tiers below {subclass} may go on unreachable_tiles."
         )
@@ -592,6 +642,19 @@ class ProposeAction(CodedTool):
                             f"check placed_{atype}s in ParkStatus for valid current coords."
                         )
             if atype in ("ride", "shop"):
+                # Same occupancy rule as `place`, and for the same reason: the env
+                # empties valid_placement_coords in a full park, so the check below
+                # goes silent exactly when the destination is most likely taken.
+                if (inx, iny) == (ix, iy):
+                    return False, (
+                        f"move destination ({inx},{iny}) is where the {atype} already "
+                        "stands; that changes nothing and wastes the turn."
+                    )
+                if (inx, iny) in self._occupied_tiles(obs):
+                    return False, (
+                        f"({inx},{iny}) already contains a ride or shop; pick a free "
+                        f"tile for the {atype} to move to."
+                    )
                 # Destination must be adjacent to a path — reachable
                 # (valid_placement_coords) or stranded (unreachable_tiles).
                 coords = obs.get("valid_placement_coords")
@@ -601,32 +664,34 @@ class ProposeAction(CodedTool):
                     if (inx, iny) not in valid:
                         return False, (
                             f"({inx},{iny}) is not a buildable destination for a {atype}; "
-                            f"choose a tile from free_tiles or unreachable_tiles in ParkStatus."
+                            f"choose a tile from reachable_tiles or unreachable_tiles in ParkStatus."
                         )
+                    stranded = {(c[0], c[1]) for c in (obs.get("unreachable_tiles") or [])
+                                if isinstance(c, (list, tuple)) and len(c) >= 2}
+                    # Same rule as `place`: a shop never lands on a stranded tile.
+                    if atype == "shop":
+                        return self._check_shop_reachable(action_args, inx, iny, stranded)
                     return self._check_stranded_tier(action_args, obs, inx, iny)
             elif atype == "staff":
                 # Staff must land on a path or attraction tile, not empty/water.
-                path_coords = obs.get("path_coords")
-                if isinstance(path_coords, list) and path_coords:
-                    path_set = {(c[0], c[1]) for c in path_coords if isinstance(c, (list, tuple)) and len(c) >= 2}
-                    attraction_coords = {
-                        (item["x"], item["y"])
-                        for section_key in ("rides", "shops", "staff")
-                        for list_key in (f"{section_key.rstrip('s')}_list",)
-                        for item in (obs.get(section_key) or {}).get(list_key, [])
-                        if isinstance(item, dict) and "x" in item and "y" in item
-                    }
-                    valid = path_set | attraction_coords
-                    if valid and (inx, iny) not in valid:
-                        return False, (
-                            f"({inx},{iny}) is not a valid destination for staff; "
-                            "staff must move to a path tile or inside an existing attraction."
-                        )
+                return self._check_staff_tile(obs, inx, iny, "destination")
         return True, ""
 
-    def _check_set_research_fields(self, action_args: dict) -> tuple[bool, str]:
-        """Validate set_research speed and topic entity names."""
-        speed = (action_args.get("research_speed") or "none").lower().strip()
+    def _check_set_research_fields(self, action_args: dict, latest: dict | None = None) -> tuple[bool, str]:
+        """Validate set_research speed and topic entity names, and reject no-ops.
+
+        A missing speed is NOT defaulted: an omitted speed used to be read as
+        "none", turning "start researching" into "confirm research stays off"
+        — a whole turn spent changing nothing. The specialist must say which
+        speed it wants.
+        """
+        raw_speed = action_args.get("research_speed")
+        if raw_speed is None or str(raw_speed).strip() == "":
+            return False, (
+                f"set_research requires an explicit research_speed (one of "
+                f"{sorted(_VALID_RESEARCH_SPEEDS)}); it is never assumed"
+            )
+        speed = str(raw_speed).lower().strip()
         if speed not in _VALID_RESEARCH_SPEEDS:
             return False, (
                 f"research_speed must be one of {sorted(_VALID_RESEARCH_SPEEDS)}; got {speed!r}"
@@ -640,6 +705,22 @@ class ProposeAction(CodedTool):
                 return False, (
                     f"invalid research_topics {invalid}; must be from "
                     f"{sorted(_VALID_RESEARCH_TOPICS)}"
+                )
+        # Restating the speed the park already runs at, with the same (or no)
+        # topic list, spends a turn to change nothing. Only a different speed or
+        # topic list is a real move (re-aiming research), and so is stopping active
+        # research with speed='none' — those all pass. Omitting topics counts as
+        # "leave them as they are", so it is a no-op when the speed matches too.
+        obs = latest or {}
+        current = str(obs.get("research_speed") or "").lower().strip()
+        if current and speed == current:
+            live = obs.get("research_topics")
+            same_topics = topics is None or (isinstance(live, list) and set(topics) == set(live))
+            if same_topics:
+                return False, (
+                    f"research is already speed={current!r} topics={live!r}"
+                    " — this set_research changes nothing and would waste the turn; "
+                    "change the speed, change the topics, or pick a different action"
                 )
         return True, ""
 

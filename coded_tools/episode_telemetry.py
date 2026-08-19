@@ -27,8 +27,7 @@ both WHAT was done and its measured effect, without parsing free-text.
 The trial_analyst/curator judge trials by reading `steps` — the faithful
 per-step run (full action args incl. x/y, plus metrics) — and `rejections`
 to decide whether a trial's intended move actually fired, plus the per-step
-reward/value deltas for success/failure. `applied` is a lossy convenience
-digest (non-wait actions only, no coords/metrics); do not judge from it.
+reward/value deltas for success/failure.
 
 Returns:
   {
@@ -39,7 +38,6 @@ Returns:
                    research_speed, num_rides, num_shops, num_staff,
                    min_cleanliness, min_uptime, shop_revenue,
                    ride_op_cost}, ... ],   # sorted by step
-    "applied":  [ {step, action, subtype, subclass}, ... ],  # non-wait actions
     "rejections": [ {step, rejected_action, subtype, subclass, price,
                      error}, ... ],  # actions the sim refused (logged as wait)
     "rollup":   { step_count, first_step, last_step, reached_step_100,
@@ -91,9 +89,9 @@ class EpisodeTelemetry(CodedTool):
         "min_cleanliness", "min_uptime", "shop_revenue", "ride_op_cost",
     )
     # Action fields the runner spreads into the row from the dispatched args.
-    # Carry the FULL applied-action shape (coords, quantity, type included) so
-    # `steps` is the faithful run the close-out judge reads to decide whether a
-    # trial's intended move actually fired — not the lossy `applied` digest.
+    # Carry the FULL action shape (coords, quantity, type included) so `steps`
+    # is the faithful run the close-out judge reads to decide whether a trial's
+    # intended move actually fired.
     ACTION_FIELDS: ClassVar[tuple[str, ...]] = (
         "type", "subtype", "subclass", "price", "order_quantity", "x", "y")
 
@@ -118,13 +116,13 @@ class EpisodeTelemetry(CodedTool):
 
         if not path or not os.path.exists(path):
             return {"exists": False, "episode": episode, "steps": [],
-                    "applied": [], "rollup": {},
+                    "rejections": [], "rollup": {},
                     "error": f"run log not found: {path}"}
 
         ep_rows = self._read_rows(path)
         if not ep_rows:
             return {"exists": False, "episode": episode, "steps": [],
-                    "applied": [], "rollup": {},
+                    "rejections": [], "rollup": {},
                     "error": f"no committed rows in {path}"}
 
         if episode is None:
@@ -155,13 +153,6 @@ class EpisodeTelemetry(CodedTool):
                 entry[f] = r.get(f)
             steps.append(entry)
 
-        applied = [
-            {"step": s["step"], "action": s["action"],
-             "subtype": s.get("subtype"), "subclass": s.get("subclass")}
-            for s in steps
-            if s["action"] not in (None, "wait")
-        ]
-
         rejections = [
             {"step": s["step"], "rejected_action": s.get("rejected_action"),
              "subtype": s.get("subtype"), "subclass": s.get("subclass"),
@@ -174,7 +165,6 @@ class EpisodeTelemetry(CodedTool):
             "exists": True,
             "episode": episode,
             "steps": steps,
-            "applied": applied,
             "rejections": rejections,
             "rollup": self._rollup(steps),
         }

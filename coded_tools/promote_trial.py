@@ -32,7 +32,7 @@ the config seed so it survives fresh runs.
     ignored.
 
 When a live-playbook edit succeeds, the learned line is ALSO mirrored into the
-read-only config seed (config_files/<domain>_strategy.md) under its dedicated
+read-only config seed (config_files/seed_playbook_<domain>.md) under its dedicated
 "## Learned rules" section, leaving the hand-authored baseline above it intact.
 This is what carries confirmed rules across fresh, from-scratch runs (where
 SeedPlaybooks resets each working playbook to its seed): the next run starts
@@ -63,15 +63,15 @@ class PromoteTrial(CodedTool):
     STATE_DIR: ClassVar[str] = "coded_tools/state"
     SEED_DIR: ClassVar[str] = "coded_tools/config_files"
     # domain -> config seed filename. Mirrors SeedPlaybooks.PLAYBOOKS;
-    # every domain maps to <domain>_strategy.md.
+    # every domain maps to seed_playbook_<domain>.md.
     SEED_FILES: ClassVar[dict[str, str]] = {
-        "coordinator": "coordinator_strategy.md",
-        "rides":       "rides_strategy.md",
-        "shops":       "shops_strategy.md",
-        "staff":       "staff_strategy.md",
-        "research":    "research_strategy.md",
-        "layout":      "layout_strategy.md",
-        "survey":      "survey_strategy.md",
+        "coordinator": "seed_playbook_coordinator.md",
+        "rides":       "seed_playbook_rides.md",
+        "shops":       "seed_playbook_shops.md",
+        "staff":       "seed_playbook_staff.md",
+        "research":    "seed_playbook_research.md",
+        "layout":      "seed_playbook_layout.md",
+        "survey":      "seed_playbook_survey.md",
     }
     # Header under which mirrored learned rules accumulate in the seed file.
     LEARNED_SECTION: ClassVar[str] = "## Learned rules (promoted from prior runs)"

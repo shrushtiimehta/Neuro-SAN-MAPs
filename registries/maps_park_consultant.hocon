@@ -138,13 +138,8 @@ Order is deliberate: resolve THIS episode's trials before logging new ones.
   3. trial_analyst(kind='episode_end') — logs fresh trials for the next episode via LogTrial.
   Running AFTER step 2 keeps new trials out of this episode's evaluation.
 
-  4. Craft an outcome_summary (3-8 bullet points) covering:
-    - CONFIRMED this episode: rule + domain (don't re-propose)
-    - FALSIFIED this episode: what was disproved + why (don't re-propose)
-    - INCONCLUSIVE: what was not testable and should not be re-proposed unchanged
-    - Key patterns to avoid next episode
-  Then call advance_episode(final_reward=<status_cumulative_reward>, episode=<current_episode>, outcome_summary=<text>).
-  Returns {status, last_reward_written, observation_cache_cleared, outcome_updated}.
+  4. Call advance_episode(final_reward=<status_cumulative_reward>, episode=<current_episode>).
+  Returns {status, last_reward_written, observation_cache_cleared}.
 
   5. Return {status:'episode_ended', logged:<from step 3>, promoted/falsified/inconclusive:<from step 1>, final_reward:<value>}.
 
@@ -169,8 +164,8 @@ You are the sole writer of playbook_coordinator/rides/shops/staff/research/layou
 === mode='promote_trials' ===
 Args: episode, final_reward, prior_reward.
 
-1. Call ActiveTrials() and EpisodeTelemetry(). Use telemetry.applied for applied-detection (exact match on action/subtype);
-   fall back to metric trajectory for threshold-only trials. No matching applied entry in window → not_applied.
+1. Call ActiveTrials() and EpisodeTelemetry(). Use telemetry.steps for applied-detection (exact match on
+   action/subtype); fall back to metric trajectory for threshold-only trials. No matching step in window → not_applied.
 
 2. For each trial evaluate against telemetry.steps in its window:
    - success met, failure not tripped → confirmed
@@ -197,7 +192,7 @@ If any tool errors, halt and return the error verbatim.
             name = "advance_episode",
             class = "coded_tools.advance_episode.AdvanceEpisode",
             function = {
-                description = "End-of-episode bookkeeping: persists reward, clears the observation cache, inserts LLM outcome_summary under '## Episode Summaries' in the outcome ledger, and trims old raw OUTCOME lines. Trial strategies/criteria cleanup happens at episode START via SeedPlaybooks (runner). Returns {status, last_reward_written, observation_cache_cleared, outcome_updated}.",
+                description = "End-of-episode bookkeeping: persists reward and clears the observation cache. The outcome ledger is append-only and never trimmed. No prose summary is stored. Trial strategies/criteria cleanup happens at episode START via CarryoverTrials (runner). Returns {status, last_reward_written, observation_cache_cleared}.",
                 parameters = {
                     type = "object",
                     properties = {
@@ -207,12 +202,8 @@ If any tool errors, halt and return the error verbatim.
                         },
                         episode = {
                             type = "int",
-                            description = "Current episode number; used to age out stale trials and tag the summary."
+                            description = "Current episode number; bounds which OUTCOME lines are kept."
                         },
-                        outcome_summary = {
-                            type = "string",
-                            description = "LLM-crafted concise summary of this episode's trial outcomes: what was confirmed (rule + domain), what was falsified (rule + why), what was inconclusive and why. Inserted under '## Episode Summaries' in trial_strategies_outcome.md so future trial_analyst calls know what NOT to re-propose."
-                        }
                     },
                     required = ["final_reward", "episode"]
                 }
@@ -223,7 +214,7 @@ If any tool errors, halt and return the error verbatim.
             name = "EpisodeTelemetry",
             class = "coded_tools.episode_telemetry.EpisodeTelemetry",
             function = {
-                description = "Structured per-step factual record for ONE episode, read from the deterministic run.jsonl the runner writes (replaces the old LLM-authored turn_notes journal). Returns {episode, steps:[{step, action, subtype, subclass, price, rejected_action, error, reward, cumulative_reward, cash, park_value, park_rating, research_speed, num_rides, num_shops, num_staff, min_cleanliness, min_uptime, shop_revenue, ride_op_cost}], applied:[{step, action, subtype, subclass}], rejections:[{step, rejected_action, subtype, subclass, price, error}], rollup:{step_count, reward_total, cum_start, cum_end, value_start, value_end, cash_end, rating_end, actions_by_type, subtypes_placed, research_speeds_used, rejection_count, rejections_by_action}, exists}. Use `applied` for applied-detection (which trial actions actually fired, with subtype/subclass) and the per-step reward/value/rating deltas in `steps` for success/failure evaluation. `rejections` lists every action the sim REFUSED (committed as a wait with the original rejected_action + error message) — a repeated rejected_action with the same error is the agent using the wrong action and is a prime trial target.",
+                description = "Structured per-step factual record for ONE episode, read from the deterministic run.jsonl the runner writes (replaces the old LLM-authored turn_notes journal). Returns {episode, steps:[{step, action, subtype, subclass, price, rejected_action, error, reward, cumulative_reward, cash, park_value, park_rating, research_speed, num_rides, num_shops, num_staff, min_cleanliness, min_uptime, shop_revenue, ride_op_cost}], rejections:[{step, rejected_action, subtype, subclass, price, error}], rollup:{step_count, reward_total, cum_start, cum_end, value_start, value_end, cash_end, rating_end, actions_by_type, subtypes_placed, research_speeds_used, rejection_count, rejections_by_action}, exists}. Use `steps` for applied-detection (which trial actions actually fired, with full args) and its per-step reward/value/rating deltas for success/failure evaluation. `rejections` lists every action the sim REFUSED (committed as a wait with the original rejected_action + error message) — a repeated rejected_action with the same error is the agent using the wrong action and is a prime trial target.",
                 parameters = {
                     type = "object",
                     properties = {
@@ -276,7 +267,7 @@ If any tool errors, halt and return the error verbatim.
             name = "ResolveTrials",
             class = "coded_tools.resolve_trials.ResolveTrials",
             function = {
-                description = "Apply the curator's per-trial report at episode end: remove confirmed/falsified trials from trial_strategies + trial_strategies_criteria, keep not_applied/inconclusive (and any unreported active trial, as inconclusive note='no_report'), and append an OUTCOME line for every active trial to trial_strategies_outcome. Returns {kept, removed, outcomes_appended}.",
+                description = "Apply the curator's per-trial report at episode end: remove confirmed/falsified trials from trial_strategies + trial_strategies_criteria, keep not_applied/inconclusive (and any unreported active trial, as inconclusive note='no_report'), and append an OUTCOME line for every MACRO trial to trial_strategies_outcome (micro trials are episode-scoped and are dropped without a line). Returns {kept, removed, outcomes_appended}.",
                 parameters = {
                     type = "object",
                     properties = {
@@ -292,7 +283,7 @@ If any tool errors, halt and return the error verbatim.
             name = "PromoteTrial",
             class = "coded_tools.promote_trial.PromoteTrial",
             function = {
-                description = "Apply ONE confirmed trial's edit to playbook_<domain>.md, tagging the new line '(learned ep<N>)'. add_line appends at end (section 'end'/'new'/empty) or inserts after the named section header; replace_line replaces the unique find_text. On a successful live edit the learned line is also mirrored into the config seed (config_files/<domain>_strategy.md) under a '## Learned rules' section so it survives fresh runs. Returns {action_taken, playbook, line, seed_mirror} where action_taken is promoted / skipped_section_missing / skipped_not_found / skipped_ambiguous / skipped_playbook_missing, and seed_mirror is appended / duplicate_skipped / seed_missing / not_attempted.",
+                description = "Apply ONE confirmed trial's edit to playbook_<domain>.md, tagging the new line '(learned ep<N>)'. add_line appends at end (section 'end'/'new'/empty) or inserts after the named section header; replace_line replaces the unique find_text. On a successful live edit the learned line is also mirrored into the config seed (config_files/seed_playbook_<domain>.md) under a '## Learned rules' section so it survives fresh runs. Returns {action_taken, playbook, line, seed_mirror} where action_taken is promoted / skipped_section_missing / skipped_not_found / skipped_ambiguous / skipped_playbook_missing, and seed_mirror is appended / duplicate_skipped / seed_missing / not_attempted.",
                 parameters = {
                     type = "object",
                     properties = {
@@ -333,16 +324,16 @@ If any tool errors, halt and return the error verbatim.
                     playbook_staff              = "coded_tools/state/playbook_staff.md"
                     playbook_research           = "coded_tools/state/playbook_research.md"
                     playbook_layout             = "coded_tools/state/playbook_layout.md"
-                    economics_rides             = "coded_tools/config_files/rides_economics.md"
-                    economics_shops             = "coded_tools/config_files/shops_economics.md"
-                    economics_staff             = "coded_tools/config_files/staff_economics.md"
-                    economics_research          = "coded_tools/config_files/research_economics.md"
-                    seed_playbook_coordinator   = "coded_tools/config_files/coordinator_strategy.md"
-                    seed_playbook_rides         = "coded_tools/config_files/rides_strategy.md"
-                    seed_playbook_shops         = "coded_tools/config_files/shops_strategy.md"
-                    seed_playbook_staff         = "coded_tools/config_files/staff_strategy.md"
-                    seed_playbook_research      = "coded_tools/config_files/research_strategy.md"
-                    seed_playbook_layout        = "coded_tools/config_files/layout_strategy.md"
+                    economics_rides             = "coded_tools/config_files/economics_rides.md"
+                    economics_shops             = "coded_tools/config_files/economics_shops.md"
+                    economics_staff             = "coded_tools/config_files/economics_staff.md"
+                    economics_research          = "coded_tools/config_files/economics_research.md"
+                    seed_playbook_coordinator   = "coded_tools/config_files/seed_playbook_coordinator.md"
+                    seed_playbook_rides         = "coded_tools/config_files/seed_playbook_rides.md"
+                    seed_playbook_shops         = "coded_tools/config_files/seed_playbook_shops.md"
+                    seed_playbook_staff         = "coded_tools/config_files/seed_playbook_staff.md"
+                    seed_playbook_research      = "coded_tools/config_files/seed_playbook_research.md"
+                    seed_playbook_layout        = "coded_tools/config_files/seed_playbook_layout.md"
                 }
             }
         },

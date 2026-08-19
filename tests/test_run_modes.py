@@ -76,7 +76,7 @@ def test_strip_learned_keeps_the_baseline_and_the_header():
     from coded_tools.promote_trial import PromoteTrial
 
     with tempfile.TemporaryDirectory() as td:
-        seed = Path(td) / "rides_strategy.md"
+        seed = Path(td) / "seed_playbook_rides.md"
         seed.write_text("- hand-authored baseline\n"
                         f"{PromoteTrial.LEARNED_SECTION}\n"
                         f"- price carousels at 4 {PromoteTrial.LEARNED_MARKER}003)\n")

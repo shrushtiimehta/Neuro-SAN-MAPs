@@ -19,12 +19,15 @@ isn't working.
 
 The mid_episode_analyst logs its own (origin=micro) trials via LogTrial and, on
 a later step, may find one of them unproductive. This removes the paired lines
-from trial_strategies + trial_strategies_criteria and appends a 'falsified'
-line to trial_strategies_outcome so the planner does not re-propose it.
+from trial_strategies + trial_strategies_criteria. Nothing is written to
+trial_strategies_outcome: a micro rule is written for one episode's exact state
+("from steps 61-70, if cash is at least 8500 and num_rides is 13...") and says
+nothing about the next park, so ledgering it would only bury the macro outcomes
+that DO carry across episodes.
 
 Micro-only by design: macro trials persist across episodes and are resolved
 only at episode close by ResolveTrials, so a macro trial_id is refused. The
-line-removal and outcome-line format mirror ResolveTrials exactly (both use
+line removal mirrors ResolveTrials exactly (both use
 coded_tools.trial_parsing.filter_lines).
 """
 
@@ -36,7 +39,6 @@ from neuro_san.interfaces.coded_tool import CodedTool
 
 from coded_tools.file_io import FileIO
 from coded_tools.trial_parsing import CRITERIA_PATH
-from coded_tools.trial_parsing import OUTCOME_PATH
 from coded_tools.trial_parsing import STRATEGIES_PATH
 from coded_tools.trial_parsing import filter_lines
 from coded_tools.trial_parsing import parse_criteria
@@ -45,12 +47,12 @@ from coded_tools.trial_parsing import read_text
 
 
 class DeleteTrial(CodedTool):
-    """Remove one micro trial and record it as falsified so it is not re-proposed."""
+    """Remove one micro trial from the active ledger. Writes no outcome line."""
 
     def invoke(self, args: dict[str, Any], sly_data: dict[str, Any]) -> dict[str, Any] | str:
         """
         :param args: trial_id (str) — the micro trial to delete, e.g. 't3_2'.
-        :return: {"deleted": <trial_id>, "outcome": "falsified"} or "ERROR: ...".
+        :return: {"deleted": <trial_id>} or "ERROR: ...".
         """
         del sly_data
 
@@ -61,7 +63,8 @@ class DeleteTrial(CodedTool):
         strat_text = read_text(STRATEGIES_PATH)
         crit_text = read_text(CRITERIA_PATH)
 
-        active_ids = parse_strategies(strat_text).keys()
+        strategies = parse_strategies(strat_text)
+        active_ids = strategies.keys()
         if trial_id not in active_ids:
             return f"ERROR: unknown or already-removed trial_id: {trial_id}"
 
@@ -74,20 +77,18 @@ class DeleteTrial(CodedTool):
             )
 
         keep_ids = {tid for tid in active_ids if tid != trial_id}
-        domain = crit.get("domain", "")
-        outcome_line = (
-            f"- OUTCOME ep={crit.get('ep', '')} trial_id={trial_id} domain={domain} "
-            f"origin=micro outcome=falsified note='deleted_mid_episode'\n"
-        )
-
+        # Nothing is ledgered. This tool only ever deletes MICRO trials (guarded
+        # above), and a micro rule is written for one episode's exact state
+        # ("from steps 61-70, if cash is at least 8500 and num_rides is 13..."),
+        # so its outcome teaches the next planner nothing about a different park.
+        # Macro outcomes are the ledger's whole content; ResolveTrials writes those.
         try:
             FileIO.write_text(STRATEGIES_PATH, filter_lines(strat_text, keep_ids))
             FileIO.write_text(CRITERIA_PATH, filter_lines(crit_text, keep_ids))
-            FileIO.append_text(OUTCOME_PATH, outcome_line)
         except OSError as err:
             return f"ERROR: could not write trial files: {err}"
 
-        return {"deleted": trial_id, "outcome": "falsified"}
+        return {"deleted": trial_id}
 
     async def async_invoke(self, args: dict[str, Any], sly_data: dict[str, Any]) -> dict[str, Any] | str:
         return self.invoke(args, sly_data)

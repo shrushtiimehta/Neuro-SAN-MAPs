@@ -1,7 +1,7 @@
 """The BEST unlocked tier may never LAND on an unreachable tile.
 
 Guests never walk to a stranded tile, so whatever sits there earns $0 for the
-rest of the run. The top tier belongs on a free_tile — evicting a weaker
+rest of the run. The top tier belongs on a reachable_tile — evicting a weaker
 reachable ride with a (free) `move` if need be. Anything below the top tier is
 allowed. Enforced on both the `place` destination and the `move` destination.
 """
@@ -34,9 +34,11 @@ def test_place():
     assert place(subtype="carousel", subclass="yellow", x=9, y=9)[0]    # tier-1, stranded
     assert place(subtype="carousel", subclass="blue", x=9, y=9)[0]      # mid tier, stranded: allowed
     ok, why = place(subtype="carousel", subclass="green", x=9, y=9)     # TOP tier, stranded
-    assert not ok and "unreachable" in why and "free_tile" in why
-    # Nothing better exists yet -> no restriction.
-    assert place(type="shop", subtype="food", subclass="yellow", x=9, y=9)[0]
+    assert not ok and "unreachable" in why and "reachable_tile" in why
+    # Shops are barred from stranded tiles at EVERY tier — unlike a ride, a shop
+    # there keeps paying to restock and earns nothing back.
+    ok, why = place(type="shop", subtype="food", subclass="yellow", x=9, y=9)
+    assert not ok and "reachable_tiles ONLY" in why
     assert not place(subtype="carousel", subclass="yellow", x=0, y=0)[0]  # not buildable at all
 
 

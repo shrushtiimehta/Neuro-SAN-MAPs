@@ -93,6 +93,8 @@ from neuro_san.client.streaming_input_processor import StreamingInputProcessor
 
 from coded_tools import champion_plan
 from coded_tools.action_dispatcher import ActionDispatcher
+from coded_tools.advance_episode import AdvanceEpisode
+from coded_tools.carryover_trials import CarryoverTrials
 from coded_tools.park_status import ParkStatus
 from coded_tools.seed_observation import SeedObservation
 from coded_tools.promote_trial import PromoteTrial
@@ -127,11 +129,12 @@ DEFAULT_MICRO_EVERY = 10
 # cheaply instead of burning LLM calls on a run that cannot clear the floor.
 # Rollback: every episode's macro start restores the champion (best-known) plan as
 # its BASE and refines from there; the aborted trials are falsified at close-out.
-# Doom floor: the cum_reward a run must plausibly clear by step 100. Starts at 0
-# (episode 0 has no baseline, so nothing is ever judged 'doomed') and RISES to the
-# best-ever clean episode's reward as the run progresses — champion_plan.best_reward()
-# is that rising bar. --reward-floor sets a hard MINIMUM the floor never drops below.
-DEFAULT_REWARD_FLOOR = 0
+# Doom floor: the cum_reward a run must plausibly clear by step 100. Starts at the
+# floor below and RISES to the best-ever clean episode's reward as the run
+# progresses — champion_plan.best_reward() is that rising bar. --reward-floor sets a
+# hard MINIMUM the floor never drops below, and it is also the champion bar: an
+# episode under it is a failed strategy, never a fallback worth building on.
+DEFAULT_REWARD_FLOOR = 350000
 DEFAULT_REWARD_GOAL = 1000000   # the north-star target the whole run chases
 ABORT_HALFWAY_STEP = 50         # at/after this step a single 'doomed' aborts at once
 ABORT_MIN_STRIKES = 2           # consecutive 'doomed' verdicts to abort BEFORE halfway (~1 checkpoint of grace)
@@ -147,6 +150,13 @@ RUN_LOG_DIR = os.path.normpath(os.path.join(
 ))
 TURNS_LOG_PATH = os.path.normpath(os.path.join(
     os.path.dirname(__file__), "..", "..", "logs", "maps_park", "turns.jsonl",
+))
+# One line per finished episode: what that episode cost in LLM spend.
+# Its OWN file rather than a row in run.ep<NNN>.jsonl — several readers
+# (plot_rewards, park_image, ...) index rows by r["step"] and
+# would KeyError on a summary row that has no step.
+EPISODE_COST_PATH = os.path.normpath(os.path.join(
+    os.path.dirname(__file__), "..", "..", "logs", "maps_park", "episode_cost.jsonl",
 ))
 LATEST_OBS_PATH = os.environ.get(
     "MAPS_LATEST_OBS_PATH",
@@ -188,6 +198,9 @@ PLAYBOOK_STATE_DIR = os.path.normpath(os.path.join(
     os.path.dirname(__file__), "..", "..", "coded_tools", "state",
 ))
 PLAYBOOK_HISTORY_DIR = os.path.join(PLAYBOOK_STATE_DIR, "playbook_history")
+# ParkStatus writes this every turn; the episode-start macro pass READS it, and
+# runs before the turn-start refresh — so the runner has to guarantee it exists.
+STATUS_COORDINATOR_PATH = os.path.join(PLAYBOOK_STATE_DIR, "status_coordinator.json")
 
 
 # ── Bootstrap ────────────────────────────────────────────────────────────────
@@ -334,13 +347,65 @@ def open_session(agent_name: str, host: str, port: int):
     return session, thread
 
 
+# ── Per-episode LLM spend ───────────────────────────────────────────────────
+# EVERY llm call this runner makes — player turns and both consultant networks
+# — goes through chat(), so accumulating there is the one hook that catches all
+# of them. neuro-san already prices each call (tokens["total_cost"]), so this
+# only sums; there is no pricing table to keep in step with the model.
+_EPISODE_SPEND: dict[str, float] = {"cost_usd": 0.0, "tokens": 0, "llm_calls": 0, "seconds": 0.0}
+
+
+def _accrue_spend(tokens: dict | None) -> None:
+    """Fold one chat()'s token accounting into the current episode's total."""
+    if not tokens:
+        return
+    _EPISODE_SPEND["cost_usd"] += float(tokens.get("total_cost") or 0.0)
+    _EPISODE_SPEND["tokens"] += int(tokens.get("total_tokens") or 0)
+    _EPISODE_SPEND["llm_calls"] += int(tokens.get("successful_requests") or 0)
+    _EPISODE_SPEND["seconds"] += float(tokens.get("time_taken_in_seconds") or 0.0)
+
+
+def write_episode_cost(episode: Any, reward: Any, aborted: bool) -> dict:
+    """Append this episode's LLM spend to episode_cost.jsonl and reset the tally.
+
+    Call AFTER the close-out consult so that consult's own cost is counted.
+    `cost_per_reward` is the number the whole exercise is really about: dollars
+    of LLM spend per point of reward earned (None when the episode scored 0).
+    """
+    reward_val = float(reward) if isinstance(reward, (int, float)) else None
+    row = {
+        "wall_time": time.time(),
+        "episode": episode,
+        "aborted": bool(aborted),
+        "final_reward": reward_val,
+        "cost_usd": round(_EPISODE_SPEND["cost_usd"], 4),
+        "tokens": int(_EPISODE_SPEND["tokens"]),
+        "llm_calls": int(_EPISODE_SPEND["llm_calls"]),
+        "llm_seconds": round(_EPISODE_SPEND["seconds"], 1),
+        "cost_per_reward": (round(_EPISODE_SPEND["cost_usd"] / reward_val, 6)
+                            if reward_val else None),
+    }
+    try:
+        os.makedirs(os.path.dirname(EPISODE_COST_PATH), exist_ok=True)
+        with open(EPISODE_COST_PATH, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(row) + "\n")
+            fh.flush()
+    except OSError as exc:
+        # Accounting must never take the run down with it.
+        print(f"[runner] WARN: could not write episode cost: {exc}")
+    _EPISODE_SPEND.update(cost_usd=0.0, tokens=0, llm_calls=0, seconds=0.0)
+    return row
+
+
 def chat(session, thread, message: str):
     os.makedirs(THINKING_DIR, exist_ok=True)
     os.makedirs(os.path.dirname(THINKING_FILE) or ".", exist_ok=True)
     processor = StreamingInputProcessor("DEFAULT", THINKING_FILE, session, THINKING_DIR)
     thread["user_input"] = message
     thread = processor.process_once(thread)
-    return thread.get("last_chat_response"), thread, processor.processor.get_token_accounting()
+    accounting = processor.processor.get_token_accounting()
+    _accrue_spend(accounting)
+    return thread.get("last_chat_response"), thread, accounting
 
 
 # ── Proposal + run.jsonl I/O ────────────────────────────────────────────────
@@ -434,12 +499,42 @@ def dispatch_action(proposed: dict) -> dict[str, Any]:
     return {"error": "dispatcher returned non-dict", "raw": envelope}
 
 
-def build_run_row(args: dict, envelope: dict) -> dict:
+# Park-state metrics, as opposed to the step's own outcome (reward, action,
+# error). On the terminal step MAPs auto-resets, so these describe the NEW
+# park and must be carried over from the previous row — see _carry_park_state.
+_PARK_STATE_FIELDS = (
+    "cash", "park_value", "park_rating", "research_speed",
+    "num_rides", "num_shops", "num_staff",
+    "min_uptime", "min_cleanliness", "shop_revenue", "ride_op_cost",
+)
+
+
+def _carry_park_state(row: dict, prev: dict | None) -> dict:
+    """On the terminal step, keep the park as it ENDED, not as the env reset it.
+
+    MAPs auto-resets on done, so the observation returned with done=true is a
+    fresh $500 park with 0 rides. Recording that verbatim made every episode
+    read as a total collapse in its final quarter (value 320k -> 500, rating
+    50 -> 20), inverting every conclusion the planner/watcher drew from
+    rollup.value_end / rating_end / reward_bands. reward and cumulative_reward
+    are the step's OWN outcome and stay as the env reported them.
+    """
+    if not row.get("done") or not prev or prev.get("episode") != row.get("episode"):
+        return row
+    for field in _PARK_STATE_FIELDS:
+        if prev.get(field) is not None:
+            row[field] = prev[field]
+    return row
+
+
+def build_run_row(args: dict, envelope: dict, prev: dict | None = None) -> dict:
     """Reshape a post-step envelope into the authoritative run-log row.
 
     Pure transform, no I/O — the caller writes the row only once the step is
     accepted. Dropped fields (wall_time/tool/park/horizon) were redundant
     (single tool, single park, constant horizon, wall_time unused).
+    `prev` is the previous row, used only to carry park state across the
+    terminal step's auto-reset.
     """
     flat_args = {k: v for k, v in (args.get("args") or {}).items()}
     obs = envelope.get("observation") if isinstance(envelope.get("observation"), dict) else {}
@@ -483,7 +578,7 @@ def build_run_row(args: dict, envelope: dict) -> dict:
         # non-set_research action) can't clobber the real observed research speed.
         **{k: v for k, v in flat_args.items() if k not in {"park", "action", "args", "research_speed"}},
     }
-    return row
+    return _carry_park_state(row, prev)
 
 
 # ── Consultant invocation ──────────────────────────────────────────────────
@@ -626,10 +721,11 @@ def main():
                         help="Invoke the micro analyzer after every N successful "
                              "steps (default 10 -> steps 10,20,...,90).")
     parser.add_argument("--reward-floor", type=int, default=DEFAULT_REWARD_FLOOR,
-                        help="Hard MINIMUM for the doom floor (default 0). The actual "
-                             "floor the micro judges 'doomed' against starts here and "
-                             "RISES to the best-ever clean episode's reward as the run "
-                             "progresses.")
+                        help="Hard MINIMUM for the doom floor and the champion bar "
+                             "(default 350000). The floor the micro judges 'doomed' "
+                             "against starts here and RISES to the best-ever clean "
+                             "episode's reward as the run progresses; an episode below "
+                             "it never becomes champion.")
     parser.add_argument("--reward-goal", type=int, default=DEFAULT_REWARD_GOAL,
                         help="North-star cum_reward target for the run; passed to "
                              "the micro for context.")
@@ -737,14 +833,54 @@ def main():
     # deliberately untouched here. --resume keeps it to continue the in-flight
     # episode.
     if not args.resume:
-        if os.path.exists(LAST_REWARD_PATH):
-            os.remove(LAST_REWARD_PATH)
-            print(f"[runner] New run: cleared {os.path.basename(LAST_REWARD_PATH)}")
+        # RESET to 0, never delete. state_read errors on an absent file, and the
+        # close-out is told to read this one — so deleting it made the macro's own
+        # "stop on any tool error" rule kill the whole pass on ep0 of every fresh
+        # run. Writing the same body SeedPlaybooks seeds says "no prior episode"
+        # in the one dialect every reader already understands.
+        with open(LAST_REWARD_PATH, "w", encoding="utf-8") as fh:
+            fh.write("cumulative_reward: 0\n")
+        print(f"[runner] New run: reset {os.path.basename(LAST_REWARD_PATH)} to 0")
 
     prev_episode_done = False
     # Episode number for the upcoming episode's start-of-episode macro pass.
     # turn 1 is episode 0; bumped to ended_episode+1 when an episode finishes.
     next_episode_num = 0
+    # --resume onto a killed run: the counter above is a fresh-process 0, but the
+    # env is wherever the dead process left it. Read the ground truth off disk.
+    # done=true means that episode FINISHED and its close-out never ran (the kill
+    # landed between the last step and the macro pass), so we are starting the
+    # NEXT episode, not continuing the old one.
+    resume_mid_episode = False
+    if args.resume:
+        last_verified = read_last_verified() or {}
+        ep_on_disk = last_verified.get("episode") or 0
+        if last_verified and not last_verified.get("done"):
+            next_episode_num = ep_on_disk
+            resume_mid_episode = True
+            print(f"[runner] --resume: continuing in-flight ep{ep_on_disk} "
+                  f"(step {last_verified.get('step')}) — no start pass.")
+        elif last_verified:
+            next_episode_num = ep_on_disk + 1
+            print(f"[runner] --resume: ep{ep_on_disk} finished but was never closed out "
+                  f"(run stopped at the boundary) — starting ep{next_episode_num} with a "
+                  f"full start pass.")
+            # Salvage the deterministic half of the close-out the dead process
+            # owed us. Without this the finished episode leaves no reward baseline
+            # and cannot become champion, so a run killed at step 100 silently
+            # throws away its best episode. The LLM half (judging trials, promoting
+            # learned rules) is gone with the process — the sweep below retires
+            # those trials instead. Token spend is unrecoverable, so no cost row.
+            ep_cum = last_verified.get("cumulative_reward")
+            if ep_cum is not None:
+                AdvanceEpisode().invoke(
+                    {"final_reward": ep_cum, "episode": ep_on_disk}, {})
+                if champion_plan.promote_plan(False, ep_cum, args.reward_floor):
+                    print(f"[runner] Recovered close-out: ep{ep_on_disk} (reward={ep_cum}) "
+                          f"is the new champion.")
+                else:
+                    print(f"[runner] Recovered close-out: ep{ep_on_disk} reward={ep_cum} "
+                          f"booked as the baseline; champion unchanged.")
 
     # Early-abort state (per episode; reset on every fresh episode below).
     aborting = False
@@ -786,11 +922,12 @@ def main():
             # Start-of-episode MACRO pass: compare the best-ever episode against
             # the last one, WriteEpisodePlan the checklist + coordinator strategy
             # summary, demote regression-linked learned rules, and log fresh
-            # trials — all BEFORE park_director acts on turn 1. Skipped when
-            # resuming an in-flight episode (turn 1 + --resume is a continuation,
-            # not a genuine new episode).
+            # trials — all BEFORE park_director acts on turn 1. Skipped only when
+            # resuming an episode that is genuinely still in flight; a --resume
+            # that lands on a NEW episode gets the full pass, or it would play 100
+            # turns on the dead process's plan.
             if (preflight_mode == "fresh_episode" and macro_session is not None
-                    and not (turn == 1 and args.resume)):
+                    and not (turn == 1 and resume_mid_episode)):
                 # Restore the champion plan as the BASE for EVERY episode start
                 # (deterministic, no LLM), then run the macro to REFINE it — so the
                 # macro always starts from the best-known strategy, not the last
@@ -811,10 +948,43 @@ def main():
                 elif restored:
                     print(f"[runner] Restored champion as the base for ep{next_episode_num}; "
                           f"macro will refine it.")
+                # episode_start reads status_coordinator/status_layout to review the
+                # park last episode finished with. On the FIRST episode of a run
+                # there is no prior episode and (after --fresh) archive_state() has
+                # moved those files out, while the turn-start ParkStatus below has
+                # not run yet — so the read fails and episode_start's "STOP on any
+                # error" rule aborts the whole pass before it logs a single trial or
+                # writes the plan. Seed them once so the file always exists: this
+                # writes the empty starting park, which is the honest answer when
+                # there is nothing to review. From episode 1 on, the files already
+                # hold last episode's final park and this is a no-op — deliberately
+                # NOT refreshed, or the macro would review the post-reset empty park
+                # instead of the run it is supposed to learn from.
+                if not os.path.exists(STATUS_COORDINATOR_PATH):
+                    SeedObservation().invoke({"park": 0}, {})
+                    asyncio.run(ParkStatus().async_invoke({"park": "0"}, {}))
+                    print(f"[runner] Seeded {STATUS_COORDINATOR_PATH} for the "
+                          f"episode-start pass (no prior episode to review).")
                 start_ctx = {"episode": next_episode_num, "step": 0,
                              "cumulative_reward": 0, "done": False}
                 consult(macro_session, macro_thread, "episode_start",
                         start_ctx, label="macro-start", extra=recovery_extra)
+
+            # Deterministic backstop, AFTER the start pass and outside it: retire
+            # every trial still stamped with an earlier episode. Trials stamped
+            # with THIS episode (the ones the pass just logged) are left alone, so
+            # this is safe in any order. Normally the planner's own CarryoverTrials
+            # call already emptied the ledger and this is a no-op — but when the run
+            # was killed before its close-out, or the pass was skipped, or the macro
+            # errored, this is the only thing standing between the new episode and a
+            # ledger of dead rules re-arming their step windows ("from steps 91-100"
+            # with last episode's cash floors). No LLM, so nothing can skip it.
+            if preflight_mode == "fresh_episode":
+                swept = CarryoverTrials().invoke({"episode": next_episode_num}, {})
+                cleared = swept.get("cleared") if isinstance(swept, dict) else None
+                if cleared:
+                    print(f"[runner] Retired {len(cleared)} stale trial(s) from earlier "
+                          f"episodes before ep{next_episode_num}: {', '.join(cleared)}")
 
             # Seed turn-1's observation deterministically (moved out of park_director's
             # instructions): world_observe caches the park's current state WITHOUT
@@ -929,7 +1099,7 @@ def main():
                 # logging a phantom step and try again next tick.
                 print(f"[runner] DISPATCH failed (day did not advance): {dispatch_envelope['error']}")
             else:
-                candidate = build_run_row(last_proposed, dispatch_envelope)
+                candidate = build_run_row(last_proposed, dispatch_envelope, verified_before)
                 env_err = candidate.get("error")
                 if env_err:
                     candidate["rejected_action"] = candidate.get("action")
@@ -989,6 +1159,14 @@ def main():
                             macro_session, macro_thread, "episode_end",
                             verified_after, label="macro", extra=extra)
                     ended_ep = verified_after.get("episode") or 0
+                    # After the close-out consult, so its cost lands in THIS
+                    # episode's total rather than leaking into the next one.
+                    spend = write_episode_cost(
+                        ended_ep, verified_after.get("cumulative_reward"), aborting)
+                    print(f"[cost] episode {ended_ep}: ${spend['cost_usd']:.2f}  "
+                          f"{spend['tokens']:,} tokens  {spend['llm_calls']} calls"
+                          + (f"  ${spend['cost_per_reward']:.6f}/reward"
+                             if spend["cost_per_reward"] else ""))
                     prev_episode_done = True
                     # A rejection on the final step describes a park that no longer
                     # exists; don't carry it into the fresh episode's turn 1.

@@ -33,52 +33,30 @@ LOG_DIR = os.path.normpath(
     os.path.join(os.path.dirname(__file__), "..", "logs", "maps_park"))
 OUT = os.path.join(LOG_DIR, "cumulative_reward.png")
 
-# Collect run files: current dir + prior-runs.
-# Sort chronologically by (run-start timestamp, episode) so we can label
-# them Run 1, Run 2, ... in time order. The current dir is the newest.
-run_files = []
-for f in glob.glob(os.path.join(LOG_DIR, "run.ep*.jsonl")):
-    run_files.append(("99999999-999999", f))  # current run = latest
-for f in glob.glob(os.path.join(LOG_DIR, "prior-runs", "*", "run.ep*.jsonl")):
-    ts = os.path.basename(os.path.dirname(f))
-    run_files.append((ts, f))
-
-run_files.sort(key=lambda t: (t[0], os.path.basename(t[1])))
-
-
-def load(path):
-    steps, cum = [], []
-    with open(path) as fh:
-        for line in fh:
-            line = line.strip()
-            if not line:
-                continue
-            r = json.loads(line)
-            steps.append(r["step"])
-            cum.append(r["cumulative_reward"])
-    return steps, cum
-
+# Latest run only: the run.epNNN.jsonl sitting in logs/maps_park (prior runs get
+# archived into prior-runs/ when a new run starts).
+paths = sorted(glob.glob(os.path.join(LOG_DIR, "run.ep*.jsonl")))
 
 plt.style.use("seaborn-v0_8-whitegrid")
 fig, ax = plt.subplots(figsize=(12, 7))
+cmap = plt.get_cmap("viridis")
 
-# Palette with no green.
-PALETTE = ["#1f77b4", "#ff7f0e", "#d62728", "#9467bd",
-           "#8c564b", "#17becf", "#e377c2", "#7f7f7f"]
-for i, (src, path) in enumerate(run_files):
-    label = f"Run {i + 1}"
-    steps, cum = load(path)
-    color = PALETTE[i % len(PALETTE)]
-    ax.plot(steps, cum, lw=2, color=color, label=label)
-    ax.scatter(steps[-1], cum[-1], s=28, color=color, zorder=5)
-    ax.annotate(f"{cum[-1]:,.0f}", (steps[-1], cum[-1]),
-                textcoords="offset points", xytext=(6, 0),
-                fontsize=8, color=color, va="center", fontweight="bold")
+for i, path in enumerate(paths):
+    rows = [json.loads(l) for l in open(path) if l.strip()]
+    if not rows or not rows[-1]["done"]:
+        continue  # in-flight / crashed episode, no final value to compare
+    steps = [r["step"] for r in rows]
+    cum = [r["cumulative_reward"] for r in rows]
+    color = cmap(i / max(1, len(paths) - 1))
+    ax.plot(steps, cum, lw=2, color=color,
+            label=f'ep {rows[0]["episode"]} \u2014 {cum[-1]:,.0f}')
+    ax.scatter(steps[-1], cum[-1], s=30, color=color, zorder=5)
 
-ax.set_title("MAPs Park — Cumulative Reward by Run", fontsize=16, fontweight="bold", pad=14)
-ax.set_xlabel("Step", fontsize=12)
+ax.set_title("MAPs Park \u2014 cumulative reward, latest run",
+             fontsize=16, fontweight="bold", pad=14)
+ax.set_xlabel("Step (day)", fontsize=12)
 ax.set_ylabel("Cumulative Reward", fontsize=12)
-ax.legend(title="Run", frameon=True, fontsize=10, title_fontsize=11, loc="upper left")
+ax.legend(title="episode", frameon=True, fontsize=10, title_fontsize=11, loc="upper left")
 ax.ticklabel_format(style="plain", axis="y")
 ax.get_yaxis().set_major_formatter(
     matplotlib.ticker.FuncFormatter(lambda v, _: f"{v:,.0f}"))
@@ -86,4 +64,4 @@ ax.margins(x=0.08)
 
 fig.tight_layout()
 fig.savefig(OUT, dpi=150, bbox_inches="tight")
-print("wrote", OUT)
+print("wrote", OUT, f"({len(paths)} episodes)")

@@ -4,6 +4,10 @@
 #
 # Override the MAPs repo path via env var if your checkout lives elsewhere:
 #   MAPS_REPO=/path/to/MAPs ./run_all.sh
+#
+# Flags handled here (everything else is forwarded to the runner):
+#   --no-archived   telemetry ignores logs/maps_park/prior-runs/, so the agents'
+#                   "best-ever episode" is the best one in THIS run only.
 
 set -euo pipefail
 
@@ -29,6 +33,20 @@ mkdir -p "$LOG_DIR" "$MEMORY_DIR"
 # episode must live in exactly one file). On a fresh start we archive the
 # prior run's per-episode logs into a timestamped subdir.
 RUN_TS="$(date +%Y%m%d-%H%M%S)"
+
+# --no-archived: RunTelemetry ignores logs/maps_park/prior-runs/, so the agents'
+# "best-ever episode" means "best in THIS run". Consumed here — the runner has no
+# such arg — and passed to the studio process as MAPS_INCLUDE_ARCHIVED.
+KEPT_ARGS=()
+for arg in "$@"; do
+    case "$arg" in
+        --no-archived) export MAPS_INCLUDE_ARCHIVED=0 ;;
+        *) KEPT_ARGS+=("$arg") ;;
+    esac
+done
+set -- ${KEPT_ARGS[@]+"${KEPT_ARGS[@]}"}
+[[ "${MAPS_INCLUDE_ARCHIVED:-1}" == "0" ]] && echo "Archived prior runs EXCLUDED from telemetry (best-ever = best in this run)."
+
 RESUMING=0
 for arg in "$@"; do
     [[ "$arg" == "--resume" ]] && RESUMING=1

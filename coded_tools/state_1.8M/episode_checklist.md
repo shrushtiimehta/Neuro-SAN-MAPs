@@ -1,0 +1,9 @@
+# Episode Strategy Plan
+turns 1-6: Rebuild the profitable seed with two water-adjacent yellow carousels before heavy service spending, add lean drink/food and only one well-sited souvenir if restocking remains safe, and hire maintenance only for visible dirt or uptime.
+turns 7-18: Compound reachable yellow capacity and diversity with carousels plus a little ferris/roller coverage, keep shops lean on the main flow, move bad placements instead of removing rides, and avoid surveys or speculative staff.
+turns 19-32: Bank for the carousel ladder and start carousel-only research as soon as operations can keep cash positive; buy earning yellow rides only when research would otherwise starve stocking or the first unlock build.
+turns 33-50: Convert blue and green carousel faster than the champion: build each unlock promptly, use medium bursts for the next carousel tier, and move the weakest reachable ride to unreachable storage when prime tiles run out.
+turns 51-64: Exploit red carousel hard: build the first red immediately, then replace low-tier reachable rides with additional red carousels before funding any non-carousel ride branch, while protecting cleanliness and uptime.
+turns 65-78: Open the second ride track without repeating the coaster stall: favor ferris wheel research/builds over coasters, add blue maintenance research before stacking yellow staff, and use fast research only for a buildable target the park can fund.
+turns 79-92: Monetize the larger crowd with premium drink or food shops before ATMs; swap the weakest shop onto a main-flow green or red drink/food site, tune stock only for real stockouts, and keep quality metrics above the champion line.
+turns 93-100: Convert every surplus dollar and action into final value: stop research unless the unlock will be built immediately, buy the best reachable ride/shop upgrades first, then fill unreachable tiles with cheap ride capacity instead of waiting or cosmetic modifying.

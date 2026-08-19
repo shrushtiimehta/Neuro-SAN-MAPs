@@ -23,7 +23,7 @@ real simulator field names to a clean summary:
   - step, park_rating, park_value, cumulative_reward, done
   - entrance, exit: [x, y] positions
   - path_coords: list of {x, y} path tiles (for staff placement)
-  - free_tiles: from observation.valid_placement_coords — tiles ready for
+  - reachable_tiles: from observation.valid_placement_coords — tiles ready for
     placement (already computed by the simulator, no grid scan needed)
   - water_adjacent: free tiles touching water as {x, y, water}, where `water`
     is the excitement bonus (+1 per adjacent water tile, stacking), best first
@@ -36,8 +36,8 @@ real simulator field names to a clean summary:
   - placed_shops: observation.shops.shop_list
   - placed_staff: observation.staff.staff_list
   - available_entities: subtype → [unlocked subclasses] (research tracking)
-  - next_unlock: {tier, days} ETA of the next subclass unlock, or null
   - research_speed: current research speed string
+  - next_unlock: {subtype, tier, days} ETA of the next subclass unlock, or null
   - guests: aggregate GuestStats — free daily guest signal
   - guest_survey_results: paid survey detail {age_of_results, list_of_results}
 
@@ -59,10 +59,6 @@ from neuro_san.interfaces.coded_tool import CodedTool
 from coded_tools.latest_observation import LatestObservation
 
 _STATE_DIR = Path("coded_tools/state")
-# Research economics, mirrored from MAPs shared/config.yaml (research.speed_progress
-# and research.points_required) so next_unlock can be estimated without the sim.
-_SPEED_POINTS = {"none": 0, "slow": 25, "medium": 50, "fast": 100}
-_TIER_POINTS = {"blue": 100, "green": 200, "red": 400}
 # The macro writes the full turn-phased plan here at episode start; ParkStatus
 # surfaces ONLY the line whose turn-range covers the current step (current_phase)
 # so the game-runner never carries the whole checklist per turn.
@@ -74,20 +70,31 @@ _PHASE_RE = re.compile(r"turns?\s+(\d+)\s*(?:[-–]\s*(\d+))?\s*:\s*(.+)", re.IG
 _SPECIALIST_FIELDS: dict[str, list[str]] = {
     "rides":       ["step", "cash", "park_rating", "park_capacity", "avg_intensity", "placed_rides",
                     "available_entities", "broken_rides", "next_unlock"],
-    "shops":       ["step", "cash", "park_rating", "placed_shops", "available_entities", "next_unlock"],
+    # +guests: order_quantity is sized off total_guests, and shop `uptime` counts
+    # stock-outs only (an unaffordable item never reaches services_attempted), so
+    # GuestStats is the manager's only read on real demand.
+    "shops":       ["step", "cash", "park_rating", "placed_shops", "available_entities",
+                    "guests", "next_unlock"],
     # +daily_profit/horizon: the playbook's two live constraints — "never starve
     # daily operating cash" needs the park's net P&L, not just the cash stock, and
     # "unlock early enough to exploit it" needs the turns left to build with.
     "research":    ["step", "horizon", "cash", "daily_profit", "park_rating", "park_value",
                     "research_speed", "research_topics", "research_operating_cost",
                     "available_entities", "next_unlock"],
-    "staff":       ["step", "cash", "park_rating", "out_of_service", "min_uptime", "min_cleanliness", "placed_staff", "available_entities", "next_unlock"],
+    "staff":       ["step", "cash", "park_rating", "out_of_service", "min_uptime", "min_cleanliness",
+                    "placed_staff", "available_entities", "next_unlock"],
     "survey":      ["step", "cash", "park_rating", "guests", "guest_survey_results"],
-    "layout":      ["step", "park_rating", "free_tiles", "water_adjacent", "unreachable_tiles",
+    "layout":      ["step", "park_rating", "reachable_tiles", "water_adjacent", "unreachable_tiles",
                     "path_coords", "placed_rides", "placed_shops", "placed_staff", "entrance", "exit"],
+    # +available_entities: FinanceGate reads this slice to price a research run
+    # against the tier it will actually unlock next, so the unlock ledger has to
+    # be here — it replaced the LLM-supplied `target_tier`.
+    # +next_unlock: the coordinator picks the ONE action, so "don't spend the last
+    # reachable tile today, a higher tier lands tomorrow" is its call to make, not
+    # the proposing specialist's.
     "coordinator": ["step", "horizon", "cash", "park_rating", "park_value", "daily_profit", "park_capacity",
-                    "avg_intensity", "research_speed", "current_phase",
-                    "placed_staff", "placed_shops", "placed_rides"],
+                    "avg_intensity", "research_speed", "current_phase", "available_entities",
+                    "placed_staff", "placed_shops", "placed_rides", "next_unlock"],
 }
 
 # available_entities lists every buildable subtype across ALL domains; each
@@ -102,30 +109,36 @@ _DOMAIN_SUBTYPES: dict[str, frozenset[str]] = {
 # Per-specialist entity field pruning: (specialist, list_key) → fields to keep.
 # None means keep all fields. Reduces token cost for consumers that don't need
 # full operational stats — e.g. FinanceGate only needs subtype+subclass.
+# Research points bought per day, per speed (shared/config.yaml research.speed_progress).
+_SPEED_POINTS: dict[str, int] = {"none": 0, "slow": 25, "medium": 50, "fast": 100}
+
 _IDENTITY = ["subtype", "subclass"]
 _POSITION = ["subtype", "subclass", "x", "y"]
-# Position + earnings, so layout can rank placed rides/shops by net contribution
-# (`profit`, computed below) and pick the worst performer to remove.
-# +reachable: whether a guest can walk to this tile. A stranded asset earns $0
-# forever, and profit alone can't say so — a fresh build reads $0 too.
-_PERF = _POSITION + ["profit", "guests_entertained", "capacity", "excitement", "reachable"]
+# Position + siting signals shared by layout's ride and shop lists. Layout evicts
+# on tier first (read off `subclass`) and breaks ties on the popularity counter —
+# guests_entertained for rides, guests_served for shops (the sim names them
+# differently per type, and each list carries only its own).
+# +reachable: whether a guest can walk to this tile — a stranded asset earns $0
+# forever and no usage figure can say so, since a fresh build reads 0 too.
+_PERF = _POSITION + ["reachable", "cleanliness"]
 _ENTITY_FIELDS: dict[tuple[str, str], list[str]] = {
     # Rides manager cares about build/upgrade/pricing economics, not maintenance
     # (uptime/cleanliness/out_of_service) — those are staff/layout concerns.
     # avg_guests_per_operation pairs with capacity: a ride waits capacity*2 ticks
     # for its queue to fill, so the gap between the two is the oversized-ride tell.
-    ("rides",       "placed_rides"):  _POSITION + ["ticket_price", "profit", "capacity",
+    ("rides",       "placed_rides"):  _POSITION + ["ticket_price", "capacity",
                                                    "avg_guests_per_operation", "intensity",
                                                    "excitement", "guests_entertained", "avg_wait_time",
                                                    "reachable"],
     # Shops manager drops number_of_restocks (only ever nonzero once staff hires
     # a blue stocker — a staffing outcome the shops manager has no lever on).
     ("shops",       "placed_shops"):  _POSITION + ["item_price", "item_cost", "uptime", "order_quantity",
-                                                   "inventory", "profit", "cleanliness",
-                                                   "guests_served", "out_of_service"],
+                                                   "inventory", "cleanliness",
+                                                   "guests_served", "out_of_service",
+                                                   "reachable"],
     # A broken ride needs identity + how bad it is; passing the full ride record
-    # would smuggle raw revenue_generated/operating_cost back in behind `profit`.
-    ("rides",       "broken_rides"):  _POSITION + ["profit", "uptime"],
+    # would smuggle raw revenue_generated/operating_cost in.
+    ("rides",       "broken_rides"):  _POSITION + ["uptime"],
     # +operating_cost so FinanceGate can charge the park's REAL daily burn against
     # a proposal (the sim's own realized figure: cost_per_operation x times_operated
     # for a ride, order_quantity x item_cost for a shop) instead of counting only
@@ -134,8 +147,11 @@ _ENTITY_FIELDS: dict[tuple[str, str], list[str]] = {
     ("coordinator", "placed_rides"):  _IDENTITY + ["operating_cost"],
     ("coordinator", "placed_shops"):  _IDENTITY + ["operating_cost"],
     ("coordinator", "placed_staff"):  _IDENTITY,
-    ("layout",      "placed_rides"):  _PERF + ["uptime", "cleanliness", "avg_wait_time"],
-    ("layout",      "placed_shops"):  _PERF + ["cleanliness"],
+    ("layout",      "placed_rides"):  _PERF + ["capacity", "excitement", "guests_entertained",
+                                               "uptime", "avg_wait_time"],
+    # guests_served is the shop's equivalent of guests_entertained — the shop
+    # record has no guests_entertained, so that tie-break never fired.
+    ("layout",      "placed_shops"):  _PERF + ["guests_served"],
     # +success_metric_value so layout can tie-break which duplicate staff to remove.
     ("layout",      "placed_staff"):  _POSITION + ["success_metric_value"],
     # staff keeps ALL fields on placed_staff (salary, operating_cost, success_metric*,
@@ -183,7 +199,7 @@ class ParkStatus(CodedTool):
             "entrance":           obs.get("entrance"),
             "exit":               obs.get("exit"),
             "path_coords":        self._to_xy_list(obs.get("path_coords") or []),
-            "free_tiles":         self._to_xy_list(obs.get("valid_placement_coords") or []),
+            "reachable_tiles":         self._to_xy_list(obs.get("valid_placement_coords") or []),
             # Passed through, NOT _to_xy_list — that would strip the `water`
             # bonus count and the highest-first ordering the server sorted by.
             "water_adjacent":     obs.get("water_adjacent") or [],
@@ -259,8 +275,7 @@ class ParkStatus(CodedTool):
                 keep = _ENTITY_FIELDS.get((specialist, k))
                 if keep is not None and isinstance(snapshot[k], list):
                     data[k] = [
-                        {f: self._profit(e, k) if f == "profit" else e[f]
-                         for f in keep if f == "profit" or f in e}
+                        {f: e[f] for f in keep if f in e}
                         for e in snapshot[k]
                         if isinstance(e, dict)
                     ]
@@ -268,23 +283,6 @@ class ParkStatus(CodedTool):
                     data[k] = snapshot[k]
             path = _STATE_DIR / f"status_{specialist}.json"
             path.write_text(json.dumps(data, indent=2))
-
-    @staticmethod
-    def _profit(entity: dict[str, Any], list_key: str) -> float | None:
-        """Net earnings for one placed ride/shop, so specialists never subtract.
-
-        Shops pay for stock (order_quantity * item_cost, the sim's shop
-        operating_cost is not that); rides pay operating_cost.
-        None when the sim gave no revenue for this entity.
-        """
-        revenue = entity.get("revenue_generated")
-        if revenue is None:
-            return None
-        if list_key == "placed_shops":
-            cost = (entity.get("order_quantity") or 0) * (entity.get("item_cost") or 0)
-        else:
-            cost = entity.get("operating_cost") or 0
-        return revenue - cost
 
     def _to_xy_list(self, coords: list) -> list[dict[str, int]]:
         result: list[dict[str, int]] = []
@@ -303,52 +301,42 @@ class ParkStatus(CodedTool):
         return [r for r in ride_list if r.get("out_of_service")]
 
     def _next_unlock(self, obs: dict[str, Any]) -> dict[str, Any] | None:
-        """Estimated {tier, days, subtypes} until the next subclass unlocks, so
+        """Exact {subtype, tier, days} until the next subclass unlocks, so
         rides/shops/staff can reserve cash and a free tile BEFORE it lands.
 
-        The sim never exposes per-topic research progress, so this reconstructs
-        points from the *_days_since_last_new_entity counters (the sim zeroes all
-        three on every unlock) and assumes the lowest still-locked tier is the one
-        in progress — research runs breadth-first, so that holds. `subtypes` lists
-        only the subtypes still MISSING that tier (one already holding it is left
-        out), so each manager can see whether the unlock is even in its domain;
-        `days` is the ETA for the FIRST of them, and the rest follow at roughly the
-        same interval each. Ordering is the sim's own cycle: research_topics comes
-        back already sorted into entity_order by set_research, and the
-        available_entities fallback is keyed in entity_order too (researched_entities
-        is built by iterating it).
-        None when research is off or every listed topic is fully unlocked.
+        Reads `research_progress` — the sim's own live counters, forwarded by
+        maps_mcp_server. `points_remaining` is what is actually left on the tier
+        the sim is grinding right now, so this is arithmetic, not the estimate
+        the old version reconstructed from the days-since-unlock counters.
 
-        ponytail: estimate, not a shadow simulator. Three known limits, all needing
-        sim-side progress in the observation to fix properly:
-          - the counters reset on unlock, so points spilled into the current tier
-            are not counted — the ETA can read one day late;
-          - the sim's topic cursor is not observable, so `subtypes` is in the right
-            order but may be rotated from where the cursor actually sits;
-          - if topics sit at DIFFERENT tiers (which happens once research_topics is
-            narrowed mid-episode), the cursor may be grinding a deeper, pricier tier
-            than the lowest one reported here, so `days` is a floor, not a promise.
+        None when research is off or every listed topic is fully unlocked (the
+        sim leaves current_entity undefined in both cases).
         """
-        per_day = _SPEED_POINTS.get(obs.get("research_speed") or "none", 0)
-        if not per_day:
+        progress = obs.get("research_progress")
+        if not isinstance(progress, dict):
             return None
-        points = sum(
-            _SPEED_POINTS[speed] * (obs.get(f"{speed}_days_since_last_new_entity") or 0)
-            for speed in ("slow", "medium", "fast")
-        )
+        per_day = _SPEED_POINTS.get(obs.get("research_speed") or "none", 0)
+        remaining = progress.get("points_remaining")
+        if not per_day or not isinstance(remaining, (int, float)):
+            return None
+        entity, tier = progress.get("current_entity"), progress.get("current_color")
+
+        # The queue behind the head. Research runs round-robin, so every topic
+        # still missing THIS tier reaches it before any moves on to the next --
+        # a manager whose domain is second in line still needs to prepare.
+        # Rotated to start at the cursor, so the order is the sim's own.
         unlocked = obs.get("available_entities") or {}
         topics = [t for t in (obs.get("research_topics") or unlocked) if t in unlocked]
-        missing = {
-            t: [k for k in topics if t not in (unlocked.get(k) or [])]
-            for t in _TIER_POINTS
-        }
-        tier = next((t for t, subtypes in missing.items() if subtypes), None)
-        if tier is None:
-            return None
+        queue = [t for t in topics if tier not in (unlocked.get(t) or [])]
+        if entity in queue:
+            cut = queue.index(entity)
+            queue = queue[cut:] + queue[:cut]
+
         return {
-            "tier": tier,
-            "days": max(0, math.ceil((_TIER_POINTS[tier] - points) / per_day)),
-            "subtypes": missing[tier],
+            "subtype":  entity,
+            "tier":     tier,
+            "days":     math.ceil(remaining / per_day),
+            "subtypes": queue or [entity],
         }
 
     def _min_uptime(self, obs: dict[str, Any]) -> float | None:

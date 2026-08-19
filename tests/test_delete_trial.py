@@ -19,10 +19,15 @@ Seeds a throwaway pair of trial files (real state untouched) with one macro and
 one micro trial, then verifies: deleting the micro removes it from both files
 and appends a 'falsified' outcome; deleting the macro or an unknown id is
 refused; and the macro trial survives untouched.
-Run: `python -m coded_tools.test_delete_trial`.
+Run: `python tests/test_delete_trial.py`.
 """
 
 from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import os
 import tempfile

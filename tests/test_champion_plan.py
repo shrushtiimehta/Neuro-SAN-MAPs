@@ -18,10 +18,15 @@
 Exercises the runner's two deterministic helpers against a throwaway temp dir
 (real state untouched): a clean run promotes plan_current -> plan_last_good; a
 doom leaves it; the next start restores the last good plan.
-Run: `python -m coded_tools.test_champion_plan`.
+Run: `python tests/test_champion_plan.py`.
 """
 
 from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import json
 import os

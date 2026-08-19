@@ -20,57 +20,79 @@
         {
             name = "mid_episode_analyst",
             function = {
-                description = "Mid-episode (kind=periodic) analyzer: diagnoses the live profit trajectory, logs its own (origin=micro) trials and prunes the ones that aren't working, and judges run health vs the best episode — replies with a VERDICT line the runner uses to abort doomed episodes."
+                description = "Mid-episode analyzer (kind=periodic), invoked every 10 steps: diagnoses the live profit trajectory against the best episode, logs its own micro trials and prunes the ones not working, and returns a VERDICT line the runner uses to abort doomed episodes early."
             },
             instructions = """
 You analyze the current live game state at mid-episode.
 
-Your input looks like:  
-`kind=periodic episode=<E> step=<S> cumulative_reward=<C> final_reward=null floor=<FLOOR> goal=<GOAL>`  
-- `floor`: The minimum reward to plausibly reach by step 100.
-- `goal`: The target maximizing north-star reward.
+You are the only part of this harness that can correct the episode WHILE it is still running.
+The planner set the direction before turn 1 and cannot revise it; you get roughly nine looks at the run,
+one every ten steps, to improve on it.
 
-GOAL: For each provided episode, judge if the run is on pace to plausibly surpass `floor` by step 100 using only current and best run telemetry as evidence if available.
-If the run is underperforming but salvageable, identify the main issue and design targeted micro trials.
-Micro trials must be new, concrete, and falsifiable — never a repeat of a macro or falsified strategy, and never trading the park's compounding investments for a short-term gain.
-Always cite evidence (step + metric) from the telemetry, no outside knowledge.
-If no path to even reach `floor`, label as DOOMED so the agent aborts to save tokens.
+GOAL: judge whether the run is on pace to plausibly surpass `floor` by step 100, using only the current and best-run
+telemetry as evidence. If it is underperforming but salvageable, name the main issue and design targeted micro
+trials (not at cost of the park's compounding investments for a short-term gain). If there is no path to even
+reach `floor`, label the run DOOMED.
+Each verdict you make costs the run something it cannot get back:
+- Call it ON_TRACK when it is drifting — the drift compounds for the remaining steps, unchallenged.
+- Log a micro trial that repeats a falsified idea — you spend one of the park's remaining steps
+  re-learning something the ledger already settled and so on.
+Always cite evidence (step + metric) from the telemetry; never use outside knowledge.
 
 ## Procedures:
 
-1. Call tools to gather context:
-    - `EpisodeTelemetry()`: All prior steps for the current episode.
-    - `RunTelemetry(select='best')`: Context of the best episode run (reference only; do not use as a hard target).
-    - `ActiveTrials()`: List of ongoing macro and micro trials and their criteria.
-    - `state_read('trial_strategies_outcome')`: Ledger of trial outcomes (do NOT revisit failed trials).
+1. Gather context:
+    - `scratchpad()` with NO args FIRST — the note you left yourself at your last check-in, 10 steps ago.
+      Reading CLEARS it, so it is gone after this run; empty means you left nothing. A trial you said you
+      would re-check now is binding.
+    - `EpisodeTelemetry()`: every step so far in the current episode.
+    - `state_read('status_coordinator')` and `state_read('status_layout')`: the park AS IT STANDS RIGHT NOW.
+    Telemetry gives you aggregates only and can never say WHICH asset is the drag or WHICH tier is unlocked ;
+    but we want each domain's details.
+    - `RunTelemetry(select='best')`: the best episode run, for reference only — never a hard target.
+    - `ActiveTrials()`: the macro and micro trials now running, with their criteria.
+    - `state_read('trial_strategies_outcome')`: the ledger of past outcomes. Do NOT revisit a failed trial.
 
-2. Diagnostic Reasoning:
-    1. Read the above sources in order: current episode, best episode (reference only), current trials, all prior trial outcomes.
-    2. Diagnose: Is `park_rating`\`park_value`\`cummulative_reward` rising, flat, or falling? Compare it with the best episode telemetry.
-    Consider investment phases. Don't punish runs using cash for future gains. Always see the future potential. Don't underestimate the park's compounding investments.
-    Determine if plausible to clear `floor` by step 100, referencing the best only for context.
-    3. Classify run as based on the best run and current telemetry:
-        - on_track: better than the best run, or no reference run
-        - underperforming: plausible with adjustment (name cause), salvageable it using micro trials
-        - DOOMED: way worse than the best run, no plausible path to `floor` by step 100. Don't doom a run that is still salvageable.
-    4. If DOOMED, skip micro trials and proceed to reply.
+2. Diagnose:
+    - Read the sources above in order: current episode, best episode (reference only), current trials,
+      then all prior trial outcomes.
+    - Is `park_rating` / `park_value` / `cumulative_reward` rising, flat or falling? Compare each with the best
+      episode's telemetry at the same step.
+    - Allow for investment phases: do not punish a run that is spending cash for future gain, and do not
+      underestimate what the park's compounding investments are about to return.
+    - Decide whether clearing `floor` by step 100 is still plausible, referencing the best run only for context.
+    - Classify the run against the best run and the current telemetry:
+        - on_track: ahead of the best run, or there is no reference run yet.
+        - underperforming: still plausible with adjustment — name the cause, and salvage it with micro trials.
+        - DOOMED: far behind the best run with no plausible path to `floor` by step 100. Never doom a run that
+          is still salvageable.
+    - If DOOMED, skip the micro trials and go straight to the reply.
 
-3. Micro Trials (Skip if Doomed)
-- Review: Use `ActiveTrials(trial_origin='micro')` to inspect current micro trials. For each, check against telemetry.
-For any trial that is unproductive (metric hasn't moved / failed / obsolete), use `DeleteTrial(trial_id)` to remove (micro trials only).
-If the park is not using any of the unlocked levers like an unlocked ride, shop, or staff, propose a new micro trial to test it.
-If the park is using a lever but not enough, propose a new micro trial to test it more aggressively. Keep it based on the macro trial direction.
-- Review whether `park_rating`\`park_value`\`cummulative_reward` is rising, flat, or falling? Compare it with the best episode telemetry.
-  Identify drag (e.g. cash, park_value/rating, shop_revenue, wasted steps).
-  Based on that propose Up To 2 New Micro Trials that are:
-    - Small, concrete, new, and falsifiable.
-    - Different domain per trial, not repeating macro direction or any failed trial.
-    - Clearly specify action, condition, metric, and trigger phase if relevant.
-    - Use one `LogTrial` call per micro trial to save.
+3. Micro Trials (skip if DOOMED):
+    - Review what is already running: `ActiveTrials(trial_origin='micro')`, and check each against the telemetry.
+      Where a trial is unproductive — its metric has not moved, it has failed, or it is obsolete — remove it with
+      `DeleteTrial(trial_id)`. Micro trials only.
+    - Find the drag: is `park_rating` / `park_value` / `cumulative_reward` rising, flat or falling against the best
+      episode? Name what is holding it back (cash, park_value/rating, shop_revenue, wasted steps), then locate it in
+      the live park — a stranded asset (`reachable: false`, earning $0 forever), a shop stuck `out_of_service`, a ride
+      with low `uptime` or near-zero usage, staff hired past what the park needs.
+    - If the park is leaving an unlocked lever unused — compare `available_entities` in `status_coordinator` against
+      the tiers actually placed in `status_layout`; any tier unlocked but never built is a lever going to waste —
+      propose a micro trial that tests it. If it is using a lever but too timidly, propose one that pushes it harder.
+      Keep both pointed along the macro trial's direction.
+    - Propose UP TO 2 new micro trials, each:
+        - small, concrete, new and falsifiable;
+        - in a different domain from the other, repeating neither the macro direction nor any failed trial;
+        - explicit about action, condition, metric, and trigger phase where one applies.
+        - Save each with its own `LogTrial` call.
 
-5. Reply Output: `VERDICT: <on_track|underperforming|doomed> | <one line citing step and metric gap vs best episode>`
+4. Reply: `VERDICT: <on_track|underperforming|doomed> | <one line citing step and metric gap vs best episode>`
 
-6. Errors: On any tool or downstream error, return `ERROR: <verbatim error text>` and stop instantly.
+5. LAST: if your NEXT check-in (10 steps from now) must know something, call `scratchpad(note=<max 5 lines>)` —
+   usually a trial you are giving until step N to move its metric, or a drag you are watching. Nothing pending?
+   Skip it; a stale note is worse than none, and it is cleared on read either way.
+
+6. Errors: on any tool or downstream error, return `ERROR: <verbatim error text>` and stop instantly.
 
 # Notes
 - Never extrapolate beyond current telemetry or use outside knowledge.
@@ -80,14 +102,32 @@ If the park is using a lever but not enough, propose a new micro trial to test i
                 {"class": "middleware.trim_history_middleware.TrimHistoryMiddleware", "args": {}},
                 {"class": "langchain_anthropic.middleware.AnthropicPromptCachingMiddleware", "args": {"ttl": "1h"}}
             ],
-            tools = ["state_read", "EpisodeTelemetry", "RunTelemetry", "ActiveTrials", "LogTrial", "DeleteTrial"]
+            tools = ["state_read", "EpisodeTelemetry", "RunTelemetry", "ActiveTrials", "LogTrial", "DeleteTrial", "scratchpad"]
+        },
+
+        {
+            name = "scratchpad",
+            class = "coded_tools.scratchpad.Scratchpad",
+            function = {
+                description = "Private memo for this network; player and planner hold their own. No args reads and clears the note left at your last check-in; note=<text> leaves up to 5 lines for the next one. Writes replace; no history is kept.",
+                parameters = {
+                    type = "object",
+                    properties = {
+                        note = {
+                            type = "string",
+                            description = "Up to 5 lines to carry into your NEXT run only. Omit to read-and-clear instead."
+                        }
+                    }
+                }
+            }
+            args = { pad = "watcher" }
         },
 
         {
             name = "RunTelemetry",
             class = "coded_tools.run_telemetry.RunTelemetry",
             function = {
-                description = "Pass select='best': the best-scoring episode across ALL runs (excludes the current in-flight run) as raw filtered per-step rows (no rollups) — your yardstick. When there's no prior episode to compare yet, it comes back empty.",
+                description = "With select='best', returns the highest-scoring episode across all runs as raw per-step rows, unaggregated — your yardstick for pace. Excludes the in-flight run, and returns empty when no prior episode exists.",
                 parameters = {
                     type = "object",
                     properties = {
@@ -101,7 +141,7 @@ If the park is using a lever but not enough, propose a new micro trial to test i
             name = "EpisodeTelemetry",
             class = "coded_tools.episode_telemetry.EpisodeTelemetry",
             function = {
-                description = "Per-step telemetry for ONE episode from run.jsonl — steps (per-step actions + metrics), applied, rejections, rollup; exists=false if the episode has no rows yet.",
+                description = "Per-step record for ONE episode, read from run.jsonl: {steps, rejections, rollup}, exists=false before any row is written. Each step carries its full action args and metrics; `rejections` records every action the sim refused, booked as a wait with the original action and error.",
                 parameters = {
                     type = "object",
                     properties = {
@@ -116,7 +156,7 @@ If the park is using a lever but not enough, propose a new micro trial to test i
             name = "LogTrial",
             class = "coded_tools.log_trial.LogTrial",
             function = {
-                description = "Mint a trial_id and append the paired rule (-> trial_strategies) + criteria (-> trial_strategies_criteria) lines. Use for EVERY new trial; never hand-format ids or the criteria line. (origin is bound to this network by config — you do NOT pass it.)",
+                description = "Mints a collision-free trial_id and appends the paired lines: the one-line rule to trial_strategies, the metadata and success/failure criteria to trial_strategies_criteria. Use it for every new trial: it owns id minting and criteria formatting, and takes origin from this network's config.",
                 parameters = {
                     type = "object",
                     properties = {
@@ -141,7 +181,7 @@ If the park is using a lever but not enough, propose a new micro trial to test i
             name = "DeleteTrial",
             class = "coded_tools.delete_trial.DeleteTrial",
             function = {
-                description = "Remove ONE micro trial mid-episode when it is no longer needed or isn't working. Micro-only: refuses a macro trial_id. Deletes the paired lines from trial_strategies + trial_strategies_criteria and appends a 'falsified' OUTCOME line so the planner does not re-propose it.",
+                description = "Removes ONE micro trial mid-episode once it is unproductive or obsolete. Accepts micro trial_ids, as listed by ActiveTrials(trial_origin='micro'). Deletes the paired lines from trial_strategies and trial_strategies_criteria. Writes no OUTCOME line — micro trials are episode-scoped and are not ledgered.",
                 parameters = {
                     type = "object",
                     properties = {
@@ -156,12 +196,12 @@ If the park is using a lever but not enough, propose a new micro trial to test i
             name = "ActiveTrials",
             class = "coded_tools.active_trials.ActiveTrials",
             function = {
-                description = "Return the active trials joined across trial_strategies (rule body) and trial_strategies_criteria (metadata), optionally filtered by domain and/or trial_origin ('micro'|'macro').",
+                description = "Returns the trials in force this episode, joining the rule body from trial_strategies with the metadata and criteria from trial_strategies_criteria. Filter by domain and/or trial_origin ('micro'|'macro'); omit both for all active trials.",
                 parameters = {
                     type = "object",
                     properties = {
-                        domain = { type = "string", description = "Filter to one domain. Omit for all domains." }
-                        trial_origin = { type = "string", description = "Filter to 'micro' or 'macro'. Omit for both. (Named trial_origin, NOT origin — 'origin' is a reserved framework-injected field.)" }
+                        domain = { type = "string", description = "Filter to one domain: rides, shops, staff, research, layout, survey or coordinator. Omit for all domains." }
+                        trial_origin = { type = "string", description = "Filter to 'micro' or 'macro'; omit for both. Named trial_origin, not origin — the framework injects a reserved 'origin' key that would silently override it." }
                     }
                 }
             }
@@ -175,13 +215,24 @@ If the park is using a lever but not enough, propose a new micro trial to test i
                 parameters = {
                     type = "object",
                     properties = {
-                        name = { type = "string", description = "Logical name." }
+                        name = { type = "string", description = "Logical name of the file to read; must be one the operator mapped in name_map." }
                     },
                     required = ["name"]
                 }
             },
             args = {
                 name_map = {
+                    # The LIVE park, refreshed by the game-runner's ParkStatus every
+                    # turn. Telemetry rows carry only aggregates (num_rides, park_value),
+                    # so these are the analyst's ONLY view of which asset is the drag and
+                    # which tier is already unlocked. Read, never written, from here.
+                    status_coordinator          = "coded_tools/state/status_coordinator.json"
+                    status_layout               = "coded_tools/state/status_layout.json"
+                    status_rides                = "coded_tools/state/status_rides.json"
+                    status_shops                = "coded_tools/state/status_shops.json"
+                    status_staff                = "coded_tools/state/status_staff.json"
+                    status_research             = "coded_tools/state/status_research.json"
+                    status_survey               = "coded_tools/state/status_survey.json"
                     trial_strategies            = "coded_tools/state/trial_strategies.md"
                     trial_strategies_criteria   = "coded_tools/state/trial_strategies_criteria.md"
                     trial_strategies_outcome    = "coded_tools/state/trial_strategies_outcome.md"
@@ -193,17 +244,17 @@ If the park is using a lever but not enough, propose a new micro trial to test i
                     playbook_research           = "coded_tools/state/playbook_research.md"
                     playbook_layout             = "coded_tools/state/playbook_layout.md"
                     playbook_survey             = "coded_tools/state/playbook_survey.md"
-                    economics_rides             = "coded_tools/config_files/rides_economics.md"
-                    economics_shops             = "coded_tools/config_files/shops_economics.md"
-                    economics_staff             = "coded_tools/config_files/staff_economics.md"
-                    economics_research          = "coded_tools/config_files/research_economics.md"
-                    seed_playbook_coordinator   = "coded_tools/config_files/coordinator_strategy.md"
-                    seed_playbook_rides         = "coded_tools/config_files/rides_strategy.md"
-                    seed_playbook_shops         = "coded_tools/config_files/shops_strategy.md"
-                    seed_playbook_staff         = "coded_tools/config_files/staff_strategy.md"
-                    seed_playbook_research      = "coded_tools/config_files/research_strategy.md"
-                    seed_playbook_layout        = "coded_tools/config_files/layout_strategy.md"
-                    seed_playbook_survey        = "coded_tools/config_files/survey_strategy.md"
+                    economics_rides             = "coded_tools/config_files/economics_rides.md"
+                    economics_shops             = "coded_tools/config_files/economics_shops.md"
+                    economics_staff             = "coded_tools/config_files/economics_staff.md"
+                    economics_research          = "coded_tools/config_files/economics_research.md"
+                    seed_playbook_coordinator   = "coded_tools/config_files/seed_playbook_coordinator.md"
+                    seed_playbook_rides         = "coded_tools/config_files/seed_playbook_rides.md"
+                    seed_playbook_shops         = "coded_tools/config_files/seed_playbook_shops.md"
+                    seed_playbook_staff         = "coded_tools/config_files/seed_playbook_staff.md"
+                    seed_playbook_research      = "coded_tools/config_files/seed_playbook_research.md"
+                    seed_playbook_layout        = "coded_tools/config_files/seed_playbook_layout.md"
+                    seed_playbook_survey        = "coded_tools/config_files/seed_playbook_survey.md"
                 }
             }
         },

@@ -52,7 +52,7 @@
         # gpt-5.5-pro is a Responses-API-only model, so it needs use_responses_api.
         # That flag also lets reasoning_effort + function tools work on gpt-5.4/5.5.
         "model_name": "gpt-5.5",
-        "reasoning_effort": "high",     # extra thinking; gpt-5.5 values: none|low|medium|high|xhigh
+        "reasoning_effort": "xhigh",     # extra thinking; gpt-5.5 values: none|low|medium|high|xhigh
         "use_responses_api": true,      # required for gpt-5.5-pro (not a chat model)
 
     }

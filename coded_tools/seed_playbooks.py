@@ -51,26 +51,36 @@ class SeedPlaybooks(CodedTool):
     # playbook name -> config seed filename. Mirrors the seed_playbook_* ->
     # playbook_* map in the agent HOCONs' state_read/state_write config.
     PLAYBOOKS: ClassVar[dict[str, str]] = {
-        "playbook_coordinator": "coordinator_strategy.md",
-        "playbook_rides":       "rides_strategy.md",
-        "playbook_shops":       "shops_strategy.md",
-        "playbook_staff":       "staff_strategy.md",
-        "playbook_survey":      "survey_strategy.md",
-        "playbook_research":    "research_strategy.md",
-        "playbook_layout":      "layout_strategy.md",
+        "playbook_coordinator": "seed_playbook_coordinator.md",
+        "playbook_rides":       "seed_playbook_rides.md",
+        "playbook_shops":       "seed_playbook_shops.md",
+        "playbook_staff":       "seed_playbook_staff.md",
+        "playbook_survey":      "seed_playbook_survey.md",
+        "playbook_research":    "seed_playbook_research.md",
+        "playbook_layout":      "seed_playbook_layout.md",
     }
 
-    # Trial-ledger files the consultant networks read via state_read every
-    # episode. Unlike the playbooks these are NOT seeded from config — they
-    # accumulate trial state across runs — but state_read errors on a missing
-    # file, so a brand-new run/state dir leaves the analyzers reading a file
-    # that does not exist yet (the macro close-out then errors with
-    # "trial_strategies_outcome.md missing"). Ensure each one EXISTS (empty),
-    # creating it only when absent so accumulated content is never clobbered.
-    TRIAL_LEDGERS: ClassVar[tuple[str, ...]] = (
+    # State files the consultant networks read via state_read every episode.
+    # Unlike the playbooks these are NOT seeded from config — they accumulate
+    # across runs — but state_read errors on a missing file, so a brand-new
+    # run/state dir leaves the analyzers reading a file that does not exist yet
+    # (the macro close-out then errors with "trial_strategies_outcome.md
+    # missing"). Ensure each one EXISTS (empty), creating it only when absent so
+    # accumulated content is never clobbered.
+    #
+    # Two of these DEADLOCK if missing, because the consultant reads the file in
+    # the same step whose tool is the file's only writer — so the read errors,
+    # the "STOP on any tool error" rule aborts the pass, the write never happens,
+    # and the next episode fails identically. Both were observed dead in a live
+    # run (macro close-out since Aug 8, episode plan since Aug 10):
+    #   last_reward.md       read by episode_end step 1; written by advance_episode step 5
+    #   episode_checklist.md read by episode_start step 5; written by WriteEpisodePlan, same step
+    ENSURED_STATE_FILES: ClassVar[tuple[str, ...]] = (
         "trial_strategies.md",
         "trial_strategies_criteria.md",
         "trial_strategies_outcome.md",
+        "last_reward.md",
+        "episode_checklist.md",
     )
 
     def __init__(self) -> None:
@@ -107,16 +117,19 @@ class SeedPlaybooks(CodedTool):
                 continue
             seeded.append(name)
 
-        # Ensure the trial-ledger files exist so the consultant networks'
-        # state_read never errors on a missing file. Create-if-absent only:
-        # an existing ledger (with accumulated cross-run content) is left as-is
-        # regardless of ``overwrite`` — those lessons must survive a fresh run.
+        # Ensure these exist so the consultant networks' state_read never errors
+        # on a missing file. Create-if-absent only: an existing file (with
+        # accumulated cross-run content) is left as-is regardless of
+        # ``overwrite`` — those lessons must survive a fresh run.
         ledgers_created: list[str] = []
-        for fname in self.TRIAL_LEDGERS:
+        for fname in self.ENSURED_STATE_FILES:
             target = os.path.join(self.STATE_DIR, fname)
             if os.path.exists(target):
                 continue
-            write_err = FileIO.write_guarded(target, "", self.logger)
+            # last_reward is read as "cumulative_reward: <N>"; seed it at 0 so the
+            # first close-out computes a real delta instead of parsing an empty file.
+            body = "cumulative_reward: 0\n" if fname == "last_reward.md" else ""
+            write_err = FileIO.write_guarded(target, body, self.logger)
             if write_err is not None:
                 errors.append(f"{fname}: {write_err}")
                 continue

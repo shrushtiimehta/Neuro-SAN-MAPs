@@ -24,8 +24,16 @@ Policy (per active trial):
   - origin=micro -> REMOVE regardless of outcome (micro trials are episode-scoped;
     a confirmed one was already promoted to the playbook by the curator), so the
     next episode starts back at just the persisted macro trials.
-In all cases append one line to trial_strategies_outcome:
-  "- OUTCOME ep=<N> trial_id=<id> domain=<D> origin=<O> outcome=<O> note='<note>'"
+  - a macro trial older than ActiveTrials still serves, absent from the report
+    -> REMOVE as 'expired'. It cannot be reported on, because ActiveTrials no
+    longer shows it to the close-out; keeping it as 'inconclusive' would leave a
+    trial that is both invisible and undeletable.
+For every MACRO trial (never micro — those are written for one episode's exact
+state and teach the next planner nothing) append one line to
+trial_strategies_outcome, carrying the rule TEXT as well as its id (the id's
+rule is deleted from trial_strategies in the same call, so this line is the only
+surviving record of what was tried):
+  "- OUTCOME ep=<N> trial_id=<id> domain=<D> origin=<O> outcome=<O> note='<note>' rule='<text>'"
 """
 
 from __future__ import annotations
@@ -35,6 +43,7 @@ from typing import Any
 
 from neuro_san.interfaces.coded_tool import CodedTool
 
+from coded_tools.active_trials import ActiveTrials
 from coded_tools.file_io import FileIO
 from coded_tools.trial_parsing import CRITERIA_PATH
 from coded_tools.trial_parsing import OUTCOME_PATH
@@ -49,6 +58,19 @@ class ResolveTrials(CodedTool):
     """Trim trial_strategies + criteria and append outcomes from the curator report."""
 
     REMOVE_OUTCOMES = frozenset({"confirmed", "falsified"})
+
+    @staticmethod
+    def _too_old(crit: dict[str, Any], episode: int) -> bool:
+        """True when ActiveTrials would no longer serve this trial.
+
+        Deliberately reads the SAME constant ActiveTrials filters on: if the two
+        rules ever drift apart, trials reappear in the gap between them —
+        withheld from every reader, yet never resolved away.
+        """
+        try:
+            return int(crit.get("ep")) < episode - ActiveTrials.MAX_CARRYOVER_EPISODES
+        except (TypeError, ValueError):
+            return False        # unparseable ep -> treat as current, never expire blind
 
     def invoke(self, args: dict[str, Any], sly_data: dict[str, Any]) -> dict[str, Any] | str:
         """
@@ -75,7 +97,8 @@ class ResolveTrials(CodedTool):
 
         strat_text = read_text(STRATEGIES_PATH)
         crit_text = read_text(CRITERIA_PATH)
-        active_ids = list(parse_strategies(strat_text).keys())
+        strategies = parse_strategies(strat_text)
+        active_ids = list(strategies.keys())
         criteria = parse_criteria(crit_text)
 
         keep_ids: set[str] = set()
@@ -101,14 +124,37 @@ class ResolveTrials(CodedTool):
             if origin == "micro" and outcome not in self.REMOVE_OUTCOMES:
                 note = (f"{note}; " if note else "") + "micro_episode_scoped"
 
-            if outcome in self.REMOVE_OUTCOMES or origin == "micro":
+            # A macro trial too old to still be served is unreportable: ActiveTrials
+            # withholds it, so the close-out never sees it, so it is never confirmed
+            # or falsified — and "inconclusive" would KEEP it. Left alone that is a
+            # trial which is both invisible and undeletable. Expire it here, where
+            # the raw ledger is still in view.
+            if not entry and origin != "micro" and self._too_old(crit, episode):
+                outcome = "expired"
+                note = (f"{note}; " if note else "") + (
+                    f"stranded since ep{crit.get('ep')} — no close-out ever resolved it"
+                )
+
+            if outcome in self.REMOVE_OUTCOMES or origin == "micro" or outcome == "expired":
                 removed.append(trial_id)
             else:
                 keep_ids.add(trial_id)
                 kept.append(trial_id)
+            # MACRO ONLY. A micro rule is written for one episode's exact state
+            # ("from steps 61-70, if cash is at least 8500 and num_rides is 13...")
+            # and is meaningless once that park is gone, so its outcome is not
+            # ledgered — it would only teach the next planner about a park that
+            # no longer exists. The removal above still happens either way.
+            if origin == "micro":
+                continue
+            # The rule TEXT goes in the line, not just its id. The next episode's
+            # planner reads this ledger to avoid re-proposing a falsified idea —
+            # and "t1_1 falsified" tells it nothing, because the id's rule is
+            # deleted from trial_strategies.md in the same call.
+            rule = (strategies.get(trial_id) or "").replace("'", "").strip()
             outcome_lines.append(
                 f"- OUTCOME ep={episode} trial_id={trial_id} domain={domain} "
-                f"origin={origin} outcome={outcome} note='{note}'\n"
+                f"origin={origin} outcome={outcome} note='{note}' rule='{rule}'\n"
             )
 
         try:

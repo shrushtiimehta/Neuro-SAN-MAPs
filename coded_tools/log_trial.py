@@ -33,6 +33,8 @@ Files written (one appended line each):
 
 from __future__ import annotations
 
+import re
+
 from typing import Any
 from typing import ClassVar
 
@@ -40,6 +42,7 @@ from neuro_san.interfaces.coded_tool import CodedTool
 
 from coded_tools.file_io import FileIO
 from coded_tools.trial_parsing import CRITERIA_PATH
+from coded_tools.trial_parsing import OUTCOME_PATH
 from coded_tools.trial_parsing import STRATEGIES_PATH
 
 
@@ -48,6 +51,7 @@ class LogTrial(CodedTool):
 
     STRATEGIES_PATH: ClassVar[str] = STRATEGIES_PATH
     CRITERIA_PATH: ClassVar[str] = CRITERIA_PATH
+    OUTCOME_PATH: ClassVar[str] = OUTCOME_PATH
 
     def invoke(self, args: dict[str, Any], sly_data: dict[str, Any]) -> dict[str, Any] | str:
         """
@@ -124,13 +128,21 @@ class LogTrial(CodedTool):
         return {"trial_id": trial_id}
 
     def _next_trial_id(self, episode: int) -> str:
-        """Next collision-free id for this episode: t<episode>_<N+1>."""
-        prefix = f"- t{episode}_"
-        count = sum(
-            1 for line in FileIO.read_text(self.STRATEGIES_PATH).splitlines()
-            if line.startswith(prefix)
-        )
-        return f"t{episode}_{count + 1}"
+        """Next collision-free id for this episode: t<episode>_<max seen + 1>.
+
+        Counting the live rules is NOT safe: DeleteTrial removes a rule
+        mid-episode, the count drops, and the next mint re-issues an id that is
+        already in use — two different trials answering to one id, so
+        DeleteTrial/ResolveTrials can only ever reach one of them. Take the
+        highest suffix ever issued instead, and look in the criteria and outcome
+        ledgers too so a resolved or deleted id is never recycled.
+        """
+        pattern = re.compile(rf"\bt{episode}_(\d+)\b")
+        highest = 0
+        for path in (self.STRATEGIES_PATH, self.CRITERIA_PATH, self.OUTCOME_PATH):
+            for match in pattern.finditer(FileIO.read_text(path)):
+                highest = max(highest, int(match.group(1)))
+        return f"t{episode}_{highest + 1}"
 
     async def async_invoke(self, args: dict[str, Any], sly_data: dict[str, Any]) -> dict[str, Any] | str:
         return self.invoke(args, sly_data)

@@ -31,6 +31,12 @@ Two modes:
    episodes yet) simply contributes nothing and the prior runs fill the window;
    if fewer than N runs exist, every run found is returned.
 
+Both cross-run modes (SELECT and RUNS) obey MAPS_INCLUDE_ARCHIVED, the run-level
+switch exported by run_all.sh --no-archived. Set it to 0 and prior-runs/ is never
+read, so "best-ever" collapses to "best in the current run". Deliberately not a
+tool arg — the operator decides this per run, not the agent per call. EPISODE
+mode is current-run-only regardless.
+
 It reuses EpisodeTelemetry for parsing each episode file (single source of
 truth for how a run.ep*.jsonl row maps to metrics), then derives the trends.
 It writes nothing — it is a read-only analysis input.
@@ -119,6 +125,8 @@ class RunTelemetry(CodedTool):
     # folder of run.ep*.jsonl files: logs/maps_park/prior-runs/<id>/run.ep*.jsonl
     PRIOR_RUNS_SUBDIR: ClassVar[str] = "prior-runs"
     DEFAULT_NUM_RUNS: ClassVar[int] = 5
+    # Run-level override for include_archived, exported by run_all.sh --no-archived.
+    ENV_INCLUDE_ARCHIVED: ClassVar[str] = "MAPS_INCLUDE_ARCHIVED"
 
     # SELECT mode: per-step fields kept for the two fed episodes. Drops the
     # low-signal/noisy fields (x, y, min_cleanliness, min_uptime, shop_revenue,
@@ -137,6 +145,9 @@ class RunTelemetry(CodedTool):
             EPISODE mode (within current run, the default): 'from_episode'
               (int; only episodes >= this) and 'max_episodes' (int; keep only
               the most recent N episodes after the from_episode filter).
+            Whether SELECT/RUNS scan prior-runs/ is NOT an arg: it comes from
+              MAPS_INCLUDE_ARCHIVED (run_all.sh --no-archived). EPISODE mode is
+              current-run-only either way.
         :param sly_data: ignored.
         :return: cross-run telemetry (RUNS mode) or cross-episode telemetry
             (EPISODE mode); see module docstring.
@@ -144,16 +155,18 @@ class RunTelemetry(CodedTool):
         del sly_data
         scope = str(args.get("scope") or "").strip().lower()
         select = str(args.get("select") or "").strip().lower()
+        # Run-level switch only (run_all.sh --no-archived); not a caller arg.
+        archived = self._to_bool(os.environ.get(self.ENV_INCLUDE_ARCHIVED), True)
         # SELECT mode takes priority: the best-ever episode, with or without the
         # most-recent one alongside it. 'best'/'best_only' omits last_episode —
         # the micro already has the current episode from EpisodeTelemetry.
         if select in ("best", "best_only"):
-            return self._select_mode(include_last=False)
+            return self._select_mode(include_last=False, include_archived=archived)
         if select in ("best_and_last", "best_last") or scope == "select":
-            return self._select_mode(include_last=True)
+            return self._select_mode(include_last=True, include_archived=archived)
         if scope == "runs" or args.get("num_runs") is not None:
             num_runs = FileIO.to_int(args.get("num_runs")) or self.DEFAULT_NUM_RUNS
-            return self._runs_mode(max(1, num_runs))
+            return self._runs_mode(max(1, num_runs), include_archived=archived)
         return self._episodes_mode(args)
 
     # ── EPISODE mode (within the current run) ───────────────────────────────
@@ -188,7 +201,17 @@ class RunTelemetry(CodedTool):
         }
 
     # ── SELECT mode (feed the best-ever + last episode as raw steps) ────────
-    def _select_mode(self, include_last: bool = True) -> dict[str, Any]:
+    @staticmethod
+    def _to_bool(value: Any, default: bool) -> bool:
+        """Tolerant bool: LLM args arrive as real bools OR as 'false'/'0'/'no'."""
+        if value is None:
+            return default
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() not in ("false", "0", "no", "off", "")
+
+    def _select_mode(self, include_last: bool = True,
+                     include_archived: bool = True) -> dict[str, Any]:
         """Scan ALL runs to rank every episode by final cumulative reward, then
         return exactly the two episodes the macro start pass wants:
 
@@ -199,8 +222,10 @@ class RunTelemetry(CodedTool):
 
         Each is returned as FILTERED raw steps (SELECT_KEEP_FIELDS) with NO
         rollup/aggregation — the analyst reads the moves directly.
+
+        include_archived=False narrows "EVER" to the current run only.
         """
-        discovered = self._discover_runs()
+        discovered = self._discover_runs(include_archived)
         # Flatten to a global, most-recent-first list. _discover_runs is
         # most-recent-run-first; within a run, higher episode = more recent.
         flat: list[dict[str, Any]] = []
@@ -232,6 +257,7 @@ class RunTelemetry(CodedTool):
         result: dict[str, Any] = {
             "scope": "select",
             "exists": True,
+            "include_archived": include_archived,
             "runs_scanned": len(discovered),
             "episodes_scanned": len(flat),
             "reference_episode": self._select_payload(best) if best else None,
@@ -281,8 +307,8 @@ class RunTelemetry(CodedTool):
         }
 
     # ── RUNS mode (across the N most recent runs) ───────────────────────────
-    def _runs_mode(self, num_runs: int) -> dict[str, Any]:
-        discovered = self._discover_runs()[:num_runs]
+    def _runs_mode(self, num_runs: int, include_archived: bool = True) -> dict[str, Any]:
+        discovered = self._discover_runs(include_archived)[:num_runs]
         telemetry = EpisodeTelemetry()
         runs: list[dict[str, Any]] = []
         for run_id, is_current, ep_files in discovered:
@@ -317,19 +343,24 @@ class RunTelemetry(CodedTool):
             "cross_run_rollup": self._cross_run_rollup(runs),
         }
 
-    def _discover_runs(self) -> list[tuple[str, bool, list[tuple[int, str]]]]:
+    def _discover_runs(self, include_archived: bool = True) -> list[tuple[str, bool, list[tuple[int, str]]]]:
         """Most-recent-first list of (run_id, is_current, [(ep_num, path), ...]).
 
         The in-flight current run (top-level run.ep*.jsonl) leads, followed by
         archived prior runs under prior-runs/<id>/, newest first. Timestamped
         ids (YYYYMMDD-HHMMSS) sort chronologically by name; we fall back to
         directory mtime so non-timestamped names still order sensibly.
+
+        include_archived=False stops at the current run — prior-runs/ is never
+        read, so "best-ever" means "best in this run".
         """
         out: list[tuple[str, bool, list[tuple[int, str]]]] = []
 
         current = self._episode_files(self.RUN_LOG_DIR)
         if current:
             out.append(("current", True, current))
+        if not include_archived:
+            return out
 
         prior_root = os.path.join(self.RUN_LOG_DIR, self.PRIOR_RUNS_SUBDIR)
         prior_dirs: list[str] = []

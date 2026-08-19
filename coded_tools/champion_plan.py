@@ -39,12 +39,12 @@ PLAN_CURRENT_PATH = os.path.join(_STATE_DIR, "plan_current.json")
 PLAN_LAST_GOOD_PATH = os.path.join(_STATE_DIR, "plan_last_good.json")
 CHAMPION_REWARD_PATH = os.path.join(_STATE_DIR, "champion_reward.json")
 
-# Minimum reward to promote a plan to champion. Defaults to 0 so the FIRST clean
-# episode always becomes the champion; from then on the "beats the current champion"
-# check below is the real gate, so the bar rises to the best episode on its own.
-# Matches the runner's DEFAULT_REWARD_FLOOR; the runner passes its actual
-# --reward-floor as min_reward, this is just the default.
-CHAMPION_MIN_REWARD = 0
+# Minimum reward to promote a plan to champion: a strategy under this is a failed
+# run, not a fallback worth building on, no matter how clean it looked. Above it the
+# "beats the current champion" check below is the real gate, so the bar rises to the
+# best episode on its own. Matches the runner's DEFAULT_REWARD_FLOOR; the runner
+# passes its actual --reward-floor as min_reward, this is just the default.
+CHAMPION_MIN_REWARD = 350000
 
 
 def _champion_reward() -> float | None:

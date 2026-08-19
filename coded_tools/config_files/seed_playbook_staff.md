@@ -15,7 +15,7 @@ Staff are necessary for the smooth operation of your park, ensuring attractions 
   - Blue (Stockers): restock shops with low inventory. (10% of order quantity)
   - Green (Park Criers): inform guests about out-of-service or dirty attractions, as well as the current line wait time for rides.
   - Red (Vendors): provide food and drink to guests waiting in line.
-A dirty park, frequent out-of-service rides/shops, and long wait lines **significantly decrease park rating**.
+A dirty park, frequent out-of-service rides/shops, long wait lines **significantly decrease park rating**.
 
 ## Park current status (not set by you)
 - **salary** + **operating_cost** — fixed daily cost by role+tier plus extra cost per action performed.
@@ -23,15 +23,15 @@ A dirty park, frequent out-of-service rides/shops, and long wait lines **signifi
   - **Dirt compounds:** unhappy guests litter → dirtier park → unhappier guests, and a too-dirty ride turns guests away. Cleanliness slipping is a janitor decision, not a wait-and-see.
 - **min_uptime** — worst uptime across rides/shops. If low:
   - `out_of_service` = true, hire a mechanic
-  - otherwise a shop ran dry, hire blue specialist that triggers at <25% inventory, hauls 10% of order quanity (≤100 units), stops in the last 30 ticks — a safety net, not a substitute for right order_quantity
+  - otherwise a shop ran dry, hire blue specialist to restock the shops.
   - or a ride broke earlier today and was already repaired (mechanic hired already).
 - **success_metric / success_metric_value** — work done so far (e.g. `amount_cleaned`). Dismiss the worst based on this metric.
 - **cleaning_threshold** (in `staff_economics`) — CEILING a janitor cleans a tile to. It skips tiles already at its threshold. Eg: yellow **cannot** lift `min_cleanliness` past 0.85. If you want better, upgrade the tier.
-- **next_unlock** — the next tier due and which subtype unlocks next, e.g. `"next_unlock": {"tier": "blue", "days": 2, "subtypes": ["carousel", "drink"]}`. `days` is the ETA for the first listed unlock. Absent = research off.
+- **next_unlock** — the next tier due and which subtypes still need it, e.g. `{"subtype": "janitor", "tier": "blue", "days": 2, "subtypes": ["janitor", "mechanic"]}`. Absent = research is off. Use to plan ahead.
 
 ## Tier upgrades
 Tier hierarchy: yellow < blue < green < red.
 A higher tier of a role does its job faster/wider/better (e.g. red janitors/mechanics do preventive work), and specialists each have different responsibilities, defending park rating better. If a new tier unlocks in the `available_entities`, place it well.
-Each hire gets limited actions/day, one tile walked is 1 action. Blue & higher tier janitors/mechanics move at double speed. 
+Each hire gets limited actions/day, one tile walked is 1 action. Blue & higher tier janitors/mechanics move at double speed.
 
 ## Learned rules (promoted from prior runs)

@@ -56,7 +56,7 @@ shop. See FinanceGate.operating_cost for why the last two are read back from the
 observation rather than estimated from the economics tables.
 
 Break-even days come from the `break_even_days` column of
-config_files/rides_economics.md — the single source of truth. They were derived
+config_files/economics_rides.md — the single source of truth. They were derived
 at 5 ops/day (moderate-park assumption):
   break_even_ops  = ceil(building_cost / (max_ticket_price * capacity - operating_cost))
   break_even_days = ceil(break_even_ops / 5)
@@ -72,6 +72,21 @@ from typing import Any
 from typing import ClassVar
 
 from neuro_san.interfaces.coded_tool import CodedTool
+
+# The observation names a ride's price `ticket_price` and a shop's `item_price`,
+# but the env action takes plain `price` for both. Specialists read one name and
+# write the other, so both tools that touch a proposal fold the alias in first.
+_PRICE_ALIASES = ("ticket_price", "item_price")
+
+
+def normalize_price_key(args: Any) -> None:
+    """Fold a `ticket_price`/`item_price` alias into `price`. Mutates in place."""
+    if not isinstance(args, dict):
+        return
+    for alias in _PRICE_ALIASES:
+        value = args.pop(alias, None)
+        if value is not None and args.get("price") is None:
+            args["price"] = value
 
 
 _SURVEY_GUESTS_COST_PER_GUEST = 500
@@ -92,10 +107,10 @@ def _load_status_slice() -> dict[str, Any]:
     except (OSError, json.JSONDecodeError):
         return {}
 
-_RIDES_ECONOMICS_PATH = "coded_tools/config_files/rides_economics.md"
-_SHOPS_ECONOMICS_PATH = "coded_tools/config_files/shops_economics.md"
-_STAFF_ECONOMICS_PATH = "coded_tools/config_files/staff_economics.md"
-_RESEARCH_ECONOMICS_PATH = "coded_tools/config_files/research_economics.md"
+_RIDES_ECONOMICS_PATH = "coded_tools/config_files/economics_rides.md"
+_SHOPS_ECONOMICS_PATH = "coded_tools/config_files/economics_shops.md"
+_STAFF_ECONOMICS_PATH = "coded_tools/config_files/economics_staff.md"
+_RESEARCH_ECONOMICS_PATH = "coded_tools/config_files/economics_research.md"
 
 
 _TIER_RE = re.compile(r"^(rides|shops|staff)\s+(\S+)\s+(\S+)\s+(\S+):\s*(.+)\s*$")  # legacy fallback
@@ -228,7 +243,7 @@ class FinanceGate(CodedTool):
     RESEARCH_UPFRONT_DAYS: ClassVar[int] = 3
 
     # Break-even days are NOT duplicated here: _enrich reads the break_even_days
-    # column out of rides_economics.md, the same file the costs come from, so the
+    # column out of economics_rides.md, the same file the costs come from, so the
     # table and the gate can never drift apart.
 
     async def async_invoke(
@@ -286,6 +301,7 @@ class FinanceGate(CodedTool):
                 research_econ=research_econ,
                 has_food_or_atm=has_food_or_atm,
                 has_profitable_ride=has_profitable_ride,
+                available_entities=status.get("available_entities"),
             )
             approved, reason = self._evaluate(
                 cash=cash,
@@ -368,13 +384,19 @@ class FinanceGate(CodedTool):
         *,
         ride_econ: dict, shop_econ: dict, staff_econ: dict, research_econ: dict,
         has_food_or_atm: bool, has_profitable_ride: bool,
+        available_entities: dict | None = None,
     ) -> dict[str, Any]:
         """Fill in derived fields the LLM used to compute itself."""
         action = str(proposal.get("action", "")).lower().strip()
         entity_type = str(proposal.get("type", "")).lower().strip()
         subtype = str(proposal.get("subtype", "")).lower().strip()
         subclass = str(proposal.get("subclass", "")).lower().strip()
-        research_speed = str(proposal.get("research_speed", "none")).lower().strip()
+        # Do NOT default a missing speed to "none": on a set_research proposal that
+        # silently inverts the intent ("research toward blue" -> "keep research off"),
+        # and because is_research below then reads False, the gate prices it as free
+        # and waves the no-op through. Missing stays missing so ProposeAction can
+        # reject it. For every other action the field is nulled out at the end anyway.
+        research_speed = str(proposal.get("research_speed") or "").lower().strip()
 
         # one_time_cost — building_cost for place, salary for staff, 0 otherwise.
         one_time_cost = 0
@@ -386,8 +408,10 @@ class FinanceGate(CodedTool):
         elif action == "place" and entity_type == "staff":
             one_time_cost = self._int(staff_econ.get(("staff", subtype, subclass), {}).get("salary", 0))
 
-        # is_research only for set_research with a non-none speed.
-        is_research = (action == "set_research" and research_speed != "none")
+        # is_research only for set_research that actually turns research ON.
+        # "" (speed omitted) counts as off here too, so a malformed proposal is
+        # never priced as if it were researching.
+        is_research = (action == "set_research" and research_speed not in ("", "none"))
 
         # Runway a ride needs to recoup its build cost, read straight off the
         # economics table. 0 for anything that isn't a known ride tier (shops,
@@ -402,8 +426,8 @@ class FinanceGate(CodedTool):
         # order). Confirmed against the MAPs simulator (research.js).
         research_daily_cost = self._int(research_econ.get(("speed_cost", research_speed), 0))
         if is_research:
-            target_tier = str(proposal.get("target_tier") or "blue").lower()
-            points_required = self._int(research_econ.get(("points_required", target_tier), 0))
+            next_tier = self._next_tier(available_entities, proposal.get("research_topics"))
+            points_required = self._int(research_econ.get(("points_required", next_tier), 0))
             speed_progress = self._int(research_econ.get(("speed_progress", research_speed), 0))
             research_days = math.ceil(points_required / speed_progress) if speed_progress > 0 else 0
         else:
@@ -411,7 +435,8 @@ class FinanceGate(CodedTool):
 
         # Label — short human-readable.
         if action == "set_research":
-            label = f"set_research speed={research_speed} topics={proposal.get('research_topics') or '[]'}"
+            label = (f"set_research speed={research_speed or '<missing>'} "
+                     f"topics={proposal.get('research_topics') or '[]'}")
         elif action == "wait":
             label = "wait"
         elif entity_type and subtype and subclass:
@@ -426,6 +451,9 @@ class FinanceGate(CodedTool):
         # could only be mangled on that hop anyway. FinanceGate's budget rules
         # never read price (only building_cost / salary), so we pass the raw
         # proposal value through untouched.
+        # Fold ticket_price/item_price into price BEFORE the rebuild below, which
+        # keeps a fixed key list and would otherwise drop the alias silently.
+        normalize_price_key(proposal)
         price = self._int(proposal.get("price", 0))
 
         return {
@@ -449,6 +477,30 @@ class FinanceGate(CodedTool):
             "has_profitable_ride": has_profitable_ride,
             "num_guests":          self._int(proposal.get("num_guests", 0)),
         }
+
+    # Tier ladder, cheapest first. Yellow is owned from the start, so a research
+    # run is always aimed at the first of these a subtype has not reached yet.
+    _TIER_ORDER: ClassVar[tuple[str, ...]] = ("blue", "green", "red")
+
+    @classmethod
+    def _next_tier(cls, available_entities: Any, topics: Any) -> str:
+        """The tier the next unlock will actually buy, for pricing the run.
+
+        Replaces the LLM-supplied `target_tier`, which defaulted to "blue" and so
+        priced a green run at half its points and a red run at a quarter — the gate
+        then approved runs the runway could never finish. Research runs breadth
+        first, so with several topics listed the FIRST unlock is the lowest tier
+        any of them is still missing; that is the one the budget has to cover.
+        Falls back to "blue" when the unlock ledger is unavailable.
+        """
+        if not isinstance(available_entities, dict) or not available_entities:
+            return cls._TIER_ORDER[0]
+        names = [str(t).lower().strip() for t in topics] if isinstance(topics, list) else []
+        wanted = [n for n in names if n in available_entities] or list(available_entities)
+        for tier in cls._TIER_ORDER:
+            if any(tier not in (available_entities.get(n) or []) for n in wanted):
+                return tier
+        return cls._TIER_ORDER[-1]  # everything listed is already at red
 
     @staticmethod
     def _scan_food_or_atm(placed_shops: Any) -> bool:

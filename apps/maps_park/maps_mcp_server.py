@@ -43,25 +43,14 @@ from pydantic import BaseModel
 
 # ── Observation helper (adapted from first_agent.py) ─────────────────────────
 
-def make_concise_obs(obs) -> dict:
+def make_concise_obs(obs, research_progress: dict | None = None) -> dict:
     """
     Build the observation dict sent to agents.
 
-    Every derived field below hangs off one BFS: the path tiles reachable from
-    the entrance. Guests walk only that component, so it decides what can earn.
-
-      valid_placement_coords — empty tiles 4-directionally adjacent to a
-        REACHABLE path tile. The buildable set; anything placed here can earn.
-      unreachable_tiles — empty tiles beside a path island the guests never hit.
-        The env accepts a build (they ARE path-adjacent) but no guest ever
-        arrives, so these buy capacity, never revenue. Disjoint from the above.
-      water_adjacent — the subset of valid_placement_coords touching water, as
-        {x, y, water}, where `water` is the +1-excitement-per-adjacent-tile
-        bonus (it stacks). Sorted best first.
-      rides/shops entries — each stamped with `reachable`. The two tile lists
-        cover only EMPTY tiles, so once a tile is built on nothing else says
-        whether that asset can earn: a stranded ride reads $0 exactly like a
-        brand-new one.
+    Pre-computes valid_placement_coords: empty tiles 4-directionally adjacent
+    to path tiles that are REACHABLE FROM THE ENTRANCE (connected component).
+    This prevents agents from placing entities on disconnected islands where
+    guests can never reach them (which would earn $0 revenue forever).
     """
     d = obs.model_dump() if hasattr(obs, "model_dump") else obs
     park_size = 20
@@ -104,7 +93,7 @@ def make_concise_obs(obs) -> dict:
                     reachable.add(nb)
                     frontier.append(nb)
 
-    # Stamp reachability on each PLACED ride/shop. free_tiles/unreachable_tiles
+    # Stamp reachability on each PLACED ride/shop. reachable_tiles/unreachable_tiles
     # only ever list EMPTY tiles, so once a tile is built on nothing tells the
     # agent whether that asset can earn ($0 profit reads the same on a stranded
     # ride and a brand-new one). An asset earns only if it touches a path tile
@@ -164,11 +153,13 @@ def make_concise_obs(obs) -> dict:
         "horizon":                 d.get("horizon"),
         "money":                   d.get("money"),
         "value":                   d.get("value"),
+        "profit":                  d.get("profit"),   # the day's revenue - expenses
         "park_rating":             d.get("park_rating"),
         "available_entities":      d.get("available_entities"),
         "research_speed":          d.get("research_speed"),
         "research_topics":         d.get("research_topics"),
         "research_operating_cost": d.get("research_operating_cost"),
+        "research_progress":       research_progress,
         "entrance":                d.get("entrance"),
         "exit":                    d.get("exit"),
         "valid_placement_coords":  [[x, y] for x, y in valid_placements],
@@ -232,6 +223,34 @@ class GameManager:
             f"initialised. Layout={self.layout}, difficulty={self.difficulty}"
         )
 
+    def _research_progress(self) -> dict | None:
+        """Exact points left on the tier research is grinding right now.
+
+        The pydantic observation carries only speed/topics, so agents could
+        never see partial progress and had to reconstruct an ETA from the
+        days-since-last-unlock counters (which the sim zeroes on every unlock,
+        so spilled points went uncounted). The real numbers live in the full
+        state; one extra localhost GET per step buys an exact ETA.
+
+        None when research is off or every listed topic is fully unlocked --
+        the sim leaves current_entity undefined in both cases.
+        """
+        try:
+            state = (self.game.get_raw_state() or {}).get("state") or {}
+        except Exception as e:                     # backend hiccup must not kill the step
+            print(f"[MAPs Server] WARN: research progress unavailable: {e}")
+            return None
+        entity = state.get("research_current_entity")
+        if not entity:
+            return None
+        color = state.get("research_current_color")
+        buckets = state.get("research_unresearched_entities") or {}
+        return {
+            "current_entity":   entity,
+            "current_color":    color,
+            "points_remaining": ((buckets.get(entity) or {}).get("progress") or {}).get(color),
+        }
+
     def step(self, action_str: str) -> dict:
         self.obs, reward, terminated, truncated, info = self.game.step(action_str)
         self.step_count += 1
@@ -242,7 +261,7 @@ class GameManager:
         if isinstance(info, dict) and "error" in info:
             error = info["error"]
 
-        concise = make_concise_obs(self.obs)
+        concise = make_concise_obs(self.obs, self._research_progress())
 
         status = "✗ REJECTED" if error else f"✓ reward={float(reward):+.0f}"
         print(
@@ -294,7 +313,7 @@ class GameManager:
             self.close()
             self.episode_count += 1
             self.start()
-            new_concise = make_concise_obs(self.obs)
+            new_concise = make_concise_obs(self.obs, self._research_progress())
 
             print(
                 f"[MAPs Server] Park {self.slot_index} episode {completed_episode + 1} "
@@ -339,7 +358,7 @@ class GameManager:
             "park_index":  self.slot_index,
             "episode":     self.episode_count,
             "step":        self.step_count,
-            "observation": make_concise_obs(self.obs),
+            "observation": make_concise_obs(self.obs, self._research_progress()),
             "message":     f"Initial observation for park slot {self.slot_index}. No action taken yet.",
         }
 
