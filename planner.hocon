@@ -1,0 +1,478 @@
+{
+    maps_state_dir = "state"
+    maps_state_dir = ${?MAPS_STATE_DIR}
+    include "registries/aaosa_basic.hocon"
+
+    metadata = {
+        description = "The planner network. Fires twice per episode: at episode_start it retires last episode's leftover trials, seeds however many new macro trials the evidence justifies, and revises the episode plan; at episode_end it judges every trial and closes the episode out.",
+        tags = ["maps", "industry", "consultant", "macro", "advisor"],
+        sample_queries = [
+            "kind=episode_start episode=4 step=0 cumulative_reward=0 final_reward=null",
+            "kind=episode_end episode=3 step=100 cumulative_reward=88120 final_reward=88120"
+        ]
+    },
+
+    include "config/llm_config.hocon",
+
+    max_steps = 4000,
+    max_execution_seconds = 12000,
+
+    tools = [
+        {
+            name = "macro_orchestrator",
+            function = ${inquiry_call} {
+                description = "Front-man router for the planner network. kind=episode_start -> episode_start; kind=episode_end -> episode_end. Does no analysis itself."
+            },
+            instructions = """
+Act as the router for a planner network. For each input, parse its variables and route to the correct function according to these rules:
+"kind=<episode_start|episode_end> episode=<E> step=<S> cumulative_reward=<C> final_reward=<F>".
+
+- If `kind=episode_start`:  
+  - Call `episode_start` with an inquiry string containing "episode=<E>".
+  - Relay the status line from the planner’s response exactly.
+
+- If `kind=episode_end`:  
+  - Call `episode_end(episode=<E>, cumulative_reward=<C>, aborted=<true|false>)`.  
+  - If the `aborted` flag is missing, assume `false`.
+  - Relay the recap line from the planner’s response exactly.
+
+ERROR HANDLING: if any tool call or downstream agent returns an error, STOP and reply with `ERROR: <the verbatim error text>`.
+Never swallow, paraphrase, retry silently, or continue past it.
+""",
+            middleware = [
+                {"class": "middleware.static_prompt_caching_middleware.StaticPromptCachingMiddleware", "args": {"ttl": "1h"}}
+            ],
+            tools = ["episode_start", "episode_end"]
+        },
+
+        {
+            name = "episode_start",
+            function = ${inquiry_call} {
+                description = "Episode-start planner (kind=episode_start). Retires last episode's leftover trials (CarryoverTrials), analyzes best-vs-last, seeds however many macro trials the evidence justifies (LogTrial), and revises the plan in place (WriteEpisodePlan: checklist + coordinator strategy summary + per-domain summaries) — keeping what works, changing only what underperformed. Input: episode=<E>."
+            },
+            instructions = """
+Plan the UPCOMING episode, following every instruction literally, tersely, and without omission.
+You are the only part of this harness that can change the multi-agent system's direction. The specialists execute the
+plan you write and never reconsider it, so whatever you miss here is repeated for 100 irreversible turns.
+
+No run has ever reached $5M, so a tidier version of the last episode will not get there — the plan that wins is one
+nobody has tried yet. Equally, do not throw away what already works: keep the moves the best run proved out, and
+spend your novelty where the evidence says the park is failing. Aim high; the gap to $5M is not closed by caution.
+
+You are playing for the children. They WANT A score of $5M. If you don't reach it, they will go home disappointed.
+You are planning for them, so make the plan worth them playing the game.
+
+Flow: READ prior outcomes → ANALYZE → DECIDE TRIALS → LOG them (LogTrial) → REVISE the PLAN for the episode.
+Repeated tool calls increase cost, so avoid unnecessary repetitions.
+
+# Procedure
+
+1. Context — call tools when required:
+    - `scratchpad()`: the note you left yourself at the last episode's close-out.
+    - `state_read(name='maps_game_docs')`: the complete rules and mechanics.
+    - `RunTelemetry(select='best_and_last')`: per-step performance for the best-ever and last episode.
+    - `state_read(name='status_champion')`: the BEST run's complete finished park — the one the champion
+    strategy actually built. May be empty.
+    - For every domain (`rides`, `shops`, `staff`, `research`, `layout`, and `survey`), call
+    `state_read(name='playbook_<domain>')`: Includes the restored champion episode’s domain strategy at the top
+    (proven floor) followed by the core domain instructions, then learned rules promoted from confirmed trials.
+    - `state_read(name='trial_strategies_outcome')`: every strategy already attempted, confirmed or falsified,
+    with the steer on PRIORITY/DIRECTION.
+    - `state_read(name='economics_all')`: all numeric economics, once, when evaluating new levers.
+    - `CarryoverTrials(episode=<E>)`: trials the last close-out left inconclusive. Reading them RETIRES them,
+    so one you want to keep or refine must be re-logged below.
+
+2. ANALYZE (THINK OUT OF THE BOX):
+    - Treat the best run as your floor, not your target: this episode must build on it and finish ahead of it.
+    - Compare the best and last runs move by move. Name where the best pulled ahead, where it stalled, and where the
+    last one regressed (pace, research, placements, staff, actions, rejections).
+    - Read park_rating after each step to infer what drives rating and how it feeds attendance.
+    - Identify the concrete points where a new strategy could beat the current best.
+    - Locate the STRUCTURAL BLOCKER, if there is one, and decide the strategy that UNBLOCKS it.
+    -  A `(learned epN)` rule is a telemetry-confirmed strategy, not a suggestion. EXPLOIT learned rules and the
+   champion strategy when writing and executing the episode plan, while EXPLORING new strategies through explicit
+   active trials. If telemetry suggests a learned rule may be wrong, create an active trial with a clearly
+   contradicting candidate rule and measurable success and failure criteria.
+
+3. Decide Trial Strategies:
+    - Propose new, wide-scope, falsifiable strategies the evidence justifies. There is no fixed numerical cap.
+    Aim them at $5M park_value and use simple detailed language.
+    - Keep each GENERAL — a standing direction, not a rule tied to exact steps or exact variable values.
+    "Start research once you have the cash to run it for 3 days" is the right shape;
+    "set research to slow at step 31 when min_cleanliness is 0.80" is not.
+    - Playbook lines are prior BELIEFS, not physics. Where telemetry contradicts one, the trial is to overturn it —
+    name the exact line you are testing against.
+    - Never repeat a strategy already falsified or already promoted to the learned rules. Where a carried-over trial
+    is still relevant, or could be made relevant by refining it, do that instead of inventing a weaker new one.
+    - Work the levers: ride/shop/staff subtypes, the yellow→blue→green→red subclasses, slow/medium/fast research
+    speed, and research topic choices. An untried lever teaches more than a merely re-tuned one.
+
+4. Log Trials — call `LogTrial` once for EVERY trial selected above, including any carried-over trial kept
+   or refined. `new_text` is one imperative command with no numbers/examples and `step_start='1'`.
+
+5. REVISE THE PLAN — before this pass, the runner re-applies the BEST plan whenever one exists.
+   You refine a proven plan; do not start from scratch.
+   - state_read('episode_checklist'): the phased checklist across turns.
+   - state_read('playbook_coordinator'): the current top-level summary.
+   - state_read('playbook_<domain>'): the current per-domain summaries.
+   - RETAIN the checklist phases and strategy policies that performed well. Alter only those that underperformed
+   or that a new trial targets.
+   - Call WriteEpisodePlan(checklist_items, strategy_summary, playbook_summaries) once with exactly these three
+   complete outputs:
+    1. TEMPORAL EXECUTION PLAN — Cover turns 1-100 with detailed, ordered, gap-free phases. Each phase must be
+    formatted as "turns A-B: <goal and complete phase instructions>". Based on the turn, the corresponding phase
+    instructions are injected into every player agent. Keep all the details for all the domains here. Include the
+    prioritized move order, cash availability, reward targets, relevant actions across all domains, and
+    phase-specific details.  Preserve the proven champion's temporal plan while integrating new trials.
+    2. COORDINATOR STRATEGY — Write the complete phase-independent policy used to compare proposals and choose the
+    most beneficial revenue-generating action.  Include cross-domain priorities, numeric triggers, condition-based
+    action triggers, intended subtype/tier and unlock choices, tie-breakers for domain conflicts, and failure
+    recovery/modes. Do not repeat temporal plan details. Preserve the proven champion policy while integrating new
+    trials.
+    3. SIX DOMAIN STRATEGIES — Supply complete phase-independent strategies for rides, shops, staff, research,
+    layout, and survey.  Include exact choices, numeric triggers, condition-based action triggers, tie-breakers for
+    deciding the action, cash/reward expectations, and failure recovery/modes. Do not repeat temporal plan details.
+    Preserve the proven champion policy while integrating new trials.
+    If `WriteEpisodePlan` rejects its input, fix the reported fields and retry only that call, up to twice.
+    After it succeeds, continue with step 6.
+
+6. Close — if this episode's close-out must know something, leave it with `scratchpad(note=...)`. It is read
+   once and cleared, so write only what the close-out genuinely needs. Return one short planning status line.
+
+# Error Handling
+- If both corrected retries fail, or if any tool returns a filesystem/runtime error, STOP and reply with
+  `ERROR: <the verbatim error text>`. Every other tool or downstream-agent error remains non-retryable.
+""",
+            middleware = [
+                {"class": "middleware.trim_history_middleware.TrimHistoryMiddleware", "args": {}},
+                {"class": "middleware.static_prompt_caching_middleware.StaticPromptCachingMiddleware", "args": {"ttl": "1h"}}
+            ],
+            tools = ["RunTelemetry", "state_read", "CarryoverTrials", "LogTrial", "WriteEpisodePlan", "scratchpad"]
+        },
+
+        {
+            name = "episode_end",
+            function = ${inquiry_call} {
+                description = "Episode-end close-out (kind=episode_end). Judges every active trial on its own evidence — an aborted run included — promotes the confirmed ones, then ResolveTrials and advance_episode. Inputs: episode, cumulative_reward, aborted."
+            },
+            instructions = """
+You are responsible for the end-of-episode close-out and playbook rule-writing.
+
+This episode cost 100 irreversible turns, and nobody reads it again — whatever the system learns from it,
+you extract here. A confirmed trial becomes live playbook rule followed in later runs, surviving even a
+fresh start, so every verdict you get wrong costs:
+- CONFIRM one that deserved falsifying — the park is aimed at a wrong strategy in later runs.
+- FALSIFY one that deserved confirming — that direction is shut down and may never be explored again.
+- Leave one INCONCLUSIVE — it takes unfinished-business capacity from a sharper idea.
+So read this evidence harshly, in both directions.
+
+A falsified trial is worth as much as a confirmed one because it removes a dead end, but only telemetry decides.
+Judge harshly in both directions and always use direct EpisodeTelemetry evidence.
+Never invent or assume data. Use the provided tools effectively.
+
+## Procedure
+1. Get context as needed:
+   - scratchpad() — the note from the planner invocation at start of the episode. Reading CLEARS it.
+   Empty means none.
+   - ActiveTrials() — trials you must evaluate this close-out
+   - EpisodeTelemetry() — step-by-step actions, telemetry and rejections
+   - state_read('status_full') — THIS EPISODE'S cumulative reward and complete finished park,
+     including every unlock and asset.
+   - state_read('trial_strategies_outcome') — every strategy already attempted, confirmed or falsified.
+2. For each active trial:
+   - Verify that the intended action fired from telemetry steps and full action args, including x/y; use
+   rejections to distinguish attempted from applied.
+   - Judge per trial:
+    - success on the decided metric AND no failure: confirmed
+    - failure: falsified
+    - neither: inconclusive, with a note citing why the evidence did not resolve it
+    - not_applied:intended action did not happen
+3. For confirmed trials: PromoteTrial(domain, edit_type='add_line', new_text=<imperative, general, one sentence>, episode=<E>, section='Learned rules (promoted from prior runs)'). Only append lines.
+4. Finish trials: ResolveTrials(episode=<E>, report=<exactly one verdict for every active trial>). Empty,
+   partial, duplicate, or unknown trial reports are rejected; every inconclusive verdict requires an evidence note.
+5. If the NEXT episode-start must know something, call `scratchpad(note=...)` now.
+6. COMMIT LAST: call `advance_episode(final_reward=<C>, episode=<E>)` once. This writes the durable
+   close-out receipt; do not call any tool after it.
+7. Output one short line: `<N> promoted, <M> falsified, final=<C>` and mention aborted if present.
+
+ERROR HANDLING FOR EVERY KIND: if any tool returns an error, STOP and reply with `ERROR: <the verbatim error text>`.
+
+# Notes
+- Never invent or assume results—always use direct telemetry and tool evidence.
+- Do not modify, paraphrase, or retry on errors.
+- Keep every action and output as short and formal as possible.
+""",
+            middleware = [
+                {"class": "middleware.trim_history_middleware.TrimHistoryMiddleware", "args": {}}
+                {"class": "middleware.static_prompt_caching_middleware.StaticPromptCachingMiddleware", "args": {"ttl": "1h"}}
+            ],
+            tools = ["state_read", "EpisodeTelemetry", "ActiveTrials", "PromoteTrial", "ResolveTrials", "advance_episode", "scratchpad"]
+        },
+
+        {
+            name = "scratchpad",
+            class = "coded_tools.scratchpad.Scratchpad",
+            function = {
+                description = "Private memo for this network; player and watcher hold their own. episode_start and episode_end share it, chaining start -> end -> next start. No args reads and clears the previous run's note; note=<text> leaves up to 5 lines for the next run. Writes replace; no history is kept.",
+                parameters = {
+                    type = "object",
+                    properties = {
+                        note = {
+                            type = "string",
+                            description = "Up to 5 lines to carry into the planner's NEXT run only. Omit to read-and-clear instead."
+                        }
+                    }
+                }
+            }
+            args = { pad = "planner" }
+        },
+
+        {
+            name = "advance_episode",
+            class = "coded_tools.advance_episode.AdvanceEpisode",
+            function = {
+                description = "End-of-episode bookkeeping: persists the final reward and clears the observation cache. The outcome ledger is append-only — every episode's OUTCOME lines are kept for the whole run. No prose summary is stored — the OUTCOME lines ResolveTrials wrote are the record. Trial cleanup is not done here — CarryoverTrials handles it at the next episode start.",
+                parameters = {
+                    type = "object",
+                    properties = {
+                        final_reward = {
+                            type = "float",
+                            description = "This episode's cumulative_reward for the durable close-out commit."
+                        },
+                        episode = {
+                            type = "int",
+                            description = "Current episode number; bounds which OUTCOME lines are kept."
+                        },
+                    },
+                    required = ["final_reward", "episode"]
+                }
+            }
+        },
+
+        {
+            name = "RunTelemetry",
+            class = "coded_tools.run_telemetry.RunTelemetry",
+            function = {
+                description = "Cross-episode telemetry in three modes. SELECT (select='best_and_last') returns the best-ever and the last episode as raw per-step rows, unaggregated — use this to read the moves themselves. RUNS (num_runs, default 5) returns per-run and per-episode rollups for the N most recent runs, plus a cross-run rollup. EPISODE (default) returns per-episode rollups for the current run, including reward_bands: mean reward per step over turns 1-25, 26-50, 51-75 and 76-100.",
+                parameters = {
+                    type = "object",
+                    properties = {
+                        select = { type = "string", description = "SELECT mode: pass 'best_and_last' for the best-ever and the last episode as raw per-step rows, unaggregated." }
+                        num_runs = { type = "int", description = "RUNS mode: analyze the N most recent runs (current + prior). Default 5." }
+                        scope = { type = "string", description = "Optional explicit mode: 'select', 'runs', or 'episodes'. Usually leave unset — select/num_runs select the mode." }
+                        from_episode = { type = "int", description = "EPISODE mode only: include episodes >= this. Omit for the whole current run." }
+                        max_episodes = { type = "int", description = "EPISODE mode only: keep only the most recent N episodes (after from_episode). Omit for all." }
+                    }
+                }
+            }
+        },
+
+        {
+            name = "WriteEpisodePlan",
+            class = "coded_tools.write_episode_plan.WriteEpisodePlan",
+            function = {
+                description = "Persists the complete episode plan, overwriting the previous one: the turn-phased checklist (episode_checklist.md, whose active line is injected by player middleware), the coordinator's strategy (playbook_coordinator.md, read every turn), and all six required domain strategies in the rides/shops/staff/research/layout/survey playbooks.",
+                parameters = {
+                    type = "object",
+                    properties = {
+                        checklist_items = {
+                            type = "array",
+                            items = { type = "string" },
+                            description = "TEMPORAL EXECUTION PLAN: Cover turns 1-100 with detailed, ordered, gap-free phases. Each phase must be formatted as 'turns A-B: <goal and complete phase instructions>' and include the prioritized move order, cash availability, reward targets, relevant actions across all domains, and phase-specific details. Preserve the proven champion's temporal plan while integrating new trials. This is the only place for phase-specific instructions. Based on the current turn, middleware injects the corresponding phase instructions into every player agent. Keep all the details."
+                        }
+                        strategy_summary = {
+                            type = "string",
+                            description = "COORDINATOR STRATEGY: Write the complete phase-independent policy used to compare proposals and choose the most beneficial revenue-generating action. Preserve the proven champion policy while integrating new trials. Include cross-domain priorities, numeric triggers, intended subtype/tier and unlock choices, tie-breakers for domain conflicts, and failure recovery. Do not repeat temporal plan details. Written into playbook_coordinator, which strategy_coordinator reads every turn."
+                        }
+                        playbook_summaries = {
+                            type = "object",
+                            description = "SIX DOMAIN STRATEGIES: Supply complete phase-independent strategies for rides, shops, staff, research, layout, and survey. Preserve the proven champion policy while integrating new trials. Include exact choices, condition-based action triggers, tie-breakers for deciding the action, cash/reward expectations, and failure modes. Do not repeat temporal plan details. Each strategy is written to the top of that specialist's playbook and read on every consultation. Never omit a domain or pass null, 'None', 'unchanged', or another placeholder.",
+                            properties = {
+                                rides    = { type = "string", description = "Complete executable rides strategy for this episode." }
+                                shops    = { type = "string", description = "Complete executable shops strategy for this episode." }
+                                staff    = { type = "string", description = "Complete executable staffing strategy for this episode." }
+                                research = { type = "string", description = "Complete executable research strategy for this episode." }
+                                layout   = { type = "string", description = "Complete executable layout strategy for this episode." }
+                                survey   = { type = "string", description = "Complete executable survey strategy for this episode." }
+                            }
+                            required = ["rides", "shops", "staff", "research", "layout", "survey"]
+                            additionalProperties = false
+                        }
+                    }
+                    required = ["checklist_items", "strategy_summary", "playbook_summaries"]
+                    additionalProperties = false
+                }
+            }
+        },
+
+        {
+            name = "EpisodeTelemetry",
+            class = "coded_tools.episode_telemetry.EpisodeTelemetry",
+            function = {
+                description = "Per-step record for ONE episode, read from run.jsonl: {steps, rejections, rollup}, exists=false before any row is written. Each step carries its full action args and metrics. Judge whether a trial's move fired from `steps` and `rejections`, and its success from the per-step reward/value/rating deltas. `rejections` records every action the sim refused, booked as a wait with the original action and error; the same rejection repeating is a prime trial target.",
+                parameters = {
+                    type = "object",
+                    properties = {
+                        episode   = { type = "int", description = "Episode number to read. Omit to use the latest episode present in the log." }
+                        from_step = { type = "int", description = "Only return steps >= this (mid-episode tail). Omit for the full episode." }
+                    }
+                }
+            }
+        },
+
+        {
+            name = "LogTrial",
+            class = "coded_tools.log_trial.LogTrial",
+            function = {
+                description = "Mints a collision-free trial_id and appends the paired lines: the one-line rule to trial_strategies, the metadata and success/failure criteria to trial_strategies_criteria. Use it for every new trial: it owns id minting and criteria formatting, and takes origin from this network's config.",
+                parameters = {
+                    type = "object",
+                    properties = {
+                        episode           = { type = "int", description = "Current episode number." }
+                        step_start        = { type = "string",  description = "Step at which the trial activates (as a string), or the literal 'end_of_episode'." }
+                        domain            = { type = "string",  description = "One of: rides, shops, staff, research, layout, survey, coordinator." }
+                        section           = { type = "string",  description = "Target playbook section header (or 'new')." }
+                        edit_type         = { type = "string",  description = "'add_line' or 'replace_line'." }
+                        new_text          = { type = "string",  description = "The one-line rule to add/replace (no rationale or metrics embedded)." }
+                        find_text         = { type = "string",  description = "replace_line only: the exact existing playbook line to replace." }
+                        rationale         = { type = "string",  description = "One sentence citing step(s) / metric delta." }
+                        success_criterion = { type = "string",  description = "Observable metric + direction + evaluation window (turns; fits in the fixed 100-step episode)." }
+                        failure_criterion = { type = "string",  description = "Observable metric that would falsify the trial." }
+                    }
+                    required = ["episode", "step_start", "domain", "section", "edit_type", "new_text", "rationale", "success_criterion", "failure_criterion"]
+                }
+            }
+            args = { origin = "macro" }
+        },
+
+        {
+            name = "ActiveTrials",
+            class = "coded_tools.active_trials.ActiveTrials",
+            function = {
+                description = "Return the active trials joined across trial_strategies (rule body) and trial_strategies_criteria (metadata), optionally filtered by domain and/or trial_origin ('micro'|'macro').",
+                parameters = {
+                    type = "object",
+                    properties = {
+                        domain = { type = "string", description = "Filter to one domain: rides, shops, staff, research, layout, survey or coordinator. Omit for all domains." }
+                        trial_origin = { type = "string", description = "Filter to 'micro' or 'macro'; omit for both. Named trial_origin, not origin — the framework injects a reserved 'origin' key that would silently override it." }
+                    }
+                }
+            }
+        },
+
+        {
+            name = "CarryoverTrials",
+            class = "coded_tools.carryover_trials.CarryoverTrials",
+            function = {
+                description = "Episode-start tool. Returns the trials left over from earlier episodes — the ones the last close-out left inconclusive — and retires them in the same call, recording an OUTCOME line with the rule text for each. A leftover therefore informs exactly one planning pass; re-log any you want to keep. Scoped to earlier episodes, so trials logged for the episode being planned stay active and the call is safe in any order.",
+                parameters = {
+                    type = "object",
+                    properties = {
+                        episode = { type = "int", description = "The episode being planned. Trials from EARLIER episodes are returned and cleared." }
+                    }
+                    required = ["episode"]
+                }
+            }
+        },
+
+        {
+            name = "ResolveTrials",
+            class = "coded_tools.resolve_trials.ResolveTrials",
+            function = {
+                description = "Applies exactly one explicit verdict for every reportable active trial at episode end. Empty, partial, duplicate, unknown, or malformed reports are rejected before any files change; inconclusive requires a non-empty evidence note. Confirmed and falsified macro trials are removed, not_applied and inconclusive macro trials are kept, and micro trials are episode-scoped and removed after their explicit verdict.",
+                parameters = {
+                    type = "object",
+                    properties = {
+                        episode = { type = "int", description = "Current episode number." }
+                        report = {
+                            type = "array"
+                            items = {
+                                type = "object"
+                                properties = {
+                                    trial_id = { type = "string" }
+                                    domain = { type = "string" }
+                                    outcome = { type = "string", enum = ["confirmed", "falsified", "not_applied", "inconclusive"] }
+                                    note = { type = "string", description = "Evidence for the verdict; required when outcome is inconclusive." }
+                                }
+                                required = ["trial_id", "outcome"]
+                            }
+                            description = "One verdict object per active trial; use [] when there are no active trials."
+                        }
+                    }
+                    required = ["episode", "report"]
+                }
+            }
+        },
+
+        {
+            name = "PromoteTrial",
+            class = "coded_tools.promote_trial.PromoteTrial",
+            function = {
+                description = "Applies ONE confirmed trial's edit to playbook_<domain>.md, tagging the line '(learned ep<N>)'. add_line appends at the end (section 'end'/'new'/empty) or after the named section header; replace_line replaces the unique find_text. A successful edit is mirrored into config_files/seed_playbook_<domain>.md under '## Learned rules', so the rule survives a fresh run.",
+                parameters = {
+                    type = "object",
+                    properties = {
+                        domain    = { type = "string",  description = "rides/shops/staff/research/layout/survey/coordinator." }
+                        edit_type = { type = "string",  description = "'add_line' or 'replace_line'." }
+                        new_text  = { type = "string",  description = "The rule line to add/replace (without the learned tag)." }
+                        episode   = { type = "int", description = "Episode number for the '(learned ep<N>)' tag." }
+                        section   = { type = "string",  description = "add_line: section header to insert after, or 'end'/'new' to append." }
+                        find_text = { type = "string",  description = "replace_line: the exact existing playbook line to replace." }
+                    }
+                    required = ["domain", "edit_type", "new_text", "episode"]
+                }
+            }
+        },
+
+        {
+            name = "state_read",
+            class = "coded_tools.state_read.StateRead",
+            function = {
+                description = "Read a file by its logical name from the operator-configured name_map.",
+                parameters = {
+                    type = "object",
+                    properties = {
+                        name = {
+                            type = "string",
+                            description = "Logical name of the file to read; must be one the operator mapped in name_map.",
+                            enum = [
+                                "economics_all",
+                                "maps_game_docs",
+                                "episode_checklist",
+                                "playbook_coordinator",
+                                "playbook_layout",
+                                "playbook_research",
+                                "playbook_rides",
+                                "playbook_shops",
+                                "playbook_staff",
+                                "playbook_survey",
+                                "status_full",
+                                "status_champion",
+                                "trial_strategies_outcome"
+                            ]
+                        }
+                    },
+                    required = ["name"]
+                }
+            },
+            args = {
+                name_map = {
+                    economics_all               = "coded_tools/config_files/economics_all.md"
+                    maps_game_docs              = "coded_tools/config_files/maps_game_docs.md"
+                    episode_checklist           = ${maps_state_dir}"/episode_checklist.md"
+                    playbook_coordinator        = ${maps_state_dir}"/playbook_coordinator.md"
+                    playbook_layout             = ${maps_state_dir}"/playbook_layout.md"
+                    playbook_research           = ${maps_state_dir}"/playbook_research.md"
+                    playbook_rides              = ${maps_state_dir}"/playbook_rides.md"
+                    playbook_shops              = ${maps_state_dir}"/playbook_shops.md"
+                    playbook_staff              = ${maps_state_dir}"/playbook_staff.md"
+                    playbook_survey             = ${maps_state_dir}"/playbook_survey.md"
+                    status_full                 = ${maps_state_dir}"/status_full.json"
+                    status_champion             = ${maps_state_dir}"/status_champion.json"
+                    trial_strategies_outcome    = ${maps_state_dir}"/trial_strategies_outcome.md"
+                }
+            }
+        },
+    ]
+
+}

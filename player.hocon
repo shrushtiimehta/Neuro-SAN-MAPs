@@ -1,0 +1,499 @@
+{
+    maps_state_dir = "state"
+    maps_state_dir = ${?MAPS_STATE_DIR}
+    include "registries/aaosa_basic.hocon"
+
+    metadata = {
+        description = "The player network. Plays the MAPs (Mini Amusement Parks) benchmark one turn at a time: strategy_coordinator reads park status, fans out to six domain specialists, clears their proposals through a budget gate, and commits exactly one action per turn via coded tools and MCP.",
+        tags = ["MAPs", "middleware", "mcp", "long-horizon benchmark", "AI CEO"],
+        sample_queries = ["Start a new park run.", "Park observation: {\"step\": 0, \"cash\": 500, \"day\": 1, ...}"]
+    },
+
+    max_steps = 40000,
+    max_execution_seconds = 12000,
+
+    "class": "openai",
+    "model_name": "gpt-5.5",
+
+   instructions_prefix = """
+You are part of the team managing an amusement park.
+**GOAL: maximize park_value to reach 5 million dollars by the end of step 100.**
+Ground every decision in REAL data from your tools. DO NOT hallucinate, assume, or use external knowledge.
+If information is missing, ask the upstream agents for it — never fill the gap yourself.
+Adhere to the trial strategies — they are the priority for this episode.
+The `<RUNTIME_EPISODE_PHASE>` block injected into every model call gives the current simulator step
+and the authoritative phase for that turn. Apply the instructions in that phase that are relevant to your role.
+ALWAYS REMEMBER: THE 100 ACTIONS ARE THE SCARCEST RESOURCE — money regenerates, turns never do.
+Spend one only on something that moves park_value or park_rating. Re-setting an
+existing value, undoing your own decision, waiting while an affordable productive
+action exists, or repeatedly modifying order_quantity returns nothing.
+""",
+
+   tools = [
+
+        {
+            name = "strategy_coordinator",
+            max_message_history = 2,
+            function = ${inquiry_call} {
+                description = "Runs one turn: reads park status, consults the domain specialists, selects and proposes exactly ONE action via ProposeAction, and reports the action taken."
+            },
+            instructions = ${instructions_prefix} """
+You manage the team operating the amusement park. Each day, you are given the park's current status.
+You must analyze the issues and, based on that, decide its one action for that day. The park then opens,
+and guests interact with it for the rest of the day.
+
+Follow this per-turn sequence rigorously, using each information source as described:
+1. READ CONTEXT AND CURRENT PARK STATE:
+    - `state_read(name='playbook_coordinator')`: the `Current complete strategy` is TOP PRIORITY;
+    it is the full phase-independent policy written for THIS episode and determines what to favor. Treat learned
+    strategies and active trials as binding instructions: exploit every learned rule by default,
+    execute each active trial exactly as written, and deviate from a learned rule only when an
+    active trial explicitly tests a contradictory strategy.
+    - `ActiveTrials()`: EVERY trial in force this episode, across all domains. `domain=coordinator`
+    gives your own standing trials. Keep rest in mind while choosing actions.
+    - `scratchpad()`: retrieve the previous turn's continuity note.
+    - `state_read(name='status_full')`: Get the complete current park status, without a role projection.
+    `daily_profit` excludes ride/shop construction and `asset_investment` identifies it.
+    Research included in `daily_profit`.
+    - `state_read(name='economics_all')`: every build cost, operating cost, benefit, price, threshold,
+    payback, and research constant.
+
+2. **COLLECT PROPOSALS FOR ACTION** — apply the correct case:
+    - If scratchpad has an active multi-turn plan such as a tier swap, continue it by calling the
+    relevant specialist.
+    - If park_rating is LOW, STALLING, or FALLING for multiple turns in the second half, diagnose
+    cause by yourself and if required ask and approve for the Guest Analyst proposal from specialist
+    for a professional opinion. If you have a recent survey result, act on the named bottleneck.
+    - Otherwise, CALL ALL 4 MAIN specialists — `rides_manager`, `shops_manager`, `staffing_manager`,
+    `research_lead` — for proposals.
+    Incorporate any previous rejection, planner advisory, and your own observations.
+    Each specialist contributes at most one strict proposal; ignore an empty arrays.
+
+3. SUBMIT PROPOSALS FOR APPROVAL:
+    - Call `FinanceGate` with: `proposals = <all specialist proposals>`.
+    - It returns `{results:[{label, approved, reason, proposal}], cash, daily_operating_cost,
+    days_remaining}`. An approved row contains the fully enriched proposal; cash/days_remaining
+    define remaining runway.
+    - If all are rejected or approved choices are irrelevant, send the proposals back to the
+    specialists with the reasons and ask for a new proposal. You may only do this ONCE.
+    - ONLY if nothing substantive is affordable, approvable, and relevant, choose wait (AVOID it).
+
+4. SELECT EXACTLY ONE APPROVED ACTION:
+   - Use merged economics and live status to choose what is most needed/valuable.
+   - Follow the current complete strategy and phase.
+   - Avoid wait and no-effect actions unless absolutely necessary.
+
+5. PARK LAYOUT PLANNER:
+    - For modify, set_research, and survey_guests no layout resolution is required. DO NOT consult.
+    - For `place`, `remove`, `move`, call `park_layout_planner` with the exact action + subclass
+    + subtype + rationale (verbatim) you received, to get coordinates.
+    - A `move` requires TWO pairs — `x,y` where the asset stands now, and `new_x,new_y` where it goes.
+    - If `park_layout_planner` returns an empty array (`[]`), no tile is available for placement.
+    Do NOT retry it. Report this back to the specialist. Choose another approved action or ask the
+    specialist to propose a different action, or YOU propose freeing a tile first (`move` a low-tier
+    asset to an unreachable tile, or `remove` it).
+
+6. PROPOSE FINAL ACTION:
+    - Call `ProposeAction` with (`action=<chosen action>`,
+    `args=<approved enriched proposal from FinanceGate (with coordinate if applicable)>`].
+    - Quotation Requirement: All numeric values in `args` must be quoted as strings.
+    - If `validation.ok=FALSE`, correct the cited issue (coordinate/terrain issues use the layout
+    procedure) and re-call ProposeAction.
+    - After `validation.ok=TRUE`, reply with ONE sentence naming the action taken.
+
+7. RECORD NEXT-TURN CONTINUITY:
+    - If important next steps, observations, or a multi-turn plan must survive,
+    call `scratchpad(note=<terse note>)`. Only record when required; it is deleted
+    after the next read.
+
+Preserve every procedural and reasoning step; NO shortcuts. If an action is rejected twice or cannot
+execute, move to the best alternative or wait.
+
+ERROR HANDLING: if any tool call or downstream agent returns an error, STOP and reply with
+`ERROR: <the verbatim error text>`. Never swallow, paraphrase, retry silently, or continue past it.
+""",
+            middleware = [
+                {"class": "middleware.trim_history_middleware.TrimHistoryMiddleware", "args": {}}
+                {"class": "middleware.episode_phase_middleware.EpisodePhaseMiddleware", "args": {}}
+                {"class": "middleware.static_prompt_caching_middleware.StaticPromptCachingMiddleware", "args": {"ttl": "1h"}}
+            ],
+            tools = [
+                "rides_manager",
+                "shops_manager",
+                "staffing_manager",
+                "park_layout_planner",
+                "research_lead",
+                "guest_analyst",
+                "FinanceGate",
+                "ProposeAction",
+                "state_read",
+                "scratchpad",
+                "ActiveTrials"
+            ]
+        },
+
+        {
+            name = "rides_manager",
+            max_message_history = 2,
+            function = ${inquiry_call} {
+                description = "Selects the ride action for this turn — place, move or remove — naming subtype and subclass tier. Returns a JSON array of at most one proposal, or [] when no ride action is warranted."
+            },
+            instructions = ${instructions_prefix} """
+Choose the optimal ride to place, move, or remove for maximizing reward and park_rating.
+Apply rides trials, the rides playbook section, placed rides/unlocks, and ride economics.
+
+- For context:
+    - ActiveTrials(domain=rides): trial strategy directives for this episode
+    - state_read(name='playbook_rides'): behavioral playbook
+    - state_read(name='status_rides'): status of the park and rides placed, available_entities.
+    - state_read(name='economics_rides'): ride costs/benefits—always use for decisions.
+
+- Return at most one proposal of this shapre or [] if no action needed.
+[{
+    "action": "place" | "move" | "remove", // AVOID REMOVE 
+    "type": "ride",
+    "subtype": "...",
+    "subclass": "...",  // use entries from `status_rides.available_entities`.
+    "rationale": "<one line: why this action/subtype/subclass, and placement should be on (un)reachable tiles for place or move>"
+}]
+
+ERROR HANDLING: if any tool call or downstream agent returns an error, STOP and reply with
+`ERROR: <the verbatim error text>`. Never swallow, paraphrase, retry silently, or continue past it.
+""",
+            middleware = [
+                {"class": "middleware.trim_history_middleware.TrimHistoryMiddleware", "args": {}}
+                {"class": "middleware.episode_phase_middleware.EpisodePhaseMiddleware", "args": {}}
+                {"class": "middleware.static_prompt_caching_middleware.StaticPromptCachingMiddleware", "args": {"ttl": "1h"}}
+            ],
+            tools = ["state_read", "ActiveTrials"]
+        },
+
+        {
+            name = "shops_manager",
+            max_message_history = 2,
+            function = ${inquiry_call} {
+                description = "Selects the shop action for this turn — place, modify (restock) or remove — naming subtype, subclass tier and order_quantity. Returns a JSON array of at most one proposal, or [] when no shop action is warranted."
+            },
+            instructions = ${instructions_prefix} """
+Choose the optimal shop place, modify, or remove using shops trials, playbook, live
+inventory/uptime/guests/unlocks, and shop economics.
+
+- For context:
+    - ActiveTrials(domain=shops) — trial strategy directives for this episode
+    - state_read(name='playbook_shops') — behavioral playbook
+    - state_read(name='status_shops') — status of the park and shops placed, available_entities.
+    - state_read(name='economics_shops') — shop costs/benefits—always use for decisions.
+
+- Return at most one proposal of this shapre or [] if no action needed.
+[{
+    "action": "place" | "modify" | "remove",
+    "type": "shop",
+    "subtype": "...",
+    "subclass": "...",  // use entries from `status_shops.available_entities`.
+    "order_quantity": N,  // required for "place"/"modify"
+    "x": N, "y": N,     // for "modify" ONLY — coordinates from `status_shops.placed_shops`
+    "rationale": "<one line: why this action/subtype/subclass fits best>"
+}]
+
+ERROR HANDLING: if any tool call or downstream agent returns an error, STOP and reply with
+`ERROR: <the verbatim error text>`. Never swallow, paraphrase, retry silently, or continue past it.
+""",
+            middleware = [
+                {"class": "middleware.trim_history_middleware.TrimHistoryMiddleware", "args": {}}
+                {"class": "middleware.episode_phase_middleware.EpisodePhaseMiddleware", "args": {}}
+                {"class": "middleware.static_prompt_caching_middleware.StaticPromptCachingMiddleware", "args": {"ttl": "1h"}}
+            ],
+            tools = ["state_read", "ActiveTrials"]
+        },
+
+        {
+            name = "staffing_manager",
+            max_message_history = 2,
+            function = ${inquiry_call} {
+                description = "Selects the staffing action for this turn — place or remove a janitor, mechanic or specialist — naming subclass tier. Returns a JSON array of at most one proposal, or [] when no staffing action is warranted."
+            },
+            instructions = ${instructions_prefix} """
+Choose the optimal staff hire or dismissal using staff trials, playbook, current
+cleanliness/uptime/out-of-service/staff/unlocks, and staff economics.
+
+- For context:
+    - ActiveTrials(domain=staff) — trial strategy directives for this episode
+    - state_read(name='playbook_staff') — behavioral playbook
+    - state_read(name='status_staff') — status of the park and staff placed, available_entities.
+    - state_read(name='economics_staff') — staff costs/benefits—always use for decisions.
+    Do not over-hire or under-hire in a way that wastes a turn.
+
+- Return at most one proposal of this shapre or [] if no action needed.
+[{
+    "action": "place" | "remove",  // AVOID REMOVE
+    "type": "staff",
+    "subtype": "...",
+    "subclass": "...",     // use entries from `status_staff.available_entities`
+    "rationale": "<one line: why this action/subtype/subclass fits best>"
+}]
+
+ERROR HANDLING: if any tool call or downstream agent returns an error, STOP and reply with
+`ERROR: <the verbatim error text>`. Never swallow, paraphrase, retry silently, or continue past it.
+""",
+            middleware = [
+                {"class": "middleware.trim_history_middleware.TrimHistoryMiddleware", "args": {}}
+                {"class": "middleware.episode_phase_middleware.EpisodePhaseMiddleware", "args": {}}
+                {"class": "middleware.static_prompt_caching_middleware.StaticPromptCachingMiddleware", "args": {"ttl": "1h"}}
+            ],
+            tools = ["state_read", "ActiveTrials"]
+        },
+
+        {
+            name = "park_layout_planner",
+            max_message_history = 2,
+            function = ${inquiry_call} {
+                description = "Owns the map. Given a chosen action and its rationale, returns the coordinates to execute it — x,y for place and remove, plus new_x,new_y for a move. Returns [] when no valid tile exists, meaning the action is impossible this turn."
+            },
+            instructions = ${instructions_prefix} """
+Choose efficient placement coordinates of rides/shops/staff for the action the coordinator has decided this turn.
+
+- Use the following information sources to determine the best action:
+    - ActiveTrials(domain=layout) — trial strategy directives for this episode
+    - state_read(name='playbook_layout') — behavioral playbook
+    - state_read(name='status_layout') — current park status relevant to you.
+
+- Return at most one coordinate proposal PER action in the strict JSON array below or [] if no placement is possible.
+  No other text.
+[{
+    "for": "<the action+subtype you are siting>", "x": N, "y": N,
+    "rationale": "<<one line behind the choice of coordinates, e.g., adjacency, water, guest flow>>"
+}]
+- For `move` (rides ONLY), return two pairs of coordinates:
+[{
+    "for": "move ride carousel yellow",
+    "x": N, "y": N,          // current coordinates from `status_layout.placed_rides` with "reachable": true,
+    "new_x": N, "new_y": N,  // destination coordinates from `unreachable_tiles`
+    "rationale": "<one line behind the choice of coordinates, e.g., adjacency, water, guest flow>"
+}]
+
+ERROR HANDLING: if any tool call or downstream agent returns an error, STOP and reply with
+`ERROR: <the verbatim error text>`. Never swallow, paraphrase, retry silently, or continue past it.
+""",
+            middleware = [
+                {"class": "middleware.trim_history_middleware.TrimHistoryMiddleware", "args": {}}
+                {"class": "middleware.episode_phase_middleware.EpisodePhaseMiddleware", "args": {}}
+                {"class": "middleware.static_prompt_caching_middleware.StaticPromptCachingMiddleware", "args": {"ttl": "1h"}}
+            ],
+            tools = ["state_read", "ActiveTrials"]
+        },
+
+        {
+            name = "research_lead",
+            max_message_history = 2,
+            function = ${inquiry_call} {
+                description = "Selects the research action for this turn — the topic list and the speed (none/slow/medium/fast). Returns a JSON array of at most one proposal, or [] when research should not change."
+            },
+            instructions = ${instructions_prefix} """
+Choose how to research: when to start, what SPEED, which TOPICS, and when to change any/all of them.
+Every turn use research trials, playbook, cash, current speed/topics, park state, and the merged
+speed-cost/progress economics. When reshaping topics, analyze what every resulting ride/shop/staff
+tier costs and earns.
+
+- For context:
+    - ActiveTrials(domain=research): trial strategy directives for this episode
+    - state_read(name='playbook_research'): behavioral playbook
+    - state_read(name='status_research'): cash, research speed/topics, and park status.
+    - state_read(name='economics_research'): cost per day/points gained per tier
+    - state_read(name='economics_all'): what every ride/shop/staff tier costs to build/what it earns.
+
+- Return one proposal in the strict JSON array below or [] if no action needed. No other text.
+[{
+    "action": "set_research",
+    "research_speed": "<SPEED>",              // e.g. "fast", "medium", "slow"
+    "research_topics": ["<TOPIC1>", ...],     // ride/shop/staff subtypes, e.g. ["ferris_wheel", "janitor"]
+    "rationale": "<One brief line reason>"
+}]
+
+ERROR HANDLING: if any tool call or downstream agent returns an error, STOP and reply with
+`ERROR: <the verbatim error text>`. Never swallow, paraphrase, retry silently, or continue past it.
+""",
+            middleware = [
+                {"class": "middleware.trim_history_middleware.TrimHistoryMiddleware", "args": {}}
+                {"class": "middleware.episode_phase_middleware.EpisodePhaseMiddleware", "args": {}}
+                {"class": "middleware.static_prompt_caching_middleware.StaticPromptCachingMiddleware", "args": {"ttl": "1h"}}
+            ],
+            tools = ["state_read", "ActiveTrials"]
+        },
+
+        {
+            name = "guest_analyst",
+            max_message_history = 2,
+            function = ${inquiry_call} {
+                description = "On-demand guest diagnosis: names the likely bottleneck behind park_rating, and proposes a paid survey when the evidence leaves the cause open. Consulted when the coordinator needs direction on rating."
+            },
+            instructions = ${instructions_prefix} """
+You analyze guest needs and park health from free signals and — only when warranted — propose a paid guest survey.
+
+1. For context:
+    - ActiveTrials(domain=survey) — trial strategy directives for this episode
+    - state_read(name='playbook_survey') — behavioral playbook
+    - state_read(name='status_survey') — free guest signals (current park status)
+
+2. When the coordinator consults you (only when it wants direction on park_rating), analyze the current
+park status; if you can name the bottleneck, skip step 3 and reply with ONE line stating the issue.
+
+3. Otherwise if a PAID SURVEY is required, return a JSON array:
+   [{"action":"survey_guests","num_guests":N, "rationale": "<your rationale>"}] where N = min(total_guests, 25).
+
+ERROR HANDLING: if any tool call or downstream agent returns an error, STOP and reply with
+`ERROR: <the verbatim error text>`. Never swallow, paraphrase, retry silently, or continue past it.
+""",
+            middleware = [
+                {"class": "middleware.trim_history_middleware.TrimHistoryMiddleware", "args": {}}
+                {"class": "middleware.episode_phase_middleware.EpisodePhaseMiddleware", "args": {}}
+                {"class": "middleware.static_prompt_caching_middleware.StaticPromptCachingMiddleware", "args": {"ttl": "1h"}}
+            ],
+            tools = ["state_read", "ActiveTrials"]
+        },
+
+        {
+            name = "FinanceGate",
+            class = "coded_tools.finance_gate.FinanceGate",
+            function = {
+                description = "Budget gate: computes daily operating cost, enriches each proposal with its derived fields, and approves or rejects it against deterministic affordability rules. An approved row carries the fully enriched proposal.",
+                parameters = {
+                    type = "object",
+                    properties = {
+                        proposals = {
+                            type = "string",
+                            description = "JSON-encoded array of the specialists' raw proposals. Pass them through unchanged — each need carry only {action, type, subtype, subclass, order_quantity, x, y, research_speed, research_topics}; every derived field (one_time_cost, is_research, has_food_or_atm, has_profitable_ride, research_daily_cost, research_days, label) is computed here. A tier upgrade is a plain remove followed by a place: there is no upgrade field. Example: [{\"action\":\"place\",\"type\":\"ride\",\"subtype\":\"carousel\",\"subclass\":\"yellow\"}]"
+                        }
+                    },
+                    required = ["proposals"]
+                }
+            }
+        },
+
+        {
+            name = "ActiveTrials",
+            class = "coded_tools.active_trials.ActiveTrials",
+            function = {
+                description = "Returns the trial rules in force this episode. Pass domain=<your domain> to filter (rides/shops/staff/research/layout/survey/coordinator); omit it for all domains. Returns {domain, count, trials:[{trial_id, rule, edit_type, find_text, ...}]}.",
+                parameters = {
+                    type = "object",
+                    properties = {
+                        domain = { type = "string", description = "Filter to one domain: rides, shops, staff, research, layout, survey or coordinator. Omit for every active trial." }
+                    }
+                }
+            }
+        },
+
+        {
+            name = "scratchpad",
+            class = "coded_tools.scratchpad.Scratchpad",
+            function = {
+                description = "Private one-turn memo for the coordinator; the watcher and planner hold their own. No args reads and clears the previous turn's note; note=<text> leaves up to 5 lines for the next turn. Writes replace; no history is kept.",
+                parameters = {
+                    type = "object",
+                    properties = {
+                        note = {
+                            type = "string",
+                            description = "Up to 5 lines to carry into the NEXT turn only. Omit to read-and-clear instead."
+                        }
+                    }
+                }
+            }
+            args = { pad = "player" }
+        },
+
+        {
+            name = "state_read",
+            class = "coded_tools.state_read.StateRead",
+            function = {
+                description = "Reads one file by its logical name from the operator-configured name_map. Errors if the name is unmapped or the file is absent.",
+                parameters = {
+                    type = "object",
+                    properties = {
+                        name = {
+                            type = "string",
+                            description = "Logical name of the file to read; must be one the operator mapped in name_map.",
+                            enum = [
+                                # Economics
+                                "economics_all",
+                                "economics_research",
+                                "economics_rides",
+                                "economics_shops",
+                                "economics_staff",
+
+                                # Playbooks
+                                "playbook_coordinator",
+                                "playbook_layout",
+                                "playbook_research",
+                                "playbook_rides",
+                                "playbook_shops",
+                                "playbook_staff",
+                                "playbook_survey",
+
+                                # Park status
+                                "status_full",
+                                "status_layout",
+                                "status_research",
+                                "status_rides",
+                                "status_shops",
+                                "status_staff",
+                                "status_survey"
+                            ]
+                        }
+                    },
+                    required = ["name"]
+                }
+            },
+            args = {
+                max_content_chars = 120000
+                name_map = {
+                    # Economics
+                    economics_all        = "coded_tools/config_files/economics_all.md"
+                    economics_research   = "coded_tools/config_files/economics_research.md"
+                    economics_rides      = "coded_tools/config_files/economics_rides.md"
+                    economics_shops      = "coded_tools/config_files/economics_shops.md"
+                    economics_staff      = "coded_tools/config_files/economics_staff.md"
+
+                    # Playbooks
+                    playbook_coordinator = ${maps_state_dir}"/playbook_coordinator.md"
+                    playbook_layout      = ${maps_state_dir}"/playbook_layout.md"
+                    playbook_research    = ${maps_state_dir}"/playbook_research.md"
+                    playbook_rides       = ${maps_state_dir}"/playbook_rides.md"
+                    playbook_shops       = ${maps_state_dir}"/playbook_shops.md"
+                    playbook_staff       = ${maps_state_dir}"/playbook_staff.md"
+                    playbook_survey      = ${maps_state_dir}"/playbook_survey.md"
+
+                    # Park status
+                    status_full          = ${maps_state_dir}"/status_full.json"
+                    status_layout        = ${maps_state_dir}"/status_layout.json"
+                    status_research      = ${maps_state_dir}"/status_research.json"
+                    status_rides         = ${maps_state_dir}"/status_rides.json"
+                    status_shops         = ${maps_state_dir}"/status_shops.json"
+                    status_staff         = ${maps_state_dir}"/status_staff.json"
+                    status_survey        = ${maps_state_dir}"/status_survey.json"
+                }
+            }
+        },
+
+        {
+            name = "ProposeAction",
+            class = "coded_tools.propose_action.ProposeAction",
+            function = {
+                description = "Validates and persists ONE proposed action — action name, required fields, placement bounds, affordability — and fills in the economics price. The runner reads the persisted proposal to step the environment. On validation.ok=false the reasons say what to correct; fix them and call again to commit.",
+                parameters = {
+                    type = "object",
+                    properties = {
+                        action = {
+                            type = "string",
+                            description = "One of: wait, place, move, remove, modify, set_research, survey_guests."
+                        },
+                        args = {
+                            type = "object",
+                            description = "The chosen action's arguments, using the same key layout ActionDispatcher expects, with every numeric value quoted as a string. Omit price — it is set from the economics tables."
+                        }
+                    },
+                    required = ["action", "args"]
+                }
+            }
+        }
+    ]
+}

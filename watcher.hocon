@@ -1,0 +1,201 @@
+{
+    maps_state_dir = "state"
+    maps_state_dir = ${?MAPS_STATE_DIR}
+    include "registries/aaosa_basic.hocon"
+
+    metadata = {
+        description = "The watcher network. Owns mid-episode strategic analysis WITHIN the current episode. The runner invokes this network every N successful steps (kind=periodic) — i.e. at steps 10,20,...,90 of the 100-step episode. It reads the cumulative per-episode telemetry and logs actionable trials so the game-runner's specialists can act on them next turn. End-of-episode close-out and whole-run synthesis live in the separate planner network.",
+        tags = ["maps", "industry", "consultant", "micro", "advisor"],
+        sample_queries = [
+            "kind=periodic episode=1 step=20 cumulative_reward=1500 final_reward=null",
+            "kind=periodic episode=1 step=90 cumulative_reward=42000 final_reward=null"
+        ]
+    },
+
+    include "config/llm_config.hocon",
+
+    max_steps = 4000,
+    max_execution_seconds = 12000,
+
+    tools = [
+        {
+            name = "mid_episode_analyst",
+            function = ${inquiry_call} {
+                description = "Mid-episode analyzer (kind=periodic), invoked every 10 steps: diagnoses the live profit trajectory against the best episode, logs its own micro trials, prunes the ones not working, and returns an actionable advisory for the player's next turn."
+            },
+            instructions = """
+You analyze the current live game state at mid-episode.
+GOAL: name the MAIN issues holding this run back and design targeted micro trials that fix them.
+
+You are the only part of this harness that can correct the episode WHILE it is still running.
+The episode-start plan cannot revise itself; you get roughly nine looks at the run, one every ten steps,
+to steer it toward more profit. Always cite evidence (step + metric) from telemetry. Never use outside knowledge.
+
+## Procedures:
+
+1. Gather context:
+    - `scratchpad`: the note left by you for yourself at the last check-in, 10 steps ago
+    - `EpisodeTelemetry()`: every step so far in the current episode.
+    - `state_read('status_full')`: the complete park AS IT STANDS RIGHT NOW.
+    - `RunTelemetry(select='best')`: the best episode run, for reference only.
+    - `ActiveTrials()`: the macro and micro trials now running, with their criteria.
+    - `state_read('trial_strategies_outcome')`: past outcomes. Do NOT revisit a failed trial.
+
+2. Micro trials:
+   - Review ONLY micro trials from the `ActiveTrials()` result already gathered above. Drop any that are unproductive, failed, or obsolete with `DeleteTrial(trial_id)`.
+   - Diagnose the live blocker: cash piled up while research never triggered; a high-value asset unlocked but
+    unplaced, underbuilt, unreachable, or earning $0; a shop out_of_service; a ride with low uptime; or other
+    directly evidenced drag. Design the fixes.
+   - If the park is leaving an unlocked lever unused, propose a trial that pushes it harder.
+   - Propose however many new micro trials the current evidence justifies; there is no fixed numerical cap.
+    Each is small, concrete, new, falsifiable, and explicit about action, condition, metric, and trigger phase.
+    Put them in different domains, repeat neither macro direction nor any failed trial, and point them along the
+    macro strategy. Save each with `LogTrial`.
+
+3. LAST: if the NEXT check-in must know something, usually a drag being watched, call `scratchpad(note=...)` otherwise skip.
+
+4. Return a concise actionable advisory for the player's next turn.
+
+Notes: never extrapolate beyond current telemetry or use outside knowledge. Micro trials must never bankrupt
+the park or sacrifice compounding investments for a short-term gain.
+""",
+            middleware = [
+                {"class": "middleware.trim_history_middleware.TrimHistoryMiddleware", "args": {}}
+                {"class": "middleware.static_prompt_caching_middleware.StaticPromptCachingMiddleware", "args": {"ttl": "1h"}}
+            ],
+            tools = ["state_read", "EpisodeTelemetry", "RunTelemetry", "ActiveTrials", "LogTrial", "DeleteTrial", "scratchpad"]
+        },
+
+        {
+            name = "scratchpad",
+            class = "coded_tools.scratchpad.Scratchpad",
+            function = {
+                description = "Private memo for this network; player and planner hold their own. An omitted or empty note reads and clears the note left at your last check-in; a non-empty note leaves up to 5 lines for the next one. Writes replace; no history is kept.",
+                parameters = {
+                    type = "object",
+                    properties = {
+                        note = {
+                            type = "string",
+                            description = "Up to 5 lines to carry into your NEXT run only. Omit or pass an empty string to read-and-clear instead."
+                        }
+                    }
+                }
+            }
+            args = { pad = "watcher" }
+        },
+
+        {
+            name = "RunTelemetry",
+            class = "coded_tools.run_telemetry.RunTelemetry",
+            function = {
+                description = "With select='best', returns the highest-scoring episode across all runs as raw per-step rows, unaggregated — your yardstick for pace. Excludes the in-flight run, and returns empty when no prior episode exists.",
+                parameters = {
+                    type = "object",
+                    properties = {
+                        select = { type = "string", description = "Pass 'best' to get the best-ever episode as raw filtered steps." }
+                    }
+                }
+            }
+        },
+
+        {
+            name = "EpisodeTelemetry",
+            class = "coded_tools.episode_telemetry.EpisodeTelemetry",
+            function = {
+                description = "Per-step record for ONE episode, read from run.jsonl: {steps, rejections, rollup}, exists=false before any row is written. Each step carries its full action args and metrics; `rejections` records every action the sim refused, booked as a wait with the original action and error.",
+                parameters = {
+                    type = "object",
+                    properties = {
+                        episode   = { type = "int", description = "Episode number to read. Omit to use the latest episode present in the log." }
+                        from_step = { type = "int", description = "Only return steps >= this (mid-episode tail). Omit for the full episode." }
+                    }
+                }
+            }
+        },
+
+        {
+            name = "LogTrial",
+            class = "coded_tools.log_trial.LogTrial",
+            function = {
+                description = "Mints a collision-free trial_id and appends the paired lines: the one-line rule to trial_strategies, the metadata and success/failure criteria to trial_strategies_criteria. Use it for every new trial: it owns id minting and criteria formatting, and takes origin from this network's config.",
+                parameters = {
+                    type = "object",
+                    properties = {
+                        episode           = { type = "int", description = "Current episode number." }
+                        step_start        = { type = "string",  description = "Step at which the trial activates (as a string), or the literal 'end_of_episode'." }
+                        domain            = { type = "string",  description = "One of: rides, shops, staff, research, layout, survey, coordinator." }
+                        section           = { type = "string",  description = "Target playbook section header (or 'new')." }
+                        edit_type         = { type = "string",  description = "'add_line' or 'replace_line'." }
+                        new_text          = { type = "string",  description = "The one-line rule to add/replace (no rationale or metrics embedded)." }
+                        find_text         = { type = "string",  description = "replace_line only: the exact existing playbook line to replace." }
+                        rationale         = { type = "string",  description = "One sentence citing step(s) / metric delta." }
+                        success_criterion = { type = "string",  description = "Observable metric + direction + evaluation window (turns; fits in the fixed 100-step episode)." }
+                        failure_criterion = { type = "string",  description = "Observable metric that would falsify the trial." }
+                    }
+                    required = ["episode", "step_start", "domain", "section", "edit_type", "new_text", "rationale", "success_criterion", "failure_criterion"]
+                }
+            }
+            args = { origin = "micro" }
+        },
+
+        {
+            name = "DeleteTrial",
+            class = "coded_tools.delete_trial.DeleteTrial",
+            function = {
+                description = "Removes ONE micro trial mid-episode once it is unproductive or obsolete. Accepts micro trial_ids, as listed by ActiveTrials(trial_origin='micro'). Deletes the paired lines from trial_strategies and trial_strategies_criteria. Writes no OUTCOME line — micro trials are episode-scoped and are not ledgered.",
+                parameters = {
+                    type = "object",
+                    properties = {
+                        trial_id = { type = "string", description = "The micro trial_id to delete (e.g. 't3_2'), taken from ActiveTrials(trial_origin='micro')." }
+                    }
+                    required = ["trial_id"]
+                }
+            }
+        },
+
+        {
+            name = "ActiveTrials",
+            class = "coded_tools.active_trials.ActiveTrials",
+            function = {
+                description = "Returns the trials in force this episode, joining the rule body from trial_strategies with the metadata and criteria from trial_strategies_criteria. Filter by domain and/or trial_origin ('micro'|'macro'); omit both for all active trials.",
+                parameters = {
+                    type = "object",
+                    properties = {
+                        domain = { type = "string", description = "Filter to one domain: rides, shops, staff, research, layout, survey or coordinator. Omit for all domains." }
+                        trial_origin = { type = "string", description = "Filter to 'micro' or 'macro'; omit for both. Named trial_origin, not origin — the framework injects a reserved 'origin' key that would silently override it." }
+                    }
+                }
+            }
+        },
+
+        {
+            name = "state_read",
+            class = "coded_tools.state_read.StateRead",
+            function = {
+                description = "Read a file by its logical name from the operator-configured name_map.",
+                parameters = {
+                    type = "object",
+                    properties = {
+                        name = {
+                            type = "string",
+                            description = "Logical name of the file to read; must be one the operator mapped in name_map.",
+                            enum = ["status_full", "trial_strategies_outcome"]
+                        }
+                    },
+                    required = ["name"]
+                }
+            },
+            args = {
+                max_content_chars = 120000
+                name_map = {
+                    # The LIVE park, refreshed by the game-runner's ParkStatus every
+                    # turn. Telemetry rows carry only aggregates (num_rides, park_value),
+                    # so these are the analyst's ONLY view of which asset is the drag and
+                    # which tier is already unlocked. Read, never written, from here.
+                    status_full                 = ${maps_state_dir}"/status_full.json"
+                    trial_strategies_outcome    = ${maps_state_dir}"/trial_strategies_outcome.md"
+                }
+            }
+        },
+    ]
+}
