@@ -34,3 +34,4 @@ A `move` is free and carries the ride's capacity with it. More number of rides (
 - Avoid `remove`: a ride sells back for only 66% of its build cost and the park loses its capacity.
 
 ## Learned rules (promoted from prior runs)
+After moving a low-tier ride off a valuable reachable tile, immediately refill that tile with a reachable red carousel when cash remains safely above $50000. (learned ep0)

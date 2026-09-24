@@ -37,4 +37,4 @@ Costs a whole step, so spend one only when a shop's own numbers demand it. Like 
 - Otherwise AVOID `remove`: shop sells back for only 66% of its build cost, so swap only for a genuine tier upgrade. Don't place a shop if you won't need it.
 
 ## Learned rules (promoted from prior runs)
-In final cash-surplus phases, if reachable shop sites are full and rating is already stable, replace the weakest reachable yellow shop with an unlocked red or green drink shop before ATMs or further basic stock tuning. (learned ep3)
+When food inventory is near depletion after a major ride conversion and cash is ample, raise food order_quantity to about 360 before restocking other shops. (learned ep0)

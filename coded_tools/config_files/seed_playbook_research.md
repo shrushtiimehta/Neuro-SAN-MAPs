@@ -22,9 +22,9 @@ Research is the **HIGHEST-LEVERAGE** action in the game.
 ## Park current status (not set by you)
 - **available_entities** — the unlock ledger: which subtypes have reached which tier. Growing this list is the goal.
 - **research_operating_cost** — the current speed's daily cost.
-- **daily_profit** — the park's net P&L for the day.
+- **daily_profit** — recurring daily P&L after research cost, excluding one-time ride/shop construction. Use this to judge whether operations can sustain research.
+- **asset_investment** — successful ride/shop construction charged on this day and excluded from `daily_profit`.
 - **next_unlock** — the live ETA, e.g. `{"subtype": "carousel", "tier": "blue", "days": 2, "subtypes": ["carousel", "drink"]}`. Absent = research is off. Use to plan ahead.
 
 ## Learned rules (promoted from prior runs)
-Use fast research only as a funded single-target sprint when the unlocked asset can be built within a few turns, then stop or slow immediately after the target unlocks. (learned ep3)
-Run medium research bursts only once cash can stay positive, and immediately convert each priority ride unlock into an earning build before funding the next burst. (learned ep2)
+Increase research speed only when cashflow can stay positive and still fund at least one major build in each ten-turn window. (learned ep0)

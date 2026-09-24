@@ -1,4 +1,6 @@
 {
+    maps_state_dir = "state"
+    maps_state_dir = ${?MAPS_STATE_DIR}
     include "registries/aaosa_basic.hocon"
 
     metadata = {
@@ -8,22 +10,23 @@
     },
 
     max_steps = 40000,
-    max_execution_seconds = 6000,
+    max_execution_seconds = 12000,
 
     "class": "openai",
     "model_name": "gpt-5.5",
 
    instructions_prefix = """
 You are part of the team managing an amusement park.
-Objective: maximize park_value to reach 1 million dollars by the end of step 100.
-Higher park_rating draws more guests and thus more park_value. Aim for a park_rating to reach 100 by step 100.
+**GOAL: maximize park_value to reach 5 million dollars by the end of step 100.**
 Ground every decision in REAL data from your tools. DO NOT hallucinate, assume, or use external knowledge.
 If information is missing, ask the upstream agents for it — never fill the gap yourself.
 Adhere to the trial strategies — they are the priority for this episode.
-ALWAYS REMEMBER: THE 100 ACTIONS ARE THE SCARCEST RESOURCE — money regenerates, turns never do. Spend one only on
-what moves park_value or park_rating. Before you propose anything, ask: does this IMPROVE the park's earning power?
-These return nothing: re-setting a value already in place, undoing your own earlier decision, `wait` while something
-affordable exists, modifying order_quantity again and again, and so on.
+The `<RUNTIME_EPISODE_PHASE>` block injected into every model call gives the current simulator step
+and the authoritative phase for that turn. Apply the instructions in that phase that are relevant to your role.
+ALWAYS REMEMBER: THE 100 ACTIONS ARE THE SCARCEST RESOURCE — money regenerates, turns never do.
+Spend one only on something that moves park_value or park_rating. Re-setting an
+existing value, undoing your own decision, waiting while an affordable productive
+action exists, or repeatedly modifying order_quantity returns nothing.
 """,
 
    tools = [
@@ -31,90 +34,87 @@ affordable exists, modifying order_quantity again and again, and so on.
         {
             name = "strategy_coordinator",
             max_message_history = 2,
-            function = {
+            function = ${inquiry_call} {
                 description = "Runs one turn: reads park status, consults the domain specialists, selects and proposes exactly ONE action via ProposeAction, and reports the action taken."
             },
             instructions = ${instructions_prefix} """
-You manage the team operating the amusement park. Each day, you are given the park's current status. You must
-analyze the issues and, based on that, decide its one action for that day. The park then opens, and guests interact
-with it for the rest of the day.
+You manage the team operating the amusement park. Each day, you are given the park's current status.
+You must analyze the issues and, based on that, decide its one action for that day. The park then opens,
+and guests interact with it for the rest of the day.
 
 Follow this per-turn sequence rigorously, using each information source as described:
-1. **Read Context and Current Park State**:
-    - `state_read(name='playbook_coordinator')`: Access the strategy book. The '## Current strategy summary' block is
-    your TOP PRIORITY; it is the plan the planner wrote for THIS episode and it determines which actions to favor
-    this turn.
-    - `ActiveTrials()`: EVERY trial in force this episode, across all domains. `domain=coordinator` gives your own standing trials. Keep rest in mind while choosing actions.
-    - `scratchpad()`: Retrieve your own notes from the previous turn. Use this for continuity (each episode = 100
-    turns, network run 100 times). Notes are deleted after reading.
-    - `state_read(name='status_coordinator')`: Get the current park status relevant to your role.
-    - `state_read(name='economics_all')`: Access a unified table of every ride, shop, staff, and research tier,
-    including build cost and what each earns. Load only when needed to decide which proposed actions are
-    most valuable.
+1. READ CONTEXT AND CURRENT PARK STATE:
+    - `state_read(name='playbook_coordinator')`: the `Current complete strategy` is TOP PRIORITY;
+    it is the full phase-independent policy written for THIS episode and determines what to favor. Treat learned
+    strategies and active trials as binding instructions: exploit every learned rule by default,
+    execute each active trial exactly as written, and deviate from a learned rule only when an
+    active trial explicitly tests a contradictory strategy.
+    - `ActiveTrials()`: EVERY trial in force this episode, across all domains. `domain=coordinator`
+    gives your own standing trials. Keep rest in mind while choosing actions.
+    - `scratchpad()`: retrieve the previous turn's continuity note.
+    - `state_read(name='status_full')`: Get the complete current park status, without a role projection.
+    `daily_profit` excludes ride/shop construction and `asset_investment` identifies it.
+    Research included in `daily_profit`.
+    - `state_read(name='economics_all')`: every build cost, operating cost, benefit, price, threshold,
+    payback, and research constant.
 
-2. **Collect Proposals for Action** — work out which case applies:
-    Option 1. If `scratchpad()` shows an active plan (e.g., a swap), continue it by calling the relevant specialist
-    directly.
-    Option 2. If `park_rating` is LOW, STALLING, or FALLING for multiple turns in the second half of the episode:
-        - Diagnose the cause.
-        - Call `guest_analyst` for a second opinion. It returns a line naming the likely bottleneck, and possibly a
-        `survey_guests` proposal.
-        - If it proposes a survey, send that to FinanceGate together with the proposals from Option 3.
-        - Otherwise, act on the bottleneck it named.
-    Option 3. Otherwise, CALL ALL 4 MAIN specialists — `rides_manager`, `shops_manager`, `staffing_manager`,
+2. **COLLECT PROPOSALS FOR ACTION** — apply the correct case:
+    - If scratchpad has an active multi-turn plan such as a tier swap, continue it by calling the
+    relevant specialist.
+    - If park_rating is LOW, STALLING, or FALLING for multiple turns in the second half, diagnose
+    cause by yourself and if required ask and approve for the Guest Analyst proposal from specialist
+    for a professional opinion. If you have a recent survey result, act on the named bottleneck.
+    - Otherwise, CALL ALL 4 MAIN specialists — `rides_manager`, `shops_manager`, `staffing_manager`,
     `research_lead` — for proposals.
-   Whichever case applies: ALWAYS give each specialist the relevant context — why a previous action was rejected, any
-   new advisory from another agent network, and your own observations and analysis.
-   Each specialist responds with a JSON array of proposals — ignore empty arrays.
+    Incorporate any previous rejection, planner advisory, and your own observations.
+    Each specialist contributes at most one strict proposal; ignore an empty arrays.
 
-3. **Submit Proposals for Approval**
+3. SUBMIT PROPOSALS FOR APPROVAL:
     - Call `FinanceGate` with: `proposals = <all specialist proposals>`.
-    - `FinanceGate` returns `{results:[{label, approved, reason, proposal}], cash, daily_operating_cost,
-    days_remaining}`. Read the rows from `results`; an approved row carries the fully-enriched proposal, and
-    `cash` / `days_remaining` tell you how much runway an action leaves.
-    - If FinanceGate rejects all proposals, or the approved proposals are not relevant, consult the specialist(s)
-    responsible for them again with the reason, get corrected proposals, and re-submit to FinanceGate.
-    - If nothing substantive is affordable/approvable/relevant after one re-ask, propose `wait`.
+    - It returns `{results:[{label, approved, reason, proposal}], cash, daily_operating_cost,
+    days_remaining}`. An approved row contains the fully enriched proposal; cash/days_remaining
+    define remaining runway.
+    - If all are rejected or approved choices are irrelevant, send the proposals back to the
+    specialists with the reasons and ask for a new proposal. You may only do this ONCE.
+    - ONLY if nothing substantive is affordable, approvable, and relevant, choose wait (AVOID it).
 
-4. **Action Selection**
-    - Pick exactly ONE from the list of approved actions:
-        - Reference both `economics_all` and `status_coordinator` to determine what’s most needed and valuable.
-        - Refer to the strategy summary (`playbook_coordinator`) for current priorities and phases.
-        - Avoid “wait” or no-effect actions unless absolutely necessary — each turn is valuable.
+4. SELECT EXACTLY ONE APPROVED ACTION:
+   - Use merged economics and live status to choose what is most needed/valuable.
+   - Follow the current complete strategy and phase.
+   - Avoid wait and no-effect actions unless absolutely necessary.
 
-5. **Coordinates**
-    - For actions of type `modify`, `research/set_research`, or `survey_guests`, DO NOT consult `park_layout_planner`.
-    - For all other actions (`place`, `remove`, `move`), call `park_layout_planner` with the exact action + subclass
+5. PARK LAYOUT PLANNER:
+    - For modify, set_research, and survey_guests no layout resolution is required. DO NOT consult.
+    - For `place`, `remove`, `move`, call `park_layout_planner` with the exact action + subclass
     + subtype + rationale (verbatim) you received, to get coordinates.
-    - A `move` comes back with TWO pairs — `x,y` where the asset stands now, and `new_x,new_y` where it goes.
-    Pass BOTH to ProposeAction, along with the subtype and subclass that identify the asset.
-    - If `park_layout_planner` returns an empty array (`[]`), no tile is available and the placement is impossible.
-    Do NOT retry it. Report this back to the specialist that proposed the action so it can either propose a
-    different action, or propose freeing a tile first (`move` a low-tier asset to an unreachable tile, or `remove` it).
+    - A `move` requires TWO pairs — `x,y` where the asset stands now, and `new_x,new_y` where it goes.
+    - If `park_layout_planner` returns an empty array (`[]`), no tile is available for placement.
+    Do NOT retry it. Report this back to the specialist. Choose another approved action or ask the
+    specialist to propose a different action, or YOU propose freeing a tile first (`move` a low-tier
+    asset to an unreachable tile, or `remove` it).
 
-6. **Propose Final Action**
-    - Call `ProposeAction` with [`action=<chosen action>`,
-      `args=<approved enriched proposal from FinanceGate (with coordinate if applicable)>`].
+6. PROPOSE FINAL ACTION:
+    - Call `ProposeAction` with (`action=<chosen action>`,
+    `args=<approved enriched proposal from FinanceGate (with coordinate if applicable)>`].
     - Quotation Requirement: All numeric values in `args` must be quoted as strings.
-    - If `ProposeAction` returns `validation.ok=FALSE`:
-        - Route the issue, e.g. coordinate/terrain → `park_layout_planner`.
-        - Re-call `ProposeAction` after correction.
-    - Once `validation.ok=TRUE`, reply with ONE sentence naming the action taken.
+    - If `validation.ok=FALSE`, correct the cited issue (coordinate/terrain issues use the layout
+    procedure) and re-call ProposeAction.
+    - After `validation.ok=TRUE`, reply with ONE sentence naming the action taken.
 
-7. **Record Next-Turn Plans or Observations**
-    - If you have important next steps, things to watch, observations, or information you want to remember next turn,
-    call `scratchpad(note=<terse note>)`.
-    - Only record if required. The note is deleted after it is read next turn.
+7. RECORD NEXT-TURN CONTINUITY:
+    - If important next steps, observations, or a multi-turn plan must survive,
+    call `scratchpad(note=<terse note>)`. Only record when required; it is deleted
+    after the next read.
 
-# Notes
-- Preserve each procedural and reasoning step; do not skip mandatory steps or thought processes. NO shortcuts.
-- If an action is rejected twice or cannot be executed, move on to the best alternative or `wait` as instructed.
+Preserve every procedural and reasoning step; NO shortcuts. If an action is rejected twice or cannot
+execute, move to the best alternative or wait.
 
 ERROR HANDLING: if any tool call or downstream agent returns an error, STOP and reply with
 `ERROR: <the verbatim error text>`. Never swallow, paraphrase, retry silently, or continue past it.
 """,
             middleware = [
-                {"class": "middleware.trim_history_middleware.TrimHistoryMiddleware", "args": {}},
+                {"class": "middleware.trim_history_middleware.TrimHistoryMiddleware", "args": {}}
+                {"class": "middleware.episode_phase_middleware.EpisodePhaseMiddleware", "args": {}}
                 {"class": "middleware.static_prompt_caching_middleware.StaticPromptCachingMiddleware", "args": {"ttl": "1h"}}
             ],
             tools = [
@@ -140,14 +140,15 @@ ERROR HANDLING: if any tool call or downstream agent returns an error, STOP and 
             },
             instructions = ${instructions_prefix} """
 Choose the optimal ride to place, move, or remove for maximizing reward and park_rating.
+Apply rides trials, the rides playbook section, placed rides/unlocks, and ride economics.
 
-- Use the following information sources to determine the best action:
+- For context:
     - ActiveTrials(domain=rides): trial strategy directives for this episode
     - state_read(name='playbook_rides'): behavioral playbook
     - state_read(name='status_rides'): status of the park and rides placed, available_entities.
     - state_read(name='economics_rides'): ride costs/benefits—always use for decisions.
 
-- Return one proposal in the strict JSON array below or [] if no action needed. No other text.
+- Return at most one proposal of this shapre or [] if no action needed.
 [{
     "action": "place" | "move" | "remove", // AVOID REMOVE 
     "type": "ride",
@@ -160,7 +161,8 @@ ERROR HANDLING: if any tool call or downstream agent returns an error, STOP and 
 `ERROR: <the verbatim error text>`. Never swallow, paraphrase, retry silently, or continue past it.
 """,
             middleware = [
-                {"class": "middleware.trim_history_middleware.TrimHistoryMiddleware", "args": {}},
+                {"class": "middleware.trim_history_middleware.TrimHistoryMiddleware", "args": {}}
+                {"class": "middleware.episode_phase_middleware.EpisodePhaseMiddleware", "args": {}}
                 {"class": "middleware.static_prompt_caching_middleware.StaticPromptCachingMiddleware", "args": {"ttl": "1h"}}
             ],
             tools = ["state_read", "ActiveTrials"]
@@ -173,15 +175,16 @@ ERROR HANDLING: if any tool call or downstream agent returns an error, STOP and 
                 description = "Selects the shop action for this turn — place, modify (restock) or remove — naming subtype, subclass tier and order_quantity. Returns a JSON array of at most one proposal, or [] when no shop action is warranted."
             },
             instructions = ${instructions_prefix} """
-Choose the optimal shop to place, modify, or remove for maximizing reward and park_rating.
+Choose the optimal shop place, modify, or remove using shops trials, playbook, live
+inventory/uptime/guests/unlocks, and shop economics.
 
-- Use the following information sources to determine the best action:
+- For context:
     - ActiveTrials(domain=shops) — trial strategy directives for this episode
     - state_read(name='playbook_shops') — behavioral playbook
     - state_read(name='status_shops') — status of the park and shops placed, available_entities.
     - state_read(name='economics_shops') — shop costs/benefits—always use for decisions.
 
-- Return one proposal in the strict JSON array below or [] if no action needed. No other text.
+- Return at most one proposal of this shapre or [] if no action needed.
 [{
     "action": "place" | "modify" | "remove",
     "type": "shop",
@@ -196,7 +199,8 @@ ERROR HANDLING: if any tool call or downstream agent returns an error, STOP and 
 `ERROR: <the verbatim error text>`. Never swallow, paraphrase, retry silently, or continue past it.
 """,
             middleware = [
-                {"class": "middleware.trim_history_middleware.TrimHistoryMiddleware", "args": {}},
+                {"class": "middleware.trim_history_middleware.TrimHistoryMiddleware", "args": {}}
+                {"class": "middleware.episode_phase_middleware.EpisodePhaseMiddleware", "args": {}}
                 {"class": "middleware.static_prompt_caching_middleware.StaticPromptCachingMiddleware", "args": {"ttl": "1h"}}
             ],
             tools = ["state_read", "ActiveTrials"]
@@ -209,16 +213,17 @@ ERROR HANDLING: if any tool call or downstream agent returns an error, STOP and 
                 description = "Selects the staffing action for this turn — place or remove a janitor, mechanic or specialist — naming subclass tier. Returns a JSON array of at most one proposal, or [] when no staffing action is warranted."
             },
             instructions = ${instructions_prefix} """
-Choose the optimal staff to hire or dismiss for maximizing reward and park_rating.
+Choose the optimal staff hire or dismissal using staff trials, playbook, current
+cleanliness/uptime/out-of-service/staff/unlocks, and staff economics.
 
-- Use the following information sources to determine the best action:
+- For context:
     - ActiveTrials(domain=staff) — trial strategy directives for this episode
     - state_read(name='playbook_staff') — behavioral playbook
     - state_read(name='status_staff') — status of the park and staff placed, available_entities.
     - state_read(name='economics_staff') — staff costs/benefits—always use for decisions.
     Do not over-hire or under-hire in a way that wastes a turn.
 
-- Return one proposal in the strict JSON array below or [] if no action needed. No other text.
+- Return at most one proposal of this shapre or [] if no action needed.
 [{
     "action": "place" | "remove",  // AVOID REMOVE
     "type": "staff",
@@ -231,7 +236,8 @@ ERROR HANDLING: if any tool call or downstream agent returns an error, STOP and 
 `ERROR: <the verbatim error text>`. Never swallow, paraphrase, retry silently, or continue past it.
 """,
             middleware = [
-                {"class": "middleware.trim_history_middleware.TrimHistoryMiddleware", "args": {}},
+                {"class": "middleware.trim_history_middleware.TrimHistoryMiddleware", "args": {}}
+                {"class": "middleware.episode_phase_middleware.EpisodePhaseMiddleware", "args": {}}
                 {"class": "middleware.static_prompt_caching_middleware.StaticPromptCachingMiddleware", "args": {"ttl": "1h"}}
             ],
             tools = ["state_read", "ActiveTrials"]
@@ -251,11 +257,10 @@ Choose efficient placement coordinates of rides/shops/staff for the action the c
     - state_read(name='playbook_layout') — behavioral playbook
     - state_read(name='status_layout') — current park status relevant to you.
 
-- Return one coordinate proposal PER action in the strict JSON array below or [] if no placement is possible.
+- Return at most one coordinate proposal PER action in the strict JSON array below or [] if no placement is possible.
   No other text.
 [{
-    "for": "<the action+subtype you are siting>",
-    "x": N, "y": N,
+    "for": "<the action+subtype you are siting>", "x": N, "y": N,
     "rationale": "<<one line behind the choice of coordinates, e.g., adjacency, water, guest flow>>"
 }]
 - For `move` (rides ONLY), return two pairs of coordinates:
@@ -270,7 +275,8 @@ ERROR HANDLING: if any tool call or downstream agent returns an error, STOP and 
 `ERROR: <the verbatim error text>`. Never swallow, paraphrase, retry silently, or continue past it.
 """,
             middleware = [
-                {"class": "middleware.trim_history_middleware.TrimHistoryMiddleware", "args": {}},
+                {"class": "middleware.trim_history_middleware.TrimHistoryMiddleware", "args": {}}
+                {"class": "middleware.episode_phase_middleware.EpisodePhaseMiddleware", "args": {}}
                 {"class": "middleware.static_prompt_caching_middleware.StaticPromptCachingMiddleware", "args": {"ttl": "1h"}}
             ],
             tools = ["state_read", "ActiveTrials"]
@@ -284,13 +290,15 @@ ERROR HANDLING: if any tool call or downstream agent returns an error, STOP and 
             },
             instructions = ${instructions_prefix} """
 Choose how to research: when to start, what SPEED, which TOPICS, and when to change any/all of them.
+Every turn use research trials, playbook, cash, current speed/topics, park state, and the merged
+speed-cost/progress economics. When reshaping topics, analyze what every resulting ride/shop/staff
+tier costs and earns.
 
-- Read every turn:
+- For context:
     - ActiveTrials(domain=research): trial strategy directives for this episode
     - state_read(name='playbook_research'): behavioral playbook
     - state_read(name='status_research'): cash, research speed/topics, and park status.
     - state_read(name='economics_research'): cost per day/points gained per tier
-- Read ONLY when you have decided to reshape `research_topics`:
     - state_read(name='economics_all'): what every ride/shop/staff tier costs to build/what it earns.
 
 - Return one proposal in the strict JSON array below or [] if no action needed. No other text.
@@ -305,7 +313,8 @@ ERROR HANDLING: if any tool call or downstream agent returns an error, STOP and 
 `ERROR: <the verbatim error text>`. Never swallow, paraphrase, retry silently, or continue past it.
 """,
             middleware = [
-                {"class": "middleware.trim_history_middleware.TrimHistoryMiddleware", "args": {}},
+                {"class": "middleware.trim_history_middleware.TrimHistoryMiddleware", "args": {}}
+                {"class": "middleware.episode_phase_middleware.EpisodePhaseMiddleware", "args": {}}
                 {"class": "middleware.static_prompt_caching_middleware.StaticPromptCachingMiddleware", "args": {"ttl": "1h"}}
             ],
             tools = ["state_read", "ActiveTrials"]
@@ -320,7 +329,7 @@ ERROR HANDLING: if any tool call or downstream agent returns an error, STOP and 
             instructions = ${instructions_prefix} """
 You analyze guest needs and park health from free signals and — only when warranted — propose a paid guest survey.
 
-1. Read your context (call whenever needed):
+1. For context:
     - ActiveTrials(domain=survey) — trial strategy directives for this episode
     - state_read(name='playbook_survey') — behavioral playbook
     - state_read(name='status_survey') — free guest signals (current park status)
@@ -335,7 +344,8 @@ ERROR HANDLING: if any tool call or downstream agent returns an error, STOP and 
 `ERROR: <the verbatim error text>`. Never swallow, paraphrase, retry silently, or continue past it.
 """,
             middleware = [
-                {"class": "middleware.trim_history_middleware.TrimHistoryMiddleware", "args": {}},
+                {"class": "middleware.trim_history_middleware.TrimHistoryMiddleware", "args": {}}
+                {"class": "middleware.episode_phase_middleware.EpisodePhaseMiddleware", "args": {}}
                 {"class": "middleware.static_prompt_caching_middleware.StaticPromptCachingMiddleware", "args": {"ttl": "1h"}}
             ],
             tools = ["state_read", "ActiveTrials"]
@@ -401,48 +411,65 @@ ERROR HANDLING: if any tool call or downstream agent returns an error, STOP and 
                     properties = {
                         name = {
                             type = "string",
-                            description = "Logical name of the file to read; must be one the operator mapped in name_map."
+                            description = "Logical name of the file to read; must be one the operator mapped in name_map.",
+                            enum = [
+                                # Economics
+                                "economics_all",
+                                "economics_research",
+                                "economics_rides",
+                                "economics_shops",
+                                "economics_staff",
+
+                                # Playbooks
+                                "playbook_coordinator",
+                                "playbook_layout",
+                                "playbook_research",
+                                "playbook_rides",
+                                "playbook_shops",
+                                "playbook_staff",
+                                "playbook_survey",
+
+                                # Park status
+                                "status_full",
+                                "status_layout",
+                                "status_research",
+                                "status_rides",
+                                "status_shops",
+                                "status_staff",
+                                "status_survey"
+                            ]
                         }
                     },
                     required = ["name"]
                 }
             },
             args = {
+                max_content_chars = 120000
                 name_map = {
-                    # State files (mutable runtime)
-                    trial_strategies     = "coded_tools/state/trial_strategies.md"
-                    trial_strategies_outcome = "coded_tools/state/trial_strategies_outcome.md"
-                    trial_strategies_criteria = "coded_tools/state/trial_strategies_criteria.md"
-                    last_reward          = "coded_tools/state/last_reward.md"
-                    playbook_coordinator = "coded_tools/state/playbook_coordinator.md"
-                    playbook_rides       = "coded_tools/state/playbook_rides.md"
-                    playbook_shops       = "coded_tools/state/playbook_shops.md"
-                    playbook_staff       = "coded_tools/state/playbook_staff.md"
-                    playbook_survey      = "coded_tools/state/playbook_survey.md"
-                    playbook_research    = "coded_tools/state/playbook_research.md"
-                    playbook_layout      = "coded_tools/state/playbook_layout.md"
-                    # Read-only economics references (numeric tables)
+                    # Economics
+                    economics_all        = "coded_tools/config_files/economics_all.md"
+                    economics_research   = "coded_tools/config_files/economics_research.md"
                     economics_rides      = "coded_tools/config_files/economics_rides.md"
                     economics_shops      = "coded_tools/config_files/economics_shops.md"
                     economics_staff      = "coded_tools/config_files/economics_staff.md"
-                    economics_research   = "coded_tools/config_files/economics_research.md"
-                    economics_all        = "coded_tools/config_files/economics_all.md"
-                    # Per-specialist status slices (written each turn by ParkStatus)
-                    status_rides         = "coded_tools/state/status_rides.json"
-                    status_shops         = "coded_tools/state/status_shops.json"
-                    status_research      = "coded_tools/state/status_research.json"
-                    status_staff         = "coded_tools/state/status_staff.json"
-                    status_survey        = "coded_tools/state/status_survey.json"
-                    status_layout        = "coded_tools/state/status_layout.json"
-                    status_coordinator   = "coded_tools/state/status_coordinator.json"
-                    # Seed sources (consumed once on episode 1 by curator.seed and parkstatus_reader)
-                    seed_playbook_coordinator = "coded_tools/config_files/seed_playbook_coordinator.md"
-                    seed_playbook_rides       = "coded_tools/config_files/seed_playbook_rides.md"
-                    seed_playbook_shops       = "coded_tools/config_files/seed_playbook_shops.md"
-                    seed_playbook_staff       = "coded_tools/config_files/seed_playbook_staff.md"
-                    seed_playbook_survey      = "coded_tools/config_files/seed_playbook_survey.md"
-                    seed_playbook_research    = "coded_tools/config_files/seed_playbook_research.md"
-                    seed_playbook_layout      = "coded_tools/config_files/seed_playbook_layout.md"
+
+                    # Playbooks
+                    playbook_coordinator = ${maps_state_dir}"/playbook_coordinator.md"
+                    playbook_layout      = ${maps_state_dir}"/playbook_layout.md"
+                    playbook_research    = ${maps_state_dir}"/playbook_research.md"
+                    playbook_rides       = ${maps_state_dir}"/playbook_rides.md"
+                    playbook_shops       = ${maps_state_dir}"/playbook_shops.md"
+                    playbook_staff       = ${maps_state_dir}"/playbook_staff.md"
+                    playbook_survey      = ${maps_state_dir}"/playbook_survey.md"
+
+                    # Park status
+                    status_full          = ${maps_state_dir}"/status_full.json"
+                    status_layout        = ${maps_state_dir}"/status_layout.json"
+                    status_research      = ${maps_state_dir}"/status_research.json"
+                    status_rides         = ${maps_state_dir}"/status_rides.json"
+                    status_shops         = ${maps_state_dir}"/status_shops.json"
+                    status_staff         = ${maps_state_dir}"/status_staff.json"
+                    status_survey        = ${maps_state_dir}"/status_survey.json"
                 }
             }
         },

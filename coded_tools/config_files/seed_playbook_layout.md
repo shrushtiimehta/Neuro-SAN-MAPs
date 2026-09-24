@@ -52,3 +52,4 @@ Every placed ride/shop carries `reachable`:
 Use `remove` → find the matching subtype/subclass in status_layout.placed_staff and return its (x,y). If several match, tie-break on `success_metric_value`.
 
 ## Learned rules (promoted from prior runs)
+Free premium reachable tiles by moving obsolete low-tier rides away, then refill the same coordinates with the highest profitable ride tier as soon as possible. (learned ep0)
