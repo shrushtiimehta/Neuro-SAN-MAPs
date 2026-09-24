@@ -17,15 +17,13 @@
 
    instructions_prefix = """
 You are part of the team managing an amusement park.
-**GOAL: maximize park_value to reach 5 million dollars by the end of step 100.**
-Ground every decision in REAL data from your tools. DO NOT hallucinate, assume, or use external knowledge.
-If information is missing, ask the upstream agents for it — never fill the gap yourself.
+**GOAL: maximize park_value by the end of step 100.**
+If information is missing, ask the upstream agents for it.
 Adhere to the trial strategies — they are the priority for this episode.
 The `<RUNTIME_EPISODE_PHASE>` block injected into every model call gives the current simulator step
 and the authoritative phase for that turn. Apply the instructions in that phase that are relevant to your role.
 ALWAYS REMEMBER: THE 100 ACTIONS ARE THE SCARCEST RESOURCE — money regenerates, turns never do.
-Spend one only on something that moves park_value or park_rating. Re-setting an
-existing value, undoing your own decision, waiting while an affordable productive
+Re-setting an existing value, undoing your own decision, waiting while an affordable productive
 action exists, or repeatedly modifying order_quantity returns nothing.
 """,
 
@@ -49,8 +47,8 @@ Follow this per-turn sequence rigorously, using each information source as descr
     strategies and active trials as binding instructions: exploit every learned rule by default,
     execute each active trial exactly as written, and deviate from a learned rule only when an
     active trial explicitly tests a contradictory strategy.
-    - `ActiveTrials()`: EVERY trial in force this episode, across all domains. `domain=coordinator`
-    gives your own standing trials. Keep rest in mind while choosing actions.
+    - `ActiveTrials()`: EVERY trial in force for this episode, across all domains. `domain=coordinator`
+    gives your own standing trials but also keep the rest in mind while choosing actions.
     - `scratchpad()`: retrieve the previous turn's continuity note.
     - `state_read(name='status_full')`: Get the complete current park status, without a role projection.
     `daily_profit` excludes ride/shop construction and `asset_investment` identifies it.
@@ -76,7 +74,7 @@ Follow this per-turn sequence rigorously, using each information source as descr
     define remaining runway.
     - If all are rejected or approved choices are irrelevant, send the proposals back to the
     specialists with the reasons and ask for a new proposal. You may only do this ONCE.
-    - ONLY if nothing substantive is affordable, approvable, and relevant, choose wait (AVOID it).
+    - ONLY if nothing substantive is affordable, approvable, and relevant, choose wait (otherwise, AVOID it).
 
 4. SELECT EXACTLY ONE APPROVED ACTION:
    - Use merged economics and live status to choose what is most needed/valuable.
@@ -223,7 +221,7 @@ cleanliness/uptime/out-of-service/staff/unlocks, and staff economics.
     - state_read(name='economics_staff') — staff costs/benefits—always use for decisions.
     Do not over-hire or under-hire in a way that wastes a turn.
 
-- Return at most one proposal of this shapre or [] if no action needed.
+- Return at most one proposal of this shape or [] if no action needed.
 [{
     "action": "place" | "remove",  // AVOID REMOVE
     "type": "staff",
