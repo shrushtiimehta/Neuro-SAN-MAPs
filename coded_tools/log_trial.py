@@ -34,7 +34,6 @@ Files written (one appended line each):
 from __future__ import annotations
 
 import re
-
 from typing import Any
 from typing import ClassVar
 
@@ -73,7 +72,7 @@ class LogTrial(CodedTool):
 
         # origin distinguishes who logged the trial: 'macro' (episode-start, persists
         # across episodes until resolved) or 'micro' (mid-episode, episode-scoped —
-        # ResolveTrials drops it at close-out). Each network caps its own origin at 3.
+        # ResolveTrials drops it at close-out).
         origin = str(args.get("origin", "")).strip().lower()
         if origin not in ("micro", "macro"):
             return "ERROR: origin must be 'micro' or 'macro'"
@@ -86,9 +85,16 @@ class LogTrial(CodedTool):
         failure = str(args.get("failure_criterion", "")).strip()
         find_text = str(args.get("find_text", "")).strip()
 
-        for name, value in (("new_text", new_text), ("domain", domain),
-                            ("section", section), ("rationale", rationale),
-                            ("success_criterion", success), ("failure_criterion", failure)):
+        name: Any
+        value: Any
+        for name, value in (
+            ("new_text", new_text),
+            ("domain", domain),
+            ("section", section),
+            ("rationale", rationale),
+            ("success_criterion", success),
+            ("failure_criterion", failure),
+        ):
             if not value:
                 return f"ERROR: {name} is required and must be non-empty"
         if edit_type == "replace_line" and not find_text:
@@ -139,7 +145,9 @@ class LogTrial(CodedTool):
         """
         pattern = re.compile(rf"\bt{episode}_(\d+)\b")
         highest = 0
+        path: Any
         for path in (self.STRATEGIES_PATH, self.CRITERIA_PATH, self.OUTCOME_PATH):
+            match: Any
             for match in pattern.finditer(FileIO.read_text(path)):
                 highest = max(highest, int(match.group(1)))
         return f"t{episode}_{highest + 1}"

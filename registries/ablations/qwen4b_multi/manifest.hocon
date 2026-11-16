@@ -1,0 +1,5 @@
+{
+    "player.hocon": true
+    "watcher.hocon": true
+    "planner.hocon": true
+}

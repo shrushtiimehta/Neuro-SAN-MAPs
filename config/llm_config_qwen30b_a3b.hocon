@@ -1,0 +1,14 @@
+{
+    "llm_config": {
+        "class": "ollama"
+        "model_name": "qwen3:30b-a3b"
+        "base_url": "http://127.0.0.1:11434"
+        "base_url": ${?OLLAMA_BASE_URL}
+        "num_ctx": 32768
+        "num_predict": 8192
+        "reasoning": true
+        "temperature": 0.2
+        "seed": 42
+        "keep_alive": "30m"
+    }
+}

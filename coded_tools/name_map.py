@@ -26,6 +26,16 @@ from __future__ import annotations
 from typing import Any
 from typing import Optional
 
+# Model providers can emit an argument outside a JSON-schema enum.  Keep a
+# deliberately tiny compatibility table for synonyms observed in real runs.
+# An alias is accepted only when its canonical target is present in the
+# operator-controlled name_map, so this never expands filesystem access.
+SAFE_READ_ALIASES = {
+    "economics": "economics_all",
+    "map_layout": "status_layout",
+    "status_staffing": "status_staff",
+}
+
 
 class NameMap:
     """Validate + resolve a logical ``name`` against an operator ``name_map``."""
@@ -46,3 +56,13 @@ class NameMap:
             return f"ERROR: unknown_name: '{name}' not in name_map. Valid names: {valid}."
 
         return None
+
+    @staticmethod
+    def resolve_alias(name: str, name_map: dict[str, str]) -> str:
+        """Return a canonical mapped name for a known safe synonym."""
+        if name in name_map:
+            return name
+        canonical = SAFE_READ_ALIASES.get(name)
+        if canonical in name_map:
+            return canonical
+        return name

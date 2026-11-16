@@ -20,14 +20,14 @@ checkpointer accumulates the full message history across turns, which
 inflates prompt size and cost over time. This middleware keeps only the
 messages from the most recent HumanMessage onwards, so each new user turn
 sees a clean chat history. The system message is unaffected (langgraph
-keeps it on the side), the checklist middleware re-injects checklist state
-from its own slice each turn, and the persistent_memory tool still works.
+keeps it on the side), and EpisodePhaseMiddleware re-injects the active
+checklist phase on every player model call.
 
 Anything the agent needs across turns must therefore live in:
   - the system prompt (static instructions),
-  - the checklist (AgentChecklistMiddleware),
-  - persistent memory (PersistentMemoryMiddleware) — read at episode start,
-  - tool calls within the current turn (ParkStatus, read_file, etc.).
+  - the active checklist phase (EpisodePhaseMiddleware),
+  - scratchpad/state files, and
+  - tool calls within the current turn.
 """
 
 from logging import getLogger

@@ -28,6 +28,7 @@ from typing import ClassVar
 
 from neuro_san.interfaces.coded_tool import CodedTool
 
+from coded_tools.financial_metrics import construction_asset_investment
 from coded_tools.latest_observation import LatestObservation
 from coded_tools.maps_action_base import MapsActionBase
 from coded_tools.maps_modify import MapsModify
@@ -55,9 +56,7 @@ class ActionDispatcher(CodedTool):
         "survey_guests": MapsSurveyGuests,
     }
 
-    async def async_invoke(
-        self, args: dict[str, Any], sly_data: dict[str, Any]
-    ) -> dict[str, Any] | str:
+    async def async_invoke(self, args: dict[str, Any], sly_data: dict[str, Any]) -> dict[str, Any] | str:
         park = args.get("park", 0)
 
         action = args.get("action")
@@ -78,6 +77,7 @@ class ActionDispatcher(CodedTool):
             }
 
         merged: dict[str, Any] = {"park": park, **action_args}
+        prospective_investment = construction_asset_investment(action, action_args)
         tool = tool_cls()
         response = await tool.async_invoke(merged, sly_data)
 
@@ -98,6 +98,13 @@ class ActionDispatcher(CodedTool):
                 "done": True,
                 "observation": new_obs,
             }
+
+        # The simulator folds a successful ride/shop build into that day's
+        # expenses. Preserve it separately so status/log readers can distinguish
+        # one-time asset investment from recurring operating performance. An
+        # env-rejected placement advances the day as a wait and invests nothing.
+        if isinstance(response, dict):
+            response["asset_investment"] = prospective_investment if not response.get("error") else 0
 
         # Persist the full envelope verbatim. We do this here — not in the
         # coordinator's instructions — because routing the write through

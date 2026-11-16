@@ -38,3 +38,4 @@ GOAL: maximize your park's value in 100 actions — target $1,000,000 park_value
 - Leave enough funds after your action so your shops can be adequately restocked.
 
 ## Learned rules (promoted from prior runs)
+In the final turns, avoid expensive builds that cannot repay their value gap and spend only on immediate profit, maintenance, or stock fixes. (learned ep0)

@@ -18,23 +18,27 @@ WriteEpisodePlan: the deterministic write side of the macro start-of-episode
 pass. The macro analyzes the best + last episodes and produces these artifacts;
 this tool persists them so the game-runner network can read them on turn 1:
 
-  1. episode_checklist.md  — the turn-phased plan, one literal
-     "turns A-B: <goal>" line per item, consumed VERBATIM by park_director
-     (it seeds these straight into create_checklist; no re-derivation).
-  2. The STRATEGY SUMMARY block inside playbook_coordinator.md — a freeform
-     "best way to go about things" brief. It is NOT a separate file: it is
-     written into the coordinator's own playbook (which strategy_coordinator
-     already reads every turn) between fixed BEGIN/END markers at the TOP of
-     the file, and is REPLACED WHOLESALE every episode.
-  3. (optional) Per-domain PLAYBOOK SUMMARIES — a short 2-3 line summary for
+  1. episode_checklist.md  — the sole source of turn ranges and phase timing,
+     one literal
+     "turns A-B: <goal>" line per item. EpisodePhaseMiddleware parses it on
+     every player model call and injects the line covering the action turn being
+     planned plus the complete following phase into the coordinator and every specialist; the
+     episode_end pass re-reads the whole file to revise phases in place.
+  2. The STRATEGY block inside playbook_coordinator.md — the phase-independent
+     operating policy, triggers, dependencies, and contingencies. In merged/solo
+     mode this is instead a complete
+     all-domain strategy inside playbook_all.md. It is NOT a separate file and
+     is REPLACED WHOLESALE every episode.
+  3. Six required per-domain PLAYBOOK STRATEGIES — one complete phase-independent strategy for
      each specialist playbook (rides/shops/staff/research/layout/survey), written
      between PLAYBOOK_SUMMARY markers at the TOP of playbook_<domain>.md, the
-     same way the coordinator summary is handled. Each specialist reads its own
-     summary every consultation. Replaced wholesale every episode.
+     same way the coordinator strategy is handled. Each specialist reads its own
+     strategy every consultation. Replaced wholesale every episode.
 
 For every marked block the hand-authored baseline and the '## Learned rules'
 below it are left untouched — only the marked block is rewritten — so promotion/
-demotion of learned rules and the per-episode summaries never collide.
+demotion of learned rules and the per-episode strategy never collide. The solo
+playbook deliberately has no separate per-domain summary block.
 
 Returns {checklist_items_written, strategy_summary_written, checklist_path,
 playbook_coordinator_path, summary_action, playbook_summaries_written} where
@@ -52,25 +56,57 @@ from typing import ClassVar
 
 from neuro_san.interfaces.coded_tool import CodedTool
 
+from coded_tools.episode_phases import validate_phase_items
+from coded_tools.state_dir import MERGED_CONTEXT as _MERGED
+from coded_tools.state_dir import STATE_DIR as _STATE_DIR
+
 
 class WriteEpisodePlan(CodedTool):
-    """Persist the episode checklist plus the per-episode coordinator and specialist summaries."""
+    """Persist the checklist plus either one merged or six domain strategies."""
 
-    STATE_DIR: ClassVar[str] = "coded_tools/state"
+    RETRYABLE_VALIDATION_ERROR: ClassVar[str] = "ERROR: retryable_validation:"
+    STATE_DIR: ClassVar[str] = _STATE_DIR
     CHECKLIST_FILE: ClassVar[str] = "episode_checklist.md"
     # Raw plan args, dumped on every write so the runner's champion mechanism
-    # (coded_tools/champion_plan.py: promote on a clean run, restore on a doom)
+    # (coded_tools/champion_plan.py: promote the best-so-far run, restore it as
+    # the base of the next episode's plan)
     # can re-apply this exact plan later.
     PLAN_CURRENT_FILE: ClassVar[str] = "plan_current.json"
     CHECKLIST_TITLE: ClassVar[str] = "# Episode Strategy Plan"
     PLAYBOOK_COORDINATOR_FILE: ClassVar[str] = "playbook_coordinator.md"
+    # The solo arm (registries/ablations/single_agent/player_solo.hocon) keeps
+    # ONE playbook and ONE complete strategy block. Selected by MAPS_MERGED_CONTEXT.
+    MERGED_PLAYBOOK: ClassVar[str] = "playbook_all.md"
+    MERGED: ClassVar[bool] = _MERGED
+
+    # Every structured multi-agent plan must replace all six domain strategies.
+    # The intentionally unstructured ablation overrides this internally because
+    # its public tool accepts one free-form coordinator strategy by design.
+    REQUIRE_DOMAIN_STRATEGIES: ClassVar[bool] = True
+
+    PLACEHOLDER_STRATEGIES: ClassVar[frozenset[str]] = frozenset(
+        {
+            "none",
+            "null",
+            "n/a",
+            "na",
+            "unchanged",
+            "same",
+            "same as before",
+            "keep unchanged",
+            "keep the same",
+            "no change",
+            "no changes",
+        }
+    )
 
     # The coordinator strategy summary lives between these markers inside
     # playbook_coordinator.md so it can be replaced every episode.
     SUMMARY_BEGIN: ClassVar[str] = "<!-- STRATEGY_SUMMARY:BEGIN -->"
     SUMMARY_END: ClassVar[str] = "<!-- STRATEGY_SUMMARY:END -->"
-    SUMMARY_HEADER: ClassVar[str] = (
-        "## Current strategy summary (regenerated every episode — top priority this run)"
+    SUMMARY_HEADER: ClassVar[str] = "## Current strategy summary (regenerated every episode — top priority this run)"
+    COMPLETE_STRATEGY_HEADER: ClassVar[str] = (
+        "## Current complete strategy (regenerated every episode — top priority this run)"
     )
 
     # Each specialist playbook carries its own per-episode summary between these
@@ -81,12 +117,12 @@ class WriteEpisodePlan(CodedTool):
 
     # domain -> its working playbook file. Mirrors SeedPlaybooks.PLAYBOOKS.
     DOMAIN_PLAYBOOKS: ClassVar[dict[str, str]] = {
-        "rides":    "playbook_rides.md",
-        "shops":    "playbook_shops.md",
-        "staff":    "playbook_staff.md",
+        "rides": "playbook_rides.md",
+        "shops": "playbook_shops.md",
+        "staff": "playbook_staff.md",
         "research": "playbook_research.md",
-        "layout":   "playbook_layout.md",
-        "survey":   "playbook_survey.md",
+        "layout": "playbook_layout.md",
+        "survey": "playbook_survey.md",
     }
 
     def invoke(self, args: dict[str, Any], sly_data: dict[str, Any]) -> dict[str, Any] | str:
@@ -94,12 +130,17 @@ class WriteEpisodePlan(CodedTool):
         :param args:
             checklist_items: list of "turns A-B: <goal>" strings (the full
                 100-turn plan, ordered by turn). Required, non-empty.
-            strategy_summary: freeform prose brief written into
-                playbook_coordinator.md for strategy_coordinator. Required.
-            playbook_summaries: optional dict {domain: summary_text} for any of
-                rides/shops/staff/research/layout/survey. Each is written between
-                PLAYBOOK_SUMMARY markers at the top of playbook_<domain>.md.
-                Unknown domains and empty summaries are skipped.
+            strategy: in merged/solo mode, the complete episode strategy across
+                coordinator, rides, shops, staff, research, layout, and survey.
+            strategy_summary: in per-domain mode, the coordinator's
+                phase-independent operating policy.
+                Also accepted as a backwards-compatible solo alias for saved plans.
+            playbook_summaries: in structured per-domain mode, a required dict
+                containing a complete, non-placeholder strategy string for each
+                of rides/shops/staff/research/layout/survey. Every strategy is
+                written between PLAYBOOK_SUMMARY markers at the top of its
+                playbook. Missing, null, empty, placeholder, and unknown values
+                are rejected before any file is changed.
         :return: result dict or "ERROR: ...".
         """
         del sly_data
@@ -109,14 +150,53 @@ class WriteEpisodePlan(CodedTool):
             # Tolerate a newline-delimited blob if the caller didn't pass a list.
             raw_items = raw_items.splitlines()
         if not isinstance(raw_items, list):
-            return "ERROR: checklist_items is required and must be a list of strings"
+            return f"{self.RETRYABLE_VALIDATION_ERROR} checklist_items is required and must be a list of strings"
         items = [str(it).strip() for it in raw_items if str(it).strip()]
         if not items:
-            return "ERROR: checklist_items must contain at least one non-empty line"
+            return f"{self.RETRYABLE_VALIDATION_ERROR} checklist_items must contain at least one non-empty line"
+        phase_error = validate_phase_items(items)
+        if phase_error:
+            return f"{self.RETRYABLE_VALIDATION_ERROR} {phase_error}"
 
-        strategy_summary = str(args.get("strategy_summary", "")).strip()
-        if not strategy_summary:
-            return "ERROR: strategy_summary is required and must be non-empty"
+        strategy_key = "strategy" if self.MERGED else "strategy_summary"
+        strategy_value = args.get(strategy_key)
+        if self.MERGED and strategy_value is None:
+            # Existing champion snapshots created before the solo strategy was
+            # unified still restore safely, then get rewritten in the new shape.
+            strategy_value = args.get("strategy_summary")
+        strategy, strategy_error = self._validated_strategy_text(strategy_value, strategy_key)
+        if strategy_error:
+            return strategy_error
+
+        # Validate the complete payload before touching any file. In particular,
+        # never stringify JSON null/Python None into a persisted "None" strategy.
+        playbook_summaries: dict[str, str] = {}
+        if not self.MERGED and self.REQUIRE_DOMAIN_STRATEGIES:
+            raw_summaries = args.get("playbook_summaries")
+            if not isinstance(raw_summaries, dict):
+                return (
+                    f"{self.RETRYABLE_VALIDATION_ERROR} playbook_summaries is "
+                    "required and must contain "
+                    "complete strategies for rides, shops, staff, research, layout, and survey"
+                )
+
+            missing = [domain for domain in self.DOMAIN_PLAYBOOKS if domain not in raw_summaries]
+            unknown = [str(domain) for domain in raw_summaries if domain not in self.DOMAIN_PLAYBOOKS]
+            if missing:
+                return (
+                    f"{self.RETRYABLE_VALIDATION_ERROR} playbook_summaries is "
+                    "missing required domains: " + ", ".join(missing)
+                )
+            if unknown:
+                return f"{self.RETRYABLE_VALIDATION_ERROR} playbook_summaries contains unknown domains: " + ", ".join(
+                    unknown
+                )
+
+            for domain in self.DOMAIN_PLAYBOOKS:
+                text, text_error = self._validated_strategy_text(raw_summaries[domain], f"playbook_summaries.{domain}")
+                if text_error:
+                    return text_error
+                playbook_summaries[domain] = text
 
         try:
             os.makedirs(self.STATE_DIR, exist_ok=True)
@@ -132,41 +212,47 @@ class WriteEpisodePlan(CodedTool):
         except OSError as err:
             return f"ERROR: could not write {checklist_path}: {err}"
 
-        # 2. Strategy summary block inside playbook_coordinator.md.
-        coord_path = os.path.join(self.STATE_DIR, self.PLAYBOOK_COORDINATOR_FILE)
-        coord_block = self._build_block(self.SUMMARY_BEGIN, self.SUMMARY_HEADER,
-                                        strategy_summary, self.SUMMARY_END)
-        summary_action, err = self._write_marked_block(
-            coord_path, self.SUMMARY_BEGIN, self.SUMMARY_END, coord_block
-        )
+        # 2. Strategy summary block inside playbook_coordinator.md (or the merged one).
+        merged_path = os.path.join(self.STATE_DIR, self.MERGED_PLAYBOOK)
+        is_merged = self.MERGED
+        coord_path = merged_path if is_merged else os.path.join(self.STATE_DIR, self.PLAYBOOK_COORDINATOR_FILE)
+        strategy_header = self.COMPLETE_STRATEGY_HEADER if is_merged else self.SUMMARY_HEADER
+        coord_block = self._build_block(self.SUMMARY_BEGIN, strategy_header, strategy, self.SUMMARY_END)
+        summary_action, err = self._write_marked_block(coord_path, self.SUMMARY_BEGIN, self.SUMMARY_END, coord_block)
         if err:
             return err
 
-        # 3. Optional per-domain specialist summaries.
-        playbook_summaries = args.get("playbook_summaries") or {}
+        # 3. Six required specialist strategies. Solo intentionally writes none:
+        # its one complete strategy already contains every domain. Remove a stale
+        # per-domain block when restoring an older solo playbook.
         summaries_written: list[str] = []
-        if isinstance(playbook_summaries, dict):
+        if is_merged:
+            _, cleanup_err = self._remove_marked_block(
+                merged_path, self.PLAYBOOK_SUMMARY_BEGIN, self.PLAYBOOK_SUMMARY_END
+            )
+            if cleanup_err:
+                return cleanup_err
+        elif self.REQUIRE_DOMAIN_STRATEGIES:
+            domain: Any
+            filename: Any
             for domain, filename in self.DOMAIN_PLAYBOOKS.items():
-                text = str(playbook_summaries.get(domain, "")).strip()
-                if not text:
-                    continue
+                text = playbook_summaries[domain]
                 path = os.path.join(self.STATE_DIR, filename)
-                block = self._build_block(self.PLAYBOOK_SUMMARY_BEGIN,
-                                          self.PLAYBOOK_SUMMARY_HEADER, text,
-                                          self.PLAYBOOK_SUMMARY_END)
-                _, derr = self._write_marked_block(
-                    path, self.PLAYBOOK_SUMMARY_BEGIN, self.PLAYBOOK_SUMMARY_END, block
+                block = self._build_block(
+                    self.PLAYBOOK_SUMMARY_BEGIN, self.PLAYBOOK_SUMMARY_HEADER, text, self.PLAYBOOK_SUMMARY_END
                 )
+                _, derr = self._write_marked_block(path, self.PLAYBOOK_SUMMARY_BEGIN, self.PLAYBOOK_SUMMARY_END, block)
                 if derr:
                     return derr
                 summaries_written.append(domain)
 
         # Snapshot the raw plan so the champion mechanism can restore it verbatim.
-        plan_snapshot = self._snapshot_plan(items, strategy_summary, playbook_summaries)
+        plan_snapshot = self._snapshot_plan(items, strategy, playbook_summaries, is_merged)
 
         return {
             "checklist_items_written": len(items),
             "strategy_summary_written": True,
+            "strategy_written": True,
             "checklist_path": checklist_path,
             "playbook_coordinator_path": coord_path,
             "summary_action": summary_action,
@@ -174,18 +260,36 @@ class WriteEpisodePlan(CodedTool):
             "plan_snapshot_written": plan_snapshot,
         }
 
-    def _snapshot_plan(self, items: list, strategy_summary: str, playbook_summaries: Any) -> bool:
+    @classmethod
+    def _validated_strategy_text(cls, value: Any, field_name: str) -> tuple[str, str | None]:
+        """Return normalized strategy text or an error without coercing nulls."""
+        if not isinstance(value, str):
+            return (
+                "",
+                f"{cls.RETRYABLE_VALIDATION_ERROR} {field_name} is required and must be a string",
+            )
+        text = value.strip()
+        if not text or text.casefold() in cls.PLACEHOLDER_STRATEGIES:
+            return (
+                "",
+                f"{cls.RETRYABLE_VALIDATION_ERROR} {field_name} must contain "
+                "a complete executable strategy, not a placeholder",
+            )
+        return text, None
+
+    def _snapshot_plan(self, items: list, strategy: str, playbook_summaries: Any, is_merged: bool) -> bool:
         """Dump the plan args to plan_current.json (best-effort). The runner's
-        champion_plan promotes this to plan_last_good on a clean run and
-        re-applies it after a doom."""
-        summaries = {}
-        if hasattr(playbook_summaries, "items"):
-            summaries = {str(k): str(v) for k, v in playbook_summaries.items()}
-        snapshot = {
-            "checklist_items": list(items),
-            "strategy_summary": strategy_summary,
-            "playbook_summaries": summaries,
-        }
+        champion_plan promotes this to plan_last_good when the episode is the best
+        so far, and re-applies it as the base of the next episode's plan."""
+        summaries = dict(playbook_summaries)
+        if is_merged:
+            snapshot = {"checklist_items": list(items), "strategy": strategy}
+        else:
+            snapshot = {
+                "checklist_items": list(items),
+                "strategy_summary": strategy,
+                "playbook_summaries": summaries,
+            }
         try:
             with open(os.path.join(self.STATE_DIR, self.PLAN_CURRENT_FILE), "w", encoding="utf-8") as fh:
                 json.dump(snapshot, fh, indent=2)
@@ -195,16 +299,9 @@ class WriteEpisodePlan(CodedTool):
 
     def _build_block(self, begin: str, header: str, body: str, end: str) -> str:
         """The full marked block, header + body, ready to embed."""
-        return (
-            f"{begin}\n"
-            f"{header}\n"
-            f"{body.rstrip(chr(10))}\n"
-            f"{end}\n"
-        )
+        return f"{begin}\n{header}\n{body.rstrip(chr(10))}\n{end}\n"
 
-    def _write_marked_block(
-        self, path: str, begin: str, end: str, block: str
-    ) -> tuple[str, str | None]:
+    def _write_marked_block(self, path: str, begin: str, end: str, block: str) -> tuple[str, str | None]:
         """Replace the begin..end marked block in `path`, or insert it at the top
         if no markers exist yet. Returns (action, error_or_None).
 
@@ -238,6 +335,29 @@ class WriteEpisodePlan(CodedTool):
         except OSError as err:
             return "", f"ERROR: could not write {path}: {err}"
         return action, None
+
+    def _remove_marked_block(self, path: str, begin: str, end: str) -> tuple[str, str | None]:
+        """Remove one obsolete marked block, if present."""
+        if not os.path.exists(path):
+            return "absent", None
+        try:
+            with open(path, encoding="utf-8") as fh:
+                existing = fh.read()
+        except OSError as err:
+            return "", f"ERROR: could not read {path}: {err}"
+
+        begin_idx = existing.find(begin)
+        end_idx = existing.find(end)
+        if begin_idx == -1 or end_idx == -1 or end_idx <= begin_idx:
+            return "absent", None
+        end_after = end_idx + len(end)
+        new_text = existing[:begin_idx].rstrip() + "\n\n" + existing[end_after:].lstrip()
+        try:
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(new_text)
+        except OSError as err:
+            return "", f"ERROR: could not write {path}: {err}"
+        return "removed", None
 
     async def async_invoke(self, args: dict[str, Any], sly_data: dict[str, Any]) -> dict[str, Any] | str:
         return self.invoke(args, sly_data)

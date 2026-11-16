@@ -2,36 +2,35 @@
 
 <!-- PLAYBOOK_SUMMARY:BEGIN -->
 ## Summary
-You decide which rides to build, upgrade, move, or remove — subtype, tier (never coordinates). Rides are the park's main draw and its biggest rating lever: diversify subtypes/tiers, push to higher tiers as research unlocks them, keep them repaired, and never let num_rides hit 0.
+You decide which rides to build, upgrade, move, or remove, including their subtype and tier—but never their coordinates. Rides are the park's main draw and its biggest rating lever: diversify subtypes and tiers, advance to higher tiers as research unlocks them, keep rides repaired, and never let `num_rides` reach 0.
 <!-- PLAYBOOK_SUMMARY:END -->
 
-Rides are the **core of the park**. They are the only source of capacity, so a park with no rides gets no visitors — and they lift guest happiness, park rating and park value.
-Identical rides gives diminishing park-rating returns. Keep rides **DIVERSE**. Prefer placing higher tier rides.
+Rides are the **core of the park**. They determine park capacity, which allows guests to enter, and help increase park rating and value. Prefer placing a diverse selection of higher-tier rides.
 
 ## Types of rides:
-- **Carousels:** cheapest to build and run, rarely break, but low excitement and capacity.
-- **Ferris Wheels:** mid cost, highest capacity.
+- **Carousels:** cheapest to build/operate, rarely break, low excitement and capacity.
+- **Ferris Wheels:** moderately expensive, highest capacity.
 - **Roller Coasters:** expensive, highest excitement and intensity, break most often.
 
 ## Key attributes:
-- **Capacity:** guests per run, and the only thing that raises `park_capacity` — no new guest enters while the park sits at capacity.
-- **Excitement:** finishing a ride adds guest happiness — feeds park rating.
-- **Intensity:** rating drops as park-wide `avg_intensity` drifts from ~5.
-- **Ticket price:** fixed per subclass (`max_ticket_price` in `rides_economics`) — a higher tier charges more.
+- **Capacity:** number of guests allowed per ride cycle. Adds to `park_capacity` in `status_rides`, which determines how many guests can enter the park.
+- **Excitement:** completing a ride increases guest happiness and park rating.
+- **Intensity:** maintain `avg_intensity` in `status_rides` at approximately 5.
+- **Ticket price:** fixed and listed in `rides_economics`.
 
-## Park current status (not set by you)
-- **park_capacity**, **avg_intensity** — park-wide totals.
-- **placed_rides** — each carries `capacity`, `excitement`, `intensity`, `ticket_price`, `avg_wait_time`, `avg_guests_per_operation`, `reachable`, and `guests_entertained` (guests carried today = popularity; resets each morning).
-- **broken_rides** — rides currently out of service, with `uptime`.
-- **next_unlock** — the next tier due and which subtypes still need it, e.g. `{"subtype": "carousel", "tier": "blue", "days": 2, "subtypes": ["carousel", "drink"]}`. Absent = research is off. Use to plan ahead.
+## Current park status is in `status_rides`:
+- **guests** — guest satisfaction and activity metrics.
+- **placed_rides** — per-ride status and performance metrics.
 
 ## Tier upgrade:
-- Place a higher tier **as soon as** research unlocks it (yellow < blue < green < red; see `available_entities`) and cash allows — higher tiers pay back far more - place them as much as and as soon as possible. Each tier has its own distinct benefits, listed in `economics_rides`; read them and exploit them.
+- Place higher-tier rides **as soon as** research unlocks them and cash allows (yellow < blue < green < red). In `status_rides`, check `available_entities` for unlocked tiers and `next_unlock` to prepare for upcoming unlocks. Higher tiers pay back far more and offer distinct benefits; review `economics_rides` and exploit those benefits.
 - **HOW TO PLACE HIGHER TIERS?**
     1. `move` your lowest-tier ride onto an `unreachable_tiles` slot.
     2. `place` the new tier on the tile it vacated.
-A `move` is free and carries the ride's capacity with it. More number of rides (reachable or unreachable) increase revenue.
-- Avoid `remove`: a ride sells back for only 66% of its build cost and the park loses its capacity.
+A `move` is free and preserves the ride's capacity. Greater number of rides, whether reachable or unreachable, increases the number of visiting guests.
+- Avoid `remove` because it decreases `park_capacity`.
 
 ## Learned rules (promoted from prior runs)
-After moving a low-tier ride off a valuable reachable tile, immediately refill that tile with a reachable red carousel when cash remains safely above $50000. (learned ep0)
+When a late reachable ride slot has already been freed and upkeep is not urgent, place a red carousel in it immediately before spending on optional shops, staff, or coasters. (learned ep8)
+Attempt late move-then-replace ride upgrades only when an empty bank tile exists; otherwise skip ride replacement instead of risking move or placement errors. (learned ep0)
+Reinvest early profits into reachable ride capacity and carousel tier replacements, moving weaker rides to bank tiles before placing stronger carousels. (learned ep0)

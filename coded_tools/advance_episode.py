@@ -16,12 +16,16 @@
 """
 End-of-episode bookkeeping (deterministic, not LLM logic).
 
-Two side effects, applied as one tool call by ``episode_closer``:
+Two required side effects, applied as one tool call by ``episode_closer``:
 
-  1. Persist this episode's cumulative_reward to ``last_reward.md`` so
-     the next episode_closer can compute a real reward_delta.
-  2. Drop the stale done=true observation envelope MAPs auto-restart leaves
+  1. Drop the stale done=true observation envelope MAPs auto-restart leaves
      behind, so the next turn's ParkStatus does not re-trigger episode_closer.
+  2. Atomically write ``closeout_receipt.json`` LAST. The runner uses this
+     episode/reward receipt as the durable transaction commit marker and will
+     retry close-out from local telemetry until it exists.
+
+Arms that still consume the legacy ``last_reward.md`` may opt into writing it.
+The canonical baseline does not: its planner reads reward from full status.
 
 trial_strategies_outcome.md is NOT touched here: it is append-only and keeps
 every episode's OUTCOME lines for the life of the run. It used to be trimmed to
@@ -46,6 +50,7 @@ no phase to track or advance.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from typing import Any
@@ -54,19 +59,60 @@ from typing import ClassVar
 from neuro_san.interfaces.coded_tool import CodedTool
 
 from coded_tools.file_io import FileIO
+from coded_tools.state_dir import USE_LAST_REWARD as _USE_LAST_REWARD
+from coded_tools.state_dir import state_path
 
 
 class AdvanceEpisode(CodedTool):
-    """Persist last_reward and clear the observation cache."""
+    """Commit episode close-out and clear the observation cache."""
 
-    LAST_REWARD_PATH: ClassVar[str] = "coded_tools/state/last_reward.md"
+    WRITE_LAST_REWARD: ClassVar[bool] = _USE_LAST_REWARD
+    LAST_REWARD_PATH: ClassVar[str] = state_path("last_reward.md")
+    CLOSEOUT_RECEIPT_PATH: ClassVar[str] = state_path("closeout_receipt.json")
+    PENDING_PATH: ClassVar[str] = state_path(".advance_episode.pending.json")
     LATEST_OBS_PATH: ClassVar[str] = os.environ.get(
         "MAPS_LATEST_OBS_PATH",
-        "coded_tools/state/latest_observations.json",
+        state_path("latest_observations.json"),
     )
 
     def __init__(self) -> None:
         self.logger = logging.getLogger(__name__)
+
+    @classmethod
+    def recover_pending(cls) -> str | None:
+        """Recover a process interrupted before the close-out receipt write.
+
+        If the receipt landed, the transaction committed and only the journal
+        needs removing. For a legacy arm that writes ``last_reward``, otherwise
+        restore its exact prior value before retrying.
+        """
+        if not os.path.exists(cls.PENDING_PATH):
+            return None
+        try:
+            with open(cls.PENDING_PATH, encoding="utf-8") as handle:
+                pending = json.load(handle)
+            committed = False
+            try:
+                with open(cls.CLOSEOUT_RECEIPT_PATH, encoding="utf-8") as handle:
+                    receipt = json.load(handle)
+                committed = int(receipt.get("episode")) == int(pending.get("episode")) and float(
+                    receipt.get("final_reward")
+                ) == float(pending.get("final_reward"))
+            except (OSError, json.JSONDecodeError, TypeError, ValueError):
+                committed = False
+
+            if not committed and pending.get("write_last_reward", cls.WRITE_LAST_REWARD):
+                if pending.get("prior_exists"):
+                    FileIO.write_text_atomic(cls.LAST_REWARD_PATH, str(pending.get("prior_body", "")))
+                else:
+                    try:
+                        os.remove(cls.LAST_REWARD_PATH)
+                    except FileNotFoundError:
+                        pass
+            os.remove(cls.PENDING_PATH)
+            return None
+        except (OSError, json.JSONDecodeError, TypeError, ValueError) as err:
+            return f"ERROR: could_not_recover_advance_episode: {err}"
 
     def invoke(self, args: dict[str, Any], sly_data: dict[str, Any]) -> dict[str, Any] | str:
         """
@@ -74,37 +120,91 @@ class AdvanceEpisode(CodedTool):
 
         :param args:
             - ``final_reward`` (int|float, required): this episode's
-              cumulative_reward. Written to ``last_reward.md`` for the
-              next episode's prior_reward.
+              cumulative_reward, recorded in the close-out receipt.
             - ``episode`` (int, required): current episode number. Validated
               but not otherwise used here — the close-out contract keeps it so a
               malformed call is caught, and the trial files are owned elsewhere.
         :param sly_data: ignored.
-        :return: dict with status, last_reward_written and
-            observation_cache_cleared on success, or an ``"ERROR: ..."`` string.
+        :return: result dict on success, or an ``"ERROR: ..."`` string.
         """
         del sly_data
+
+        recovery_error = self.recover_pending()
+        if recovery_error is not None:
+            return recovery_error
 
         final_reward = args.get("final_reward")
         if final_reward is None:
             return "ERROR: invalid_input: 'final_reward' is required."
 
-        if FileIO.to_int(args.get("episode")) is None:
+        episode = FileIO.to_int(args.get("episode"))
+        if episode is None:
             return "ERROR: invalid_input: 'episode' is required and must be an integer."
 
-        last_reward_body = f"cumulative_reward: {final_reward}\n"
-        write_reward_err = FileIO.write_guarded(self.LAST_REWARD_PATH, last_reward_body, self.logger)
-        if write_reward_err is not None:
-            return write_reward_err
+        try:
+            final_reward_number = float(final_reward)
+        except (TypeError, ValueError):
+            return "ERROR: invalid_input: 'final_reward' must be numeric."
+
+        pending = {
+            "version": 1,
+            "episode": episode,
+            "final_reward": final_reward_number,
+            "write_last_reward": self.WRITE_LAST_REWARD,
+        }
+        if self.WRITE_LAST_REWARD:
+            pending["prior_exists"] = os.path.exists(self.LAST_REWARD_PATH)
+            pending["prior_body"] = FileIO.read_text(self.LAST_REWARD_PATH)
+        try:
+            FileIO.write_text_atomic(self.PENDING_PATH, json.dumps(pending, sort_keys=True) + "\n")
+            if self.WRITE_LAST_REWARD:
+                FileIO.write_text_atomic(self.LAST_REWARD_PATH, f"cumulative_reward: {final_reward}\n")
+        except OSError as err:
+            recovery_error = self.recover_pending()
+            if recovery_error is not None:
+                return recovery_error
+            return f"ERROR: could_not_write: {self.LAST_REWARD_PATH}: {err}"
 
         # Drop the stale done=true envelope MAPs auto-restart leaves behind.
         cache_cleared = self._clear_observation_cache()
 
-        return {
-            "status": "ok",
-            "last_reward_written": float(final_reward),
-            "observation_cache_cleared": cache_cleared,
+        # Written LAST: this is the close-out transaction's durable commit
+        # marker.  The runner advances only after this exact episode/reward pair
+        # exists.  Repeating the write is safe, so a failed close-out can retry.
+        receipt = {
+            "version": 1,
+            "episode": episode,
+            "final_reward": final_reward_number,
         }
+        try:
+            FileIO.write_text_atomic(
+                self.CLOSEOUT_RECEIPT_PATH,
+                json.dumps(receipt, sort_keys=True) + "\n",
+            )
+        except OSError as err:
+            self.logger.error("Could not write %s: %s", self.CLOSEOUT_RECEIPT_PATH, err)
+            recovery_error = self.recover_pending()
+            if recovery_error is not None:
+                return recovery_error
+            return f"ERROR: could_not_write: {self.CLOSEOUT_RECEIPT_PATH}: {err}"
+
+        try:
+            os.remove(self.PENDING_PATH)
+        except OSError as err:
+            # The receipt is authoritative and already committed. A later call
+            # to recover_pending sees the matching receipt and only removes the
+            # stale journal; never report a false close-out failure here.
+            self.logger.warning("Could not clear %s: %s", self.PENDING_PATH, err)
+
+        result = {
+            "status": "ok",
+            "episode": episode,
+            "observation_cache_cleared": cache_cleared,
+            "closeout_receipt_written": True,
+        }
+        if self.WRITE_LAST_REWARD:
+            result["last_reward_written"] = final_reward_number
+        return result
 
     async def async_invoke(self, args: dict[str, Any], sly_data: dict[str, Any]) -> dict[str, Any] | str:
         return self.invoke(args, sly_data)
@@ -118,4 +218,3 @@ class AdvanceEpisode(CodedTool):
         except OSError as err:
             self.logger.warning("Could not clear %s: %s", self.LATEST_OBS_PATH, err)
         return False
-

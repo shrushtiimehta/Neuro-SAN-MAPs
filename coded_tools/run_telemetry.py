@@ -32,10 +32,11 @@ Two modes:
    if fewer than N runs exist, every run found is returned.
 
 Both cross-run modes (SELECT and RUNS) obey MAPS_INCLUDE_ARCHIVED, the run-level
-switch exported by run_all.sh --no-archived. Set it to 0 and prior-runs/ is never
-read, so "best-ever" collapses to "best in the current run". Deliberately not a
-tool arg — the operator decides this per run, not the agent per call. EPISODE
-mode is current-run-only regardless.
+switch exported by the launchers. It defaults to 0, so prior-runs/ is never read
+and "best-ever" means "best in the current run". Set it to 1 (or launch with
+--include-archived) to opt into archived history. Deliberately not a tool arg —
+the operator decides this per run, not the agent per call. EPISODE mode is
+current-run-only regardless.
 
 It reuses EpisodeTelemetry for parsing each episode file (single source of
 truth for how a run.ep*.jsonl row maps to metrics), then derives the trends.
@@ -113,8 +114,12 @@ from typing import ClassVar
 
 from neuro_san.interfaces.coded_tool import CodedTool
 
-from coded_tools.file_io import FileIO
+# Cloud readers remain private maintenance helpers below, but invoke() never
+# dispatches to them: every live arm learns from its isolated local JSONL logs.
+from coded_tools import wandb_telemetry
 from coded_tools.episode_telemetry import EpisodeTelemetry
+from coded_tools.file_io import FileIO
+from coded_tools.state_dir import state_path
 
 
 class RunTelemetry(CodedTool):
@@ -125,16 +130,33 @@ class RunTelemetry(CodedTool):
     # folder of run.ep*.jsonl files: logs/maps_park/prior-runs/<id>/run.ep*.jsonl
     PRIOR_RUNS_SUBDIR: ClassVar[str] = "prior-runs"
     DEFAULT_NUM_RUNS: ClassVar[int] = 5
-    # Run-level override for include_archived, exported by run_all.sh --no-archived.
+    # Run-level override for include_archived; absent means no archived history.
     ENV_INCLUDE_ARCHIVED: ClassVar[str] = "MAPS_INCLUDE_ARCHIVED"
+    NO_CROSS_EPISODE_ENV: ClassVar[str] = "MAPS_NO_CROSS_EPISODE"
+    EPISODE_FLOOR_PATH: ClassVar[str] = state_path("no_carry_episode.txt")
 
     # SELECT mode: per-step fields kept for the two fed episodes. Drops the
-    # low-signal/noisy fields (x, y, min_cleanliness, min_uptime, shop_revenue,
-    # ride_op_cost) and the heavy rollups entirely — the macro reads raw steps.
+    # low-signal/noisy fields (x, y, min_cleanliness, min_uptime, domain revenue/
+    # operating costs, research_progress) and the heavy rollups entirely — the macro reads raw steps.
     SELECT_KEEP_FIELDS: ClassVar[tuple[str, ...]] = (
-        "step", "action", "subtype", "subclass", "price", "rejected_action",
-        "error", "reward", "cumulative_reward", "cash", "park_value",
-        "park_rating", "research_speed", "num_rides", "num_shops", "num_staff",
+        "step",
+        "action",
+        "subtype",
+        "subclass",
+        "price",
+        "rejected_action",
+        "error",
+        "reward",
+        "cumulative_reward",
+        "cash",
+        "park_value",
+        "park_rating",
+        "asset_investment",
+        "daily_profit",
+        "research_speed",
+        "num_rides",
+        "num_shops",
+        "num_staff",
     )
 
     def invoke(self, args: dict[str, Any], sly_data: dict[str, Any]) -> dict[str, Any]:
@@ -156,7 +178,7 @@ class RunTelemetry(CodedTool):
         scope = str(args.get("scope") or "").strip().lower()
         select = str(args.get("select") or "").strip().lower()
         # Run-level switch only (run_all.sh --no-archived); not a caller arg.
-        archived = self._to_bool(os.environ.get(self.ENV_INCLUDE_ARCHIVED), True)
+        archived = self._to_bool(os.environ.get(self.ENV_INCLUDE_ARCHIVED), False)
         # SELECT mode takes priority: the best-ever episode, with or without the
         # most-recent one alongside it. 'best'/'best_only' omits last_episode —
         # the micro already has the current episode from EpisodeTelemetry.
@@ -168,6 +190,198 @@ class RunTelemetry(CodedTool):
             num_runs = FileIO.to_int(args.get("num_runs")) or self.DEFAULT_NUM_RUNS
             return self._runs_mode(max(1, num_runs), include_archived=archived)
         return self._episodes_mode(args)
+
+    # ── Weights & Biases backend ───────────────────────────────────────────
+    def _wandb_episodes_mode(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Deprecated compatibility entry point; telemetry reads are local."""
+        return self._episodes_mode(args)
+
+        # Kept temporarily for source compatibility with older callers. This
+        # branch is intentionally unreachable and can be deleted after rollout.
+        from_episode = FileIO.to_int(args.get("from_episode")) if args.get("from_episode") is not None else None
+        max_episodes = FileIO.to_int(args.get("max_episodes")) if args.get("max_episodes") is not None else None
+        path = wandb_telemetry.current_run_path()
+        telemetry = EpisodeTelemetry()
+        episode_numbers = telemetry.episode_numbers(path)
+        if from_episode is not None:
+            episode_numbers = [episode for episode in episode_numbers if episode >= from_episode]
+        if max_episodes is not None and max_episodes > 0:
+            episode_numbers = episode_numbers[-max_episodes:]
+
+        episodes: list[dict[str, Any]] = []
+        episode: Any
+        for episode in episode_numbers:
+            record = telemetry.invoke({"episode": episode, "wandb_run_path": path}, {})
+            if record.get("exists"):
+                episodes.append(
+                    {
+                        "episode": episode,
+                        "rollup": record.get("rollup") or {},
+                    }
+                )
+        if not episodes:
+            return {"scope": "episodes", "exists": False, "run_episode_count": 0, "episodes": [], "run_rollup": {}}
+        return {
+            "scope": "episodes",
+            "exists": True,
+            "run_episode_count": len(episodes),
+            "episodes": episodes,
+            "run_rollup": self._run_rollup(episodes),
+            "source": "wandb",
+        }
+
+    def _wandb_select_mode(self, *, include_last: bool, include_archived: bool) -> dict[str, Any]:
+        """Deprecated compatibility entry point; telemetry reads are local."""
+        return self._select_mode(include_last=include_last, include_archived=include_archived)
+
+        paths = wandb_telemetry.list_run_paths(include_current_only=not include_archived)
+        current = wandb_telemetry.current_run_path()
+        flat: list[dict[str, Any]] = []
+        path: Any
+        for path in paths:
+            rows = wandb_telemetry.read_step_rows(path)
+            episode_numbers = sorted(
+                {episode for row in rows if (episode := FileIO.to_int(row.get("episode"))) is not None}, reverse=True
+            )
+            episode: Any
+            for episode in episode_numbers:
+                episode_rows = [row for row in rows if FileIO.to_int(row.get("episode")) == episode]
+                episode_rows.sort(key=lambda row: FileIO.to_int(row.get("step")) or 0)
+                final_cum = next(
+                    (
+                        row.get("cumulative_reward")
+                        for row in reversed(episode_rows)
+                        if isinstance(row.get("cumulative_reward"), (int, float))
+                        and not isinstance(row.get("cumulative_reward"), bool)
+                    ),
+                    None,
+                )
+                flat.append(
+                    {
+                        "run_id": path.rsplit("/", 1)[-1],
+                        "is_current": path == current,
+                        "episode": episode,
+                        "rows": episode_rows,
+                        "final_cum": final_cum,
+                        "identity": (path, episode),
+                    }
+                )
+        if not flat:
+            out: dict[str, Any] = {
+                "scope": "select",
+                "exists": False,
+                "reference_available": False,
+                "reference_episode": None,
+                "reason": "no W&B episode telemetry exists yet",
+                "source": "wandb",
+            }
+            if include_last:
+                out["last_episode"] = None
+            return out
+
+        # list_run_paths is newest-first and episode_numbers is descending.
+        last = flat[0]
+        ranked = sorted(
+            flat,
+            key=lambda entry: (
+                entry["final_cum"] is not None,
+                entry["final_cum"] or 0,
+            ),
+            reverse=True,
+        )
+        best = ranked[0]
+        if best["identity"] == last["identity"]:
+            best = ranked[1] if len(ranked) > 1 else None
+        reference = self._wandb_select_payload(best) if best else None
+        result: dict[str, Any] = {
+            "scope": "select",
+            "exists": bool(reference) if not include_last else True,
+            "reference_available": bool(reference),
+            "include_archived": include_archived,
+            "runs_scanned": len(paths),
+            "episodes_scanned": len(flat),
+            "reference_episode": reference,
+            "source": "wandb",
+        }
+        if not reference:
+            result["reason"] = "no distinct completed reference episode exists yet"
+        if include_last:
+            result["last_episode"] = self._wandb_select_payload(last)
+        return result
+
+    def _wandb_select_payload(self, entry: dict[str, Any] | None) -> dict[str, Any] | None:
+        if not entry:
+            return None
+        steps: list[dict[str, Any]] = []
+        row: Any
+        for row in entry["rows"]:
+            step: dict[str, Any] = {}
+            field: Any
+            for field in self.SELECT_KEEP_FIELDS:
+                if field == "error":
+                    error = row.get("error")
+                    if error:
+                        step[field] = error.get("message") if isinstance(error, dict) else error
+                elif row.get(field) is not None:
+                    step[field] = row.get(field)
+            steps.append(step)
+        return {
+            "run_id": entry["run_id"],
+            "is_current": entry["is_current"],
+            "episode": entry["episode"],
+            "final_cum": entry["final_cum"],
+            "step_count": len(steps),
+            "steps": steps,
+        }
+
+    def _wandb_runs_mode(self, num_runs: int, *, include_archived: bool) -> dict[str, Any]:
+        """Deprecated compatibility entry point; telemetry reads are local."""
+        return self._runs_mode(num_runs, include_archived=include_archived)
+
+        paths = wandb_telemetry.list_run_paths(include_current_only=not include_archived)[:num_runs]
+        current = wandb_telemetry.current_run_path()
+        telemetry = EpisodeTelemetry()
+        runs: list[dict[str, Any]] = []
+        path: Any
+        for path in paths:
+            episodes: list[dict[str, Any]] = []
+            episode: Any
+            for episode in telemetry.episode_numbers(path):
+                record = telemetry.invoke({"episode": episode, "wandb_run_path": path}, {})
+                if record.get("exists"):
+                    episodes.append(
+                        {
+                            "episode": episode,
+                            "rollup": record.get("rollup") or {},
+                        }
+                    )
+            if episodes:
+                runs.append(
+                    {
+                        "run_id": path.rsplit("/", 1)[-1],
+                        "is_current": path == current,
+                        "episode_count": len(episodes),
+                        "episodes": episodes,
+                        "run_summary": self._run_summary(episodes),
+                    }
+                )
+        if not runs:
+            return {
+                "scope": "runs",
+                "exists": False,
+                "runs_analyzed": 0,
+                "runs": [],
+                "cross_run_rollup": {},
+                "source": "wandb",
+            }
+        return {
+            "scope": "runs",
+            "exists": True,
+            "runs_analyzed": len(runs),
+            "runs": runs,
+            "cross_run_rollup": self._cross_run_rollup(runs),
+            "source": "wandb",
+        }
 
     # ── EPISODE mode (within the current run) ───────────────────────────────
     def _episodes_mode(self, args: dict[str, Any]) -> dict[str, Any]:
@@ -182,6 +396,7 @@ class RunTelemetry(CodedTool):
 
         telemetry = EpisodeTelemetry()
         episodes: list[dict[str, Any]] = []
+        ep: Any
         for ep in episode_numbers:
             record = telemetry.invoke({"episode": ep}, {})
             if not record.get("exists"):
@@ -189,8 +404,7 @@ class RunTelemetry(CodedTool):
             episodes.append({"episode": ep, "rollup": record.get("rollup") or {}})
 
         if not episodes:
-            return {"scope": "episodes", "exists": False, "run_episode_count": 0,
-                    "episodes": [], "run_rollup": {}}
+            return {"scope": "episodes", "exists": False, "run_episode_count": 0, "episodes": [], "run_rollup": {}}
 
         return {
             "scope": "episodes",
@@ -210,8 +424,7 @@ class RunTelemetry(CodedTool):
             return value
         return str(value).strip().lower() not in ("false", "0", "no", "off", "")
 
-    def _select_mode(self, include_last: bool = True,
-                     include_archived: bool = True) -> dict[str, Any]:
+    def _select_mode(self, include_last: bool = True, include_archived: bool = True) -> dict[str, Any]:
         """Scan ALL runs to rank every episode by final cumulative reward, then
         return exactly the two episodes the macro start pass wants:
 
@@ -229,16 +442,30 @@ class RunTelemetry(CodedTool):
         # Flatten to a global, most-recent-first list. _discover_runs is
         # most-recent-run-first; within a run, higher episode = more recent.
         flat: list[dict[str, Any]] = []
+        run_id: Any
+        is_current: Any
+        ep_files: Any
         for run_id, is_current, ep_files in discovered:
+            ep_num: Any
+            path: Any
             for ep_num, path in sorted(ep_files, reverse=True):
-                flat.append({
-                    "run_id": run_id, "is_current": is_current,
-                    "episode": ep_num, "path": path,
-                    "final_cum": self._final_cum(path),
-                })
+                flat.append(
+                    {
+                        "run_id": run_id,
+                        "is_current": is_current,
+                        "episode": ep_num,
+                        "path": path,
+                        "final_cum": self._final_cum(path),
+                    }
+                )
         if not flat:
-            out: dict[str, Any] = {"scope": "select", "exists": False,
-                                   "reference_episode": None}
+            out: dict[str, Any] = {
+                "scope": "select",
+                "exists": False,
+                "reference_available": False,
+                "reference_episode": None,
+                "reason": "no completed reference episode exists yet",
+            }
             if include_last:
                 out["last_episode"] = None
             return out
@@ -254,18 +481,27 @@ class RunTelemetry(CodedTool):
         if best["path"] == last["path"]:
             best = ranked[1] if len(ranked) > 1 else None
 
+        reference_payload = self._select_payload(best) if best else None
         result: dict[str, Any] = {
             "scope": "select",
-            "exists": True,
+            # For watcher select='best', exists means that a usable reference
+            # exists, not merely that the current in-flight log was discovered.
+            # best_and_last can still validly expose last_episode without one.
+            "exists": bool(reference_payload) if not include_last else True,
+            "reference_available": bool(reference_payload),
             "include_archived": include_archived,
             "runs_scanned": len(discovered),
             "episodes_scanned": len(flat),
-            "reference_episode": self._select_payload(best) if best else None,
-            "note": ("reference_episode is the best-scoring episode across ALL "
-                     "runs; the current in-flight episode is excluded when it "
-                     "would otherwise rank first. No rollups — raw filtered "
-                     "steps only."),
+            "reference_episode": reference_payload,
+            "note": (
+                "reference_episode is the best-scoring episode across ALL "
+                "runs; the current in-flight episode is excluded when it "
+                "would otherwise rank first. No rollups — raw filtered "
+                "steps only."
+            ),
         }
+        if not reference_payload:
+            result["reason"] = "no completed reference episode exists yet"
         if include_last:
             result["last_episode"] = self._select_payload(last)
         return result
@@ -276,6 +512,7 @@ class RunTelemetry(CodedTool):
         if not rows:
             return None
         rows.sort(key=lambda r: r.get("step") if r.get("step") is not None else 0)
+        r: Any
         for r in reversed(rows):
             v = r.get("cumulative_reward")
             if isinstance(v, (int, float)) and not isinstance(v, bool):
@@ -287,8 +524,10 @@ class RunTelemetry(CodedTool):
         rows = EpisodeTelemetry()._read_rows(entry["path"])
         rows.sort(key=lambda r: r.get("step") if r.get("step") is not None else 0)
         steps: list[dict[str, Any]] = []
+        r: Any
         for r in rows:
             step: dict[str, Any] = {}
+            f: Any
             for f in self.SELECT_KEEP_FIELDS:
                 if f == "error":
                     err = r.get("error")
@@ -311,8 +550,13 @@ class RunTelemetry(CodedTool):
         discovered = self._discover_runs(include_archived)[:num_runs]
         telemetry = EpisodeTelemetry()
         runs: list[dict[str, Any]] = []
+        run_id: Any
+        is_current: Any
+        ep_files: Any
         for run_id, is_current, ep_files in discovered:
             episodes: list[dict[str, Any]] = []
+            ep_num: Any
+            path: Any
             for ep_num, path in ep_files:
                 record = telemetry.invoke({"run_log_path": path}, {})
                 if not record.get("exists"):
@@ -323,17 +567,18 @@ class RunTelemetry(CodedTool):
             if not episodes:
                 continue
             episodes.sort(key=lambda e: e["episode"] if e["episode"] is not None else 0)
-            runs.append({
-                "run_id": run_id,
-                "is_current": is_current,
-                "episode_count": len(episodes),
-                "episodes": episodes,
-                "run_summary": self._run_summary(episodes),
-            })
+            runs.append(
+                {
+                    "run_id": run_id,
+                    "is_current": is_current,
+                    "episode_count": len(episodes),
+                    "episodes": episodes,
+                    "run_summary": self._run_summary(episodes),
+                }
+            )
 
         if not runs:
-            return {"scope": "runs", "exists": False, "runs_analyzed": 0,
-                    "runs": [], "cross_run_rollup": {}}
+            return {"scope": "runs", "exists": False, "runs_analyzed": 0, "runs": [], "cross_run_rollup": {}}
 
         return {
             "scope": "runs",
@@ -356,7 +601,11 @@ class RunTelemetry(CodedTool):
         """
         out: list[tuple[str, bool, list[tuple[int, str]]]] = []
 
+        episode_floor = self._episode_floor()
         current = self._episode_files(self.RUN_LOG_DIR)
+        if episode_floor is not None:
+            current = [(episode, path) for episode, path in current if episode >= episode_floor]
+            include_archived = False
         if current:
             out.append(("current", True, current))
         if not include_archived:
@@ -365,11 +614,10 @@ class RunTelemetry(CodedTool):
         prior_root = os.path.join(self.RUN_LOG_DIR, self.PRIOR_RUNS_SUBDIR)
         prior_dirs: list[str] = []
         if os.path.isdir(prior_root):
-            prior_dirs = [d for d in glob.glob(os.path.join(prior_root, "*"))
-                          if os.path.isdir(d)]
+            prior_dirs = [d for d in glob.glob(os.path.join(prior_root, "*")) if os.path.isdir(d)]
         # Newest first: by dir name (timestamped ids), then mtime as tiebreak.
-        prior_dirs.sort(key=lambda d: (os.path.basename(d), os.path.getmtime(d)),
-                        reverse=True)
+        prior_dirs.sort(key=lambda d: (os.path.basename(d), os.path.getmtime(d)), reverse=True)
+        d: Any
         for d in prior_dirs:
             ep_files = self._episode_files(d)
             if ep_files:
@@ -380,6 +628,7 @@ class RunTelemetry(CodedTool):
     def _episode_files(run_dir: str) -> list[tuple[int, str]]:
         """Ascending (episode_number, path) for run.ep*.jsonl directly in run_dir."""
         found: list[tuple[int, str]] = []
+        path: Any
         for path in glob.glob(os.path.join(run_dir, "run.ep*.jsonl")):
             match = re.search(r"run\.ep(\d+)\.jsonl$", os.path.basename(path))
             if match:
@@ -389,11 +638,25 @@ class RunTelemetry(CodedTool):
     def _episode_numbers(self) -> list[int]:
         """Every episode number with a run.ep<NNN>.jsonl file, ascending."""
         out: list[int] = []
+        path: Any
         for path in glob.glob(os.path.join(self.RUN_LOG_DIR, "run.ep*.jsonl")):
             match = re.search(r"run\.ep(\d+)\.jsonl$", os.path.basename(path))
             if match:
                 out.append(int(match.group(1)))
+        episode_floor = self._episode_floor()
+        if episode_floor is not None:
+            out = [episode for episode in out if episode >= episode_floor]
         return sorted(out)
+
+    @classmethod
+    def _episode_floor(cls) -> int | None:
+        """Return the first episode visible to agents in a no-carryover arm."""
+        if os.environ.get(cls.NO_CROSS_EPISODE_ENV) != "1":
+            return None
+        try:
+            return int(FileIO.read_text(cls.EPISODE_FLOOR_PATH).strip())
+        except (OSError, TypeError, ValueError):
+            return None
 
     def _run_rollup(self, episodes: list[dict[str, Any]]) -> dict[str, Any]:
         """Derive cross-episode trends from the per-episode rollups."""
@@ -403,30 +666,38 @@ class RunTelemetry(CodedTool):
         rejections_by_episode: list[dict[str, Any]] = []
         actions_total: Counter = Counter()
 
+        entry: Any
         for entry in episodes:
             ep = entry["episode"]
             rollup = entry.get("rollup") or {}
-            reward_by_episode.append({
-                "episode": ep,
-                "cum_end": rollup.get("cum_end"),
-                "reward_total": rollup.get("reward_total"),
-            })
-            value_by_episode.append({
-                "episode": ep,
-                "value_start": rollup.get("value_start"),
-                "value_end": rollup.get("value_end"),
-            })
+            reward_by_episode.append(
+                {
+                    "episode": ep,
+                    "cum_end": rollup.get("cum_end"),
+                    "reward_total": rollup.get("reward_total"),
+                }
+            )
+            value_by_episode.append(
+                {
+                    "episode": ep,
+                    "value_start": rollup.get("value_start"),
+                    "value_end": rollup.get("value_end"),
+                }
+            )
             rating_by_episode.append({"episode": ep, "rating_end": rollup.get("rating_end")})
-            rejections_by_episode.append({
-                "episode": ep,
-                "rejection_count": rollup.get("rejection_count"),
-            })
+            rejections_by_episode.append(
+                {
+                    "episode": ep,
+                    "rejection_count": rollup.get("rejection_count"),
+                }
+            )
+            action: Any
+            count: Any
             for action, count in (rollup.get("actions_by_type") or {}).items():
                 actions_total[action] += count
 
         # cum_end-based run trend (only over episodes that report a cum_end).
-        cum_points = [(r["episode"], r["cum_end"]) for r in reward_by_episode
-                      if r["cum_end"] is not None]
+        cum_points = [(r["episode"], r["cum_end"]) for r in reward_by_episode if r["cum_end"] is not None]
         best = worst = None
         first_cum = last_cum = delta = mean_cum = None
         if cum_points:
@@ -468,18 +739,26 @@ class RunTelemetry(CodedTool):
         research_on_steps: list[int] = []
         reached_100 = 0
 
+        entry: Any
         for entry in episodes:
             ep = entry["episode"]
             r = entry.get("rollup") or {}
             cum_end = r.get("cum_end")
-            reward_by_episode.append({
-                "episode": ep, "cum_end": cum_end,
-                "reached_step_100": r.get("reached_step_100"),
-            })
+            reward_by_episode.append(
+                {
+                    "episode": ep,
+                    "cum_end": cum_end,
+                    "reached_step_100": r.get("reached_step_100"),
+                }
+            )
             if cum_end is not None:
                 cum_points.append((ep, cum_end))
+            action: Any
+            count: Any
             for action, count in (r.get("actions_by_type") or {}).items():
                 actions_total[action] += count
+            sub: Any
+            count: Any
             for sub, count in (r.get("subtypes_placed") or {}).items():
                 subtypes_total[sub] += count
             peak_rides_max = max(peak_rides_max, FileIO.to_int(r.get("peak_rides")) or 0)
@@ -489,14 +768,13 @@ class RunTelemetry(CodedTool):
             if r.get("reached_step_100"):
                 reached_100 += 1
 
-        best = worst_final = None
+        best = None
         if cum_points:
             best_ep, best_val = max(cum_points, key=lambda p: p[1])
             best = {"episode": best_ep, "cum_end": best_val}
         final_episode = None
         last = episodes[-1]
-        final_episode = {"episode": last["episode"],
-                         "cum_end": (last.get("rollup") or {}).get("cum_end")}
+        final_episode = {"episode": last["episode"], "cum_end": (last.get("rollup") or {}).get("cum_end")}
         return {
             "best_episode": best,
             "final_episode": final_episode,
@@ -515,6 +793,7 @@ class RunTelemetry(CodedTool):
         improving, flat, or regressing."""
         best_cum_by_run: list[dict[str, Any]] = []
         points: list[tuple[str, float]] = []
+        run: Any
         for run in runs:
             best = (run.get("run_summary") or {}).get("best_episode")
             best_cum = best.get("cum_end") if best else None

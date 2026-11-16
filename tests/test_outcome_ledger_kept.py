@@ -6,6 +6,7 @@ gone. The lines are macro-only (a handful per episode), so the whole run's
 ledger is kept and only a --fresh run wipes it.
 """
 
+import json
 import os
 import sys
 import tempfile
@@ -13,11 +14,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from coded_tools.advance_episode import AdvanceEpisode  # noqa: E402
-from coded_tools.trial_parsing import OUTCOME_PATH      # noqa: E402
+from coded_tools.trial_parsing import OUTCOME_PATH  # noqa: E402
 
 LEDGER = "".join(
-    f"- OUTCOME ep={ep} trial_id=t{ep}_1 domain=rides origin=macro "
-    f"outcome=confirmed note='n' rule='r'\n"
+    f"- OUTCOME ep={ep} trial_id=t{ep}_1 domain=rides origin=macro outcome=confirmed note='n' rule='r'\n"
     for ep in range(0, 10)
 )
 
@@ -37,6 +37,13 @@ def test_close_out_keeps_every_episode():
 
             # The reward it DOES own is still written.
             assert "123.0" in Path(AdvanceEpisode.LAST_REWARD_PATH).read_text(encoding="utf-8")
+            receipt = json.loads(Path(AdvanceEpisode.CLOSEOUT_RECEIPT_PATH).read_text(encoding="utf-8"))
+            assert receipt == {"version": 1, "episode": 20, "final_reward": 123.0}
+
+            # The commit operation itself is safe to repeat.
+            repeated = AdvanceEpisode().invoke({"final_reward": 123.0, "episode": 20}, {})
+            assert repeated["status"] == "ok"
+            assert json.loads(Path(AdvanceEpisode.CLOSEOUT_RECEIPT_PATH).read_text(encoding="utf-8")) == receipt
         finally:
             os.chdir(cwd)
 

@@ -25,13 +25,8 @@ Handles:
 
 import os
 from contextvars import ContextVar
-from typing import Any
-from typing import Type
 
 from langchain_core.tracers.context import register_configure_hook
-
-# Use lazy loading of types to avoid dependency bloat for stuff most people don't need.
-from leaf_common.config.resolver_util import ResolverUtil
 
 from neuro_san_studio.interfaces.base_plugin import BasePlugin
 
@@ -75,19 +70,12 @@ class LangfusePlugin(BasePlugin):
             True if Langfuse setup was successful, False otherwise
         """
 
-        # Lazily load get_client and CallbackHandler
-        get_client_fn = ResolverUtil.create_type(
-            "langfuse.get_client",
-            raise_if_not_found=False,
-            install_if_missing="langfuse",
-        )
-        callback_handler_class: Type[Any] = ResolverUtil.create_type(
-            "langfuse.langchain.CallbackHandler",
-            raise_if_not_found=False,
-            install_if_missing="langfuse",
-        )
-
-        if get_client_fn is None or callback_handler_class is None:  # pragma: no cover
+        # Import lazily so Langfuse remains optional. Do not route this through
+        # leaf_common: current leaf_common releases no longer expose ResolverUtil.
+        try:
+            from langfuse import get_client
+            from langfuse.langchain import CallbackHandler
+        except ImportError:  # pragma: no cover - depends on optional environment
             self._logger.error("Langfuse package not installed")
             return False
 
@@ -96,8 +84,8 @@ class LangfusePlugin(BasePlugin):
             return False
 
         try:
-            self._langfuse_client = get_client_fn()
-            self._callback_handler = callback_handler_class()
+            self._langfuse_client = get_client()
+            self._callback_handler = CallbackHandler()
 
             # Use LangChain's register_configure_hook to register the Langfuse
             # CallbackHandler globally with inheritable=True. This hooks into

@@ -2,39 +2,39 @@
 
 <!-- PLAYBOOK_SUMMARY:BEGIN -->
 ## Summary
-You decide which shops to place, restock (`modify`), or sell — drink/food/specialty across four tiers (never coordinates). Shops drive recurring revenue and guest happiness; the golden rule is to never let a shop run dry, since out-of-service crashes happiness and park_rating.
+You decide which drink, food, and specialty shops to place, restock (`modify`), or sell across four tiers, but you never choose coordinates. Shops generate recurring revenue and improve guest happiness. The golden rule is never to let a shop run dry because an out-of-service shop reduces happiness and `park_rating`.
 <!-- PLAYBOOK_SUMMARY:END -->
 
-**Guests leave** when money, energy, hunger, thirst, or happiness runs critical — and shops cover all five. Guest who leaves early takes their whole remaining spend with them, not just the one sale you missed. Read `shops_economics` to match the shop to the failing need. Also, every GREEN and RED drink/food shop fills a second need on top of the obvious one, so one tile can cover two.
-Prefer placing higher tier shops.
+**Guests leave** when money, energy, hunger, thirst, or happiness becomes critical, and shops address all five needs. A guest who leaves early takes all their remaining spending money with them. Monitor `avg_money_spent` and `avg_time_in_park` in `status_shops`. Each guest starts with a randomly sampled amount of money with a mean of $150 and a standard deviation of $25. Aim to increase guest spending.
+Review `shops_economics` to select the shop that addresses the failing need identified through the guest metrics in `status_shops`.
+Higher-tier shops address more needs and do so more effectively. Prefer placing higher-tier shops.
 
 ## Types of shops:
-- **Drink:** quenches thirst. Guests' thirst builds ~1.5× faster than hunger.
-- **Food:** satisfies guests’ hunger.
-- **Specialty:** unique service per subclass — see `shops_economics`.
+- **Drink:** quenches thirst. Thirst builds approximately 1.5 times faster than hunger.
+- **Food:** satisfies guests' hunger.
+- **Specialty:** provides a unique service for each subclass; see `shops_economics`.
 
 ## Key attributes:
-- **Item cost:** what you pay per unit.
-- **Order quantity:** units restocked each morning at `item_cost`; too little cash means partial stocking. Sell out mid-day and the shop goes out of service — it turns guests away, dragging park rating down.
-- **Item price:** fixed per subclass (`max_item_price` in `shops_economics`).
+- **Item cost:** the amount paid per unit.
+- **Order quantity:** the number of units restocked each morning at `item_cost`. A shop that runs out of inventory goes out of service and lowers park rating, so increase its order quantity when necessary. Monitor each shop's uptime.
+- **Item price:** fixed and listed in `shops_economics`.
 
-## Park current status (not set by you)
+## Current park status is in `status_shops`:
 - **inventory** — units left unsold.
-- **guests_served** — units sold today = popularity. Resets each morning.
-- **guests** — park-wide daily averages, incl. `total_guests`, `avg_money_spent` and `avg_time_in_park`.
-- **uptime** — fraction of visits that found stock.
-- **reachable** — `false` means guests can never walk to that shop, so it earns $0 forever no matter its tier or stock. `remove` it and rebuild on a `reachable_tiles` slot; never `modify` it.
-- **next_unlock** — the next tier due and which subtypes still need it, e.g. `{"subtype": "carousel", "tier": "blue", "days": 2, "subtypes": ["carousel", "drink"]}`. Absent = research is off. Use to plan ahead.
+- **guests_served** — the number of guests served, which indicates popularity.
+- **reachable** — `false` means guests can never reach the shop, so it earns $0. Move it to a slot in `reachable_tiles`; do not `modify` it.
 
 ## `Modify` to set `order_quantity`:
-Costs a whole step, so spend one only when a shop's own numbers demand it. Like `uptime` well below 1, or `out_of_service` — shop ran dry then raise `order_quantity` or way too much `inventory` left at close: cut `order_quantity`.
+Changing `order_quantity` costs an entire step, so do so only when a shop's metrics justify it. Increase `order_quantity` when `uptime` is well below 1 or when the shop is `out_of_service` because it ran dry. Decrease `order_quantity` when too much `inventory` remains at closing.
 
-## Tier Upgrade:
-- Place a higher tier shop **as soon as** research unlocks it (yellow < blue < green < red; see `available_entities`) and cash allows — higher tiers pay back far more. Each tier has its own distinct benefits, listed in `economics_shops`; read them and exploit them.
-- **HOW TO PLACE HIGHER TIERS?** Reachable tiles are scarce, so UPGRADE shops you already have**. Swap ONE shop, over two turns:
-  1. `remove` your lowest-tier shop. Tie-break on fewest `guests_served`. Prefer one whose subtype just unlocked.
-  2. `place` the new tier on the tile it vacated. Never on an unreachable tile: revenue is always $0.
-- Otherwise AVOID `remove`: shop sells back for only 66% of its build cost, so swap only for a genuine tier upgrade. Don't place a shop if you won't need it.
+## Tier upgrades:
+- Place higher-tier shops **as soon as** research unlocks them and cash allows (yellow < blue < green < red). In `status_shops`, check `available_entities` for unlocked tiers and `next_unlock` to prepare for upcoming unlocks. Higher tiers pay back far more and offer distinct benefits; review `economics_shops` and exploit those benefits.
+- **HOW TO PLACE HIGHER TIERS?**
+  1. `remove` your lowest-tier shop of the same subtype. Break ties by choosing the shop with the fewest `guests_served`.
+  2. `place` the higher-tier shop on the vacated tile. Never place a shop on an unreachable tile because it will always earn $0.
+- Otherwise, avoid `remove`. Swap shops only for a genuine tier upgrade, and do not place a shop unless it is needed.
 
 ## Learned rules (promoted from prior runs)
-When food inventory is near depletion after a major ride conversion and cash is ample, raise food order_quantity to about 360 before restocking other shops. (learned ep0)
+After step 80, restock any food, drink, or specialty shop that is approaching stockout at its current legal price with enough inventory to finish the episode while preserving the next red-carousel reserve. (learned ep9)
+After an uptime emergency is patched, replace remaining legacy drink shops with the best unlocked drink at a legal price and enough stock to restore shop count within one turn before other shop restocks. (learned ep7)
+Place reachable yellow drink, food, and specialty shops early for needs coverage, then add specialty support once high-ticket carousel traffic is earning. (learned ep0)

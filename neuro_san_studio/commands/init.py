@@ -196,7 +196,7 @@ class InitCommand:  # pylint: disable=too-few-public-methods
     def _print_next_steps(self) -> None:
         """Print the final instructions shown after scaffolding completes."""
         _console.print()
-        _console.print("=" * 60, style="dim")
+        _console.print("============================================================", style="dim")
         _console.print("[bold green]Project initialized.[/bold green]")
         _console.print()
         _console.print("[bold cyan]Next steps:[/bold cyan]")
@@ -204,4 +204,4 @@ class InitCommand:  # pylint: disable=too-few-public-methods
         _console.print(
             "  2. Start the server:  [bold red]neuro-san-studio run[/bold red] or [bold red]ns run[/bold red]"
         )
-        _console.print("=" * 60, style="dim")
+        _console.print("============================================================", style="dim")

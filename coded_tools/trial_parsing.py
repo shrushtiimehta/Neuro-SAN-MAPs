@@ -29,10 +29,11 @@ import re
 from typing import Any
 
 from coded_tools.file_io import FileIO
+from coded_tools.state_dir import state_path
 
-STRATEGIES_PATH = "coded_tools/state/trial_strategies.md"
-CRITERIA_PATH = "coded_tools/state/trial_strategies_criteria.md"
-OUTCOME_PATH = "coded_tools/state/trial_strategies_outcome.md"
+STRATEGIES_PATH = state_path("trial_strategies.md")
+CRITERIA_PATH = state_path("trial_strategies_criteria.md")
+OUTCOME_PATH = state_path("trial_strategies_outcome.md")
 
 _STRATEGY_RE = re.compile(r"^-\s+(\S+):\s+(.*)$")
 # key=value pairs where the value is either a single-quoted string (may contain
@@ -54,6 +55,7 @@ def filter_lines(text: str, keep_ids: set[str]) -> str:
     DeleteTrial (keep everything except the one pruned mid-episode).
     """
     out: list[str] = []
+    line: Any
     for line in text.splitlines():
         match = _LINE_TID_RE.match(line.strip())
         if match is None:
@@ -68,6 +70,7 @@ def filter_lines(text: str, keep_ids: set[str]) -> str:
 def parse_strategies(text: str) -> dict[str, str]:
     """{trial_id: rule_body} from trial_strategies.md text."""
     out: dict[str, str] = {}
+    line: Any
     for line in text.splitlines():
         match = _STRATEGY_RE.match(line.strip())
         if match:
@@ -79,6 +82,7 @@ def parse_criteria(text: str) -> dict[str, dict[str, Any]]:
     """{trial_id: {ep, step_start, domain, section, edit, find, rationale,
     success, failure}} from trial_strategies_criteria.md text."""
     out: dict[str, dict[str, Any]] = {}
+    line: Any
     for line in text.splitlines():
         line = line.strip()
         if not line.startswith("- "):
@@ -89,6 +93,8 @@ def parse_criteria(text: str) -> dict[str, dict[str, Any]]:
         trial_id = parts[0]
         rest = parts[1] if len(parts) > 1 else ""
         fields: dict[str, Any] = {}
+        key: Any
+        value: Any
         for key, value in _KV_RE.findall(rest):
             if len(value) >= 2 and value[0] == "'" and value[-1] == "'":
                 value = value[1:-1]

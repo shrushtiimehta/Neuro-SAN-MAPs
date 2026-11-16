@@ -1,0 +1,451 @@
+{
+    maps_state_dir = "state"
+    maps_state_dir = ${?MAPS_STATE_DIR}
+    maps_seed_dir = "coded_tools/config_files"
+    maps_seed_dir = ${?MAPS_SEED_DIR}
+
+# BEGIN INLINED: registries/aaosa_basic.hocon
+# Copyright © 2025-2026 Cognizant Technology Solutions Corp, www.cognizant.com.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# END COPYRIGHT
+
+# This file is NOT an agent network HOCON.
+# It defines a set of key-value pairs for substitution, typically used in agent network HOCON files.
+# Each key can be referenced in agent configs using the ${key} syntax.
+# Do not define agents or tools directly here—this file only provides reusable values.
+
+aaosa_instructions = """When you receive an inquiry, you will:
+1. If you are clearly not the right agent for this type of inquiry, reply you're not relevant.
+2. If there is a chance you're relevant, call your down-chain agents to determine if they can answer all or part of the inquiry.
+Do not assume what your down-chain agents can do. Always call them. You'll be surprised.
+3. Once all your down-chain agents have responded analyze their response and determine what the next step is. For instance:
+- Follow up with down-chain agents
+- Call other down-chain agents
+- Ask for clarification or additional information
+- Ask the most relevant down-chain agent to fulfill the inquiry
+- Compile and return your final response
+You may, in turn, be called by other agents in the system and have to act as a down-chain agent to them.
+4. When responding, format your response based on the 'mode' parameter:
+   - If there is no 'mode' parameter (i.e., the inquiry came directly from a human),
+     respond with a natural, human-readable answer.
+   - If a 'mode' parameter is present, return the following information:
+   [AAOSA]
+   Name: <your name>
+   Inquiry: <the inquiry>
+   Mode: <Determine | Follow up | Fulfill>
+   Relevant: <Yes | No>
+   Strength: <number between 1 and 10 representing how certain you are in your claim>
+   Claim: <All | Partial | None>
+   Requirements: <None | list of requirements>
+   Response: <Your response>
+"""
+
+aaosa_call = {
+    description = "Depending on the mode, returns a natural language string in response."
+    parameters = {
+        type = "object"
+        properties = {
+            inquiry = {
+                type = "string"
+                description = "The inquiry"
+            }
+            mode = {
+                type = "string"
+                description =
+"""'Determine' to ask the agent if the inquiry belongs to it, in its entirety or in part.
+'Follow up' to continue the conversation with the agent.
+'Fulfill' to ask the agent to fulfill the inquiry, if it can.
+"""
+            }
+        }
+        required = [
+            "inquiry",
+            "mode"
+        ]
+    }
+}
+
+# For down-chain agents that are NOT running the AAOSA protocol: they never see
+# ${aaosa_instructions}, so they never branch on 'mode' and never emit the [AAOSA]
+# block — they just answer the inquiry (in these networks, with plain JSON).
+# ${aaosa_call}'s required 'mode' arg would only force the caller to invent a
+# meaningless value on every single call, so use this instead.
+inquiry_call = {
+    description = "Returns a natural language string in response to the inquiry."
+    parameters = {
+        type = "object"
+        properties = {
+            inquiry = {
+                type = "string"
+                description = "The inquiry"
+            }
+        }
+        required = ["inquiry"]
+    }
+}
+
+# Deprecated: aaosa_command has been merged into aaosa_instructions above.
+# Kept as an empty string for backward compatibility with old agent networks
+# that reference ${aaosa_command}.
+aaosa_command = ""
+# END INLINED: registries/aaosa_basic.hocon
+# BEGIN INLINED: config/llm_config.hocon
+# Copyright © 2025-2026 Cognizant Technology Solutions Corp, www.cognizant.com.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# END COPYRIGHT
+
+    # This file is NOT an agent network HOCON.
+    # It defines a set of key-value pairs for substitution, typically used in agent network HOCON files.
+    # Each key can be referenced in agent configs using the ${key} syntax.
+    # Do not define agents or tools directly here—this file only provides reusable values.
+
+    "llm_config": {
+
+        # Set the `class` key to one of the values listed below, then specify the model
+        # using the `model_name` key.
+        #
+        # The available model names for each provider can be found in the corresponding links.
+        #
+        # | LLM Provider     | `class` Value   | Links for model names |
+        # |------------------|-----------------|-----------------------|
+        # | Amazon Bedrock   | `bedrock`       | https://docs.aws.amazon.com/bedrock/latest/userguide/model-ids.html |
+        # | Anthropic        | `anthropic`     | https://platform.claude.com/docs/en/about-claude/models/overview |
+        # | Azure OpenAI     | `azure-openai`  | https://learn.microsoft.com/azure/ai-services/openai/concepts/models |
+        # | Google Gemini    | `gemini`        | https://ai.google.dev/gemini-api/docs/models |
+        # | NVIDIA           | `nvidia`        | https://build.nvidia.com/explore/discover |
+        # | Ollama           | `ollama`        | https://ollama.com/library |
+        # | OpenAI           | `openai`        | https://platform.openai.com/docs/models |
+        #
+        # Note:
+        # - For Ollama, the model must be downloaded locally before use.
+        # - Additional LLM parameters (e.g., `temperature`, `max_tokens`) can be configured below.
+        # - Agent-level control (e.g., `max_steps`) can also be set here.
+        # - It is possible to have a separate llm_config describing a different LLM with different parameters for each agent network hocon file
+        #or even for each agent within a network.
+        #
+        #   For more details, see:
+        #   - https://github.com/cognizant-ai-lab/neuro-san/blob/main/neuro_san/internals/run_context/langchain/llms/default_llm_info.hocon
+        #   - https://github.com/cognizant-ai-lab/neuro-san/blob/main/docs/agent_hocon_reference.md#llm_config
+
+        "class": "openai",
+        # gpt-5.5-pro is a Responses-API-only model, so it needs use_responses_api.
+        # That flag also lets reasoning_effort + function tools work on gpt-5.4/5.5.
+        "model_name": "gpt-5.5",
+        "reasoning_effort": "xhigh",     # extra thinking; gpt-5.5 values: none|low|medium|high|xhigh
+        "use_responses_api": true,      # required for gpt-5.5-pro (not a chat model)
+
+    }
+# END INLINED: config/llm_config.hocon
+    metadata = {
+        description = "Free-form learning planner. It chooses one complete plan directly, then records what worked and what failed in episode_learnings.md."
+        tags = ["MAPs", "experiment", "planner", "unstructured", "episode-learnings"]
+        sample_queries = [
+            "kind=episode_start episode=1 step=0 cumulative_reward=0 final_reward=null"
+            "kind=episode_end episode=1 step=100 cumulative_reward=90000 final_reward=90000"
+        ]
+    }
+
+    max_steps = 4000
+    max_execution_seconds = 12000
+
+    tools = [
+        {
+            name = "macro_orchestrator"
+            function = ${inquiry_call} {
+                description = "Routes episode_start and episode_end lifecycle messages to the unstructured planner agents."
+            }
+            instructions = """
+Parse the input exactly.
+- kind=episode_start: call episode_start with `episode=<E>` and relay its response verbatim.
+- kind=episode_end: call episode_end with `episode=<E> cumulative_reward=<C> aborted=<true|false>`; missing aborted means false. Relay its response verbatim.
+On any error, return `ERROR: <verbatim error text>` and stop.
+"""
+            middleware = [
+                {"class": "middleware.static_prompt_caching_middleware.StaticPromptCachingMiddleware", "args": {"ttl": "1h"}}
+            ]
+            tools = ["episode_start", "episode_end"]
+        }
+
+        {
+            name = "episode_start"
+            function = ${inquiry_call} {
+                description = "Chooses one complete, free-form strategy directly for the upcoming episode and writes it as the only episode-specific strategy."
+            }
+            instructions = """
+Choose ONE plan directly for the upcoming 100-step episode. This is deliberately unstructured planning: do not
+generate candidate strategies, hypotheses, experiments, evaluation criteria, trial IDs, a phased checklist, or
+separate per-domain summaries. Do not suggest several approaches and select among them. Use your judgment once,
+write one complete strategy, and let the player execute it.
+
+First read all available evidence:
+- planner_scratchpad() for any handoff from the prior close-out.
+- ReadEpisodeLearningHistory(scope='all') for everything earlier episodes found effective or harmful.
+- RunTelemetry(select='best_and_last') for the actual actions and trajectories of the best and latest episodes.
+- Call planner_state_read once for EACH of these exact logical names—never derive, shorten, pluralize, or invent one:
+  planner_state_read('maps_game_docs'), planner_state_read('economics_all'),
+  planner_state_read('status_coordinator'), planner_state_read('status_layout'),
+  planner_state_read('playbook_coordinator'), planner_state_read('playbook_rides'),
+  planner_state_read('playbook_shops'), planner_state_read('playbook_staff'),
+  planner_state_read('playbook_research'), planner_state_read('playbook_layout'), and
+  planner_state_read('playbook_survey'). `economics_all` is the complete merged economics table; there is no logical
+  name called `economics`.
+
+Then call WriteUnstructuredPlan exactly once with one self-contained `strategy`. The strategy must contain all
+episode-specific guidance in one place: overall objective and action priorities; ride subtypes and tier progression;
+shop types, placement and stocking; staff timing and mix; research speed/topics and when to build unlocked tiers;
+layout/reachable-tile use; surveys/guest-rating response; cash/runway and spending logic; and how the player should
+adapt when live evidence contradicts the plan. It may be prose or bullets, but it must not be broken into a fixed
+turn schedule or duplicated into domain summaries.
+
+Use prior learnings as observations, not as predeclared tests. Return one short line confirming the plan was written.
+On any tool or downstream error, return `ERROR: <verbatim error text>` and stop.
+"""
+            middleware = [
+                {"class": "middleware.trim_history_middleware.TrimHistoryMiddleware", "args": {}}
+                {"class": "middleware.static_prompt_caching_middleware.StaticPromptCachingMiddleware", "args": {"ttl": "1h"}}
+            ]
+            tools = ["planner_scratchpad", "ReadEpisodeLearningHistory", "RunTelemetry", "planner_state_read", "WriteUnstructuredPlan"]
+        }
+
+        {
+            name = "episode_end"
+            function = ${inquiry_call} {
+                description = "Analyzes the completed run without judging predeclared strategies, saves what worked and what failed to episode_learnings.md, then closes the episode."
+            }
+            instructions = """
+Review the completed episode as one executed plan. Do not score hypotheses, resolve candidates, promote rules, or
+retrofit success criteria. Extract an honest free-form account of what the run itself shows.
+
+1. Read EpisodeTelemetry(episode=<E>) including every action, rejection and metric change.
+2. Read planner_state_read('status_coordinator') and planner_state_read('status_layout') for the finished park.
+3. Read planner_state_read('playbook_coordinator') to recover the complete strategy that was executed.
+4. Read ReadEpisodeLearningHistory(scope='all') so the new entry adds information instead of repeating it.
+5. Call SaveEpisodeLearningRecord once with:
+   - worked: evidence-backed statements naming actions/decisions and their observed step/metric effect;
+   - did_not_work: evidence-backed statements naming waste, rejections, stalls, late investments, or choices that
+     damaged or ruined the run;
+   - summary: the overall lesson for future planning;
+   - episode and final_reward from the lifecycle input.
+6. Call ClearEpisodeMicroStrategies(episode=<E>) so all watcher guidance expires at this boundary.
+7. Optionally leave one concise planner_scratchpad note now if the next planner needs a critical handoff.
+8. COMMIT LAST: call advance_episode(final_reward=<C>, episode=<E>). This writes the durable close-out
+   receipt; do not call any tool after it.
+
+Return one short recap line. On any tool or downstream error, return `ERROR: <verbatim error text>` and stop.
+"""
+            middleware = [
+                {"class": "middleware.trim_history_middleware.TrimHistoryMiddleware", "args": {}}
+                {"class": "middleware.static_prompt_caching_middleware.StaticPromptCachingMiddleware", "args": {"ttl": "1h"}}
+            ]
+            tools = ["EpisodeTelemetry", "planner_state_read", "ReadEpisodeLearningHistory", "SaveEpisodeLearningRecord", "ClearEpisodeMicroStrategies", "advance_episode", "planner_scratchpad"]
+        }
+
+        {
+            name = "planner_scratchpad"
+            class = "coded_tools.scratchpad.Scratchpad"
+            function = {
+                description = "Private one-run memo shared by this planner's episode_start and episode_end agents."
+                parameters = {
+                    type = "object"
+                    properties = {
+                        note = { type = "string", description = "Optional note for the next planner invocation. Omit to read and clear." }
+                    }
+                }
+            }
+            args = { pad = "planner" }
+        }
+
+        {
+            name = "RunTelemetry"
+            class = "coded_tools.run_telemetry.RunTelemetry"
+            function = {
+                description = "Returns raw best-and-latest episode evidence when select='best_and_last'."
+                parameters = {
+                    type = "object"
+                    properties = {
+                        select = { type = "string", description = "Use 'best_and_last'." }
+                        num_runs = { type = "int", description = "Optional number of recent runs." }
+                        scope = { type = "string", description = "Optional telemetry mode." }
+                        from_episode = { type = "int", description = "Optional first episode." }
+                        max_episodes = { type = "int", description = "Optional episode limit." }
+                    }
+                }
+            }
+        }
+
+        {
+            name = "EpisodeTelemetry"
+            class = "coded_tools.episode_telemetry.EpisodeTelemetry"
+            function = {
+                description = "Returns raw per-step actions, metrics, rollup and rejections for one completed episode."
+                parameters = {
+                    type = "object"
+                    properties = {
+                        episode = { type = "int", description = "Episode number; omit for latest." }
+                        from_step = { type = "int", description = "Optional first step." }
+                    }
+                }
+            }
+        }
+
+        {
+            name = "WriteUnstructuredPlan"
+            class = "coded_tools.ablations.unstructured_player_planner_watcher.write_unstructured_plan.WriteUnstructuredPlan"
+            function = {
+                description = "Writes one complete episode strategy to the coordinator playbook and champion snapshot; accepts no candidates, phases, or domain summaries."
+                parameters = {
+                    type = "object"
+                    properties = {
+                        strategy = { type = "string", description = "The single complete strategy covering every park domain and live adaptation." }
+                    }
+                    required = ["strategy"]
+                }
+            }
+        }
+
+        {
+            name = "ReadEpisodeLearningHistory"
+            class = "coded_tools.ablations.unstructured_player_planner_watcher.read_episode_learning_history.ReadEpisodeLearningHistory"
+            function = {
+                description = "Reads all prior free-form worked/failed episode observations from episode_learnings.md."
+                parameters = {
+                    type = "object"
+                    properties = {
+                        scope = { type = "string", description = "Must be 'all'." }
+                    }
+                    required = ["scope"]
+                }
+            }
+        }
+
+        {
+            name = "SaveEpisodeLearningRecord"
+            class = "coded_tools.ablations.unstructured_player_planner_watcher.save_episode_learning_record.SaveEpisodeLearningRecord"
+            function = {
+                description = "Saves one episode's evidence-backed worked and did-not-work observations to episode_learnings.md."
+                parameters = {
+                    type = "object"
+                    properties = {
+                        episode = { type = "int", description = "Completed episode number." }
+                        final_reward = { type = "float", description = "Completed episode cumulative reward." }
+                        worked = { type = "array", items = { type = "string" }, description = "Observed decisions that helped, each citing evidence." }
+                        did_not_work = { type = "array", items = { type = "string" }, description = "Observed failures or damage, each citing evidence." }
+                        summary = { type = "string", description = "Overall lesson for future direct planning." }
+                    }
+                    required = ["episode", "final_reward", "worked", "did_not_work", "summary"]
+                }
+            }
+        }
+
+        {
+            name = "ClearEpisodeMicroStrategies"
+            class = "coded_tools.ablations.shared.clear_episode_micro_strategies.ClearEpisodeMicroStrategies"
+            function = {
+                description = "Deletes every active watcher-origin micro strategy at the episode boundary without writing outcomes."
+                parameters = {
+                    type = "object"
+                    properties = {
+                        episode = { type = "int", description = "Episode being closed." }
+                    }
+                    required = ["episode"]
+                }
+            }
+        }
+
+        {
+            name = "advance_episode"
+            class = "coded_tools.advance_episode.AdvanceEpisode"
+            function = {
+                description = "Persists final reward and clears the observation cache."
+                parameters = {
+                    type = "object"
+                    properties = {
+                        final_reward = { type = "float", description = "Completed episode cumulative reward." }
+                        episode = { type = "int", description = "Completed episode number." }
+                    }
+                    required = ["final_reward", "episode"]
+                }
+            }
+        }
+
+        {
+            name = "planner_state_read"
+            class = "coded_tools.state_read.StateRead"
+            function = {
+                description = "Reads an operator-mapped state, playbook, economics, or rules document."
+                parameters = {
+                    type = "object"
+                    properties = {
+                        name = {
+                            type = "string",
+                            description = "Mapped logical file name.",
+                            enum = [
+                                "economics_all", "economics_research", "economics_rides", "economics_shops", "economics_staff", "last_reward", "maps_game_docs",
+                                "playbook_coordinator", "playbook_layout", "playbook_research", "playbook_rides", "playbook_shops", "playbook_staff", "playbook_survey",
+                                "seed_playbook_coordinator", "seed_playbook_layout", "seed_playbook_research", "seed_playbook_rides", "seed_playbook_shops", "seed_playbook_staff", "seed_playbook_survey",
+                                "status_coordinator", "status_layout", "status_research", "status_rides", "status_shops", "status_staff", "status_survey"
+                            ]
+                        }
+                    }
+                    required = ["name"]
+                }
+            }
+            args = {
+                name_map = {
+                    status_coordinator = ${maps_state_dir}"/status_coordinator.json"
+                    status_layout = ${maps_state_dir}"/status_layout.json"
+                    status_rides = ${maps_state_dir}"/status_rides.json"
+                    status_shops = ${maps_state_dir}"/status_shops.json"
+                    status_staff = ${maps_state_dir}"/status_staff.json"
+                    status_research = ${maps_state_dir}"/status_research.json"
+                    status_survey = ${maps_state_dir}"/status_survey.json"
+                    last_reward = ${maps_state_dir}"/last_reward.md"
+                    playbook_coordinator = ${maps_state_dir}"/playbook_coordinator.md"
+                    playbook_rides = ${maps_state_dir}"/playbook_rides.md"
+                    playbook_shops = ${maps_state_dir}"/playbook_shops.md"
+                    playbook_staff = ${maps_state_dir}"/playbook_staff.md"
+                    playbook_research = ${maps_state_dir}"/playbook_research.md"
+                    playbook_layout = ${maps_state_dir}"/playbook_layout.md"
+                    playbook_survey = ${maps_state_dir}"/playbook_survey.md"
+                    economics_rides = "coded_tools/config_files/economics_rides.md"
+                    economics_shops = "coded_tools/config_files/economics_shops.md"
+                    economics_staff = "coded_tools/config_files/economics_staff.md"
+                    economics_research = "coded_tools/config_files/economics_research.md"
+                    economics_all = "coded_tools/config_files/economics_all.md"
+                    maps_game_docs = "coded_tools/config_files/maps_game_docs.md"
+                    seed_playbook_coordinator = ${maps_seed_dir}"/seed_playbook_coordinator.md"
+                    seed_playbook_rides = ${maps_seed_dir}"/seed_playbook_rides.md"
+                    seed_playbook_shops = ${maps_seed_dir}"/seed_playbook_shops.md"
+                    seed_playbook_staff = ${maps_seed_dir}"/seed_playbook_staff.md"
+                    seed_playbook_research = ${maps_seed_dir}"/seed_playbook_research.md"
+                    seed_playbook_layout = ${maps_seed_dir}"/seed_playbook_layout.md"
+                    seed_playbook_survey = ${maps_seed_dir}"/seed_playbook_survey.md"
+                }
+            }
+        }
+    ]
+}

@@ -1,6 +1,6 @@
 """Price is never an agent decision — it comes from the economics tables.
 
-Rides and shops charge their subclass ceiling (max_ticket_price / max_item_price)
+Rides and shops charge their fixed subclass price (ticket_price / item_price)
 and staff carry their fixed salary. Whatever a proposal passes in is overwritten,
 so there is nothing to validate, clamp, or bounce back to a specialist.
 """
@@ -18,7 +18,7 @@ def forced(**args):
 
 
 def test_price_comes_from_economics_not_the_proposal():
-    # carousel/red caps at 24, drink/yellow at 3, janitor/yellow salary 25.
+    # carousel/red costs 24, drink/yellow 3, and janitor/yellow salary is 25.
     assert forced(type="ride", subtype="carousel", subclass="red") == 24
     assert forced(type="shop", subtype="drink", subclass="yellow") == 3
     assert forced(type="staff", subtype="janitor", subclass="yellow") == 25
@@ -36,7 +36,7 @@ def test_unresolvable_row_is_left_alone():
     danger here would be inventing a plausible number for a nonexistent asset.
     """
     assert forced(type="ride", subtype="teleporter", subclass="red", price=7) == 7
-    assert forced(type="ride", subclass="red", price=7) == 7          # no subtype
+    assert forced(type="ride", subclass="red", price=7) == 7  # no subtype
     assert forced(type="banana", subtype="carousel", subclass="red", price=7) == 7
 
 
@@ -54,12 +54,12 @@ def test_price_aliases_are_folded_in():
 
     args = {"price": 5, "ticket_price": 9}
     normalize_price_key(args)
-    assert args == {"price": 5}                      # alias dropped, not left behind
+    assert args == {"price": 5}  # alias dropped, not left behind
 
     args = {"type": "ride"}
     normalize_price_key(args)
     assert args == {"type": "ride"}
-    normalize_price_key(None)                        # must not raise
+    normalize_price_key(None)  # must not raise
 
 
 if __name__ == "__main__":

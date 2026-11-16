@@ -390,9 +390,9 @@ class EnvValidator:
             print("No validation results to display.")
             return
 
-        print("\n" + "=" * 70)
+        print("\n======================================================================")
         print("Environment Variable Validation Results")
-        print("=" * 70)
+        print("======================================================================")
 
         valid_results = [r for r in results if r.status == ValidationStatus.VALID]
         warning_results = [r for r in results if r.status in (ValidationStatus.NOT_SET, ValidationStatus.PLACEHOLDER)]
@@ -424,7 +424,7 @@ class EnvValidator:
             for r in error_results:
                 print(f"  X {r.var_name}: {r.masked_value} - {r.message}")
 
-        print("\n" + "=" * 70)
+        print("\n======================================================================")
 
         total = len(results)
         valid_count = len(valid_results)
@@ -432,7 +432,7 @@ class EnvValidator:
         error_count = len(error_results)
 
         print(f"Summary: {valid_count}/{total} valid, {warning_count} warnings, {error_count} errors")
-        print("=" * 70 + "\n")
+        print("======================================================================\n")
 
     def has_errors(self, results: Optional[list[ValidationResult]] = None) -> bool:
         """Check if any results have error status."""

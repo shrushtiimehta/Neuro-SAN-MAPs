@@ -16,6 +16,7 @@ import os
 import sys
 import tempfile
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # runner imports coded_tools.*
 from apps.maps_park import runner  # noqa: E402
@@ -24,8 +25,9 @@ from apps.maps_park import runner  # noqa: E402
 def _state(tmp: Path) -> Path:
     """A state dir shaped like the real one: two champions plus live files."""
     hist = tmp / "playbook_history"
-    for stamp, body in (("20260101-000000_ep000_champion", "OLD"),
-                        ("20260808-183824_ep004_champion", "BEST")):
+    stamp: Any
+    body: Any
+    for stamp, body in (("20260101-000000_ep000_champion", "OLD"), ("20260808-183824_ep004_champion", "BEST")):
         (hist / stamp).mkdir(parents=True)
         (hist / stamp / "playbook_rides.md").write_text(body)
     (tmp / "playbook_rides.md").write_text("working copy")
@@ -41,7 +43,7 @@ def test_restore_takes_the_newest_champion():
     with tempfile.TemporaryDirectory() as td:
         state = _state(Path(td))
         used = runner.restore_champion_playbooks()
-        assert used.endswith("ep004_champion"), used            # newest, not first
+        assert used.endswith("ep004_champion"), used  # newest, not first
         assert (state / "playbook_rides.md").read_text() == "BEST"  # working copy replaced
 
 
@@ -58,15 +60,17 @@ def test_fresh_archives_state_instead_of_deleting_it():
         state = _state(Path(td))
         dest = Path(runner.archive_state())
 
-        assert dest.name.endswith("_prewipe")   # never matches the *_champion glob
+        assert dest.name.endswith("_prewipe")  # never matches the *_champion glob
         assert sorted(os.listdir(state)) == ["park_state.pkl", "playbook_history"]
         # Everything that left the working dir is recoverable, not gone.
         assert sorted(p.name for p in dest.iterdir()) == [
-            "champion_reward.json", "playbook_rides.md", "trial_strategies.md"]
+            "champion_reward.json",
+            "playbook_rides.md",
+            "trial_strategies.md",
+        ]
         assert (dest / "playbook_rides.md").read_text() == "working copy"
         # --fresh must not LOAD the champion archive, but must never DESTROY it.
-        assert (state / "playbook_history" / "20260808-183824_ep004_champion"
-                / "playbook_rides.md").exists()
+        assert (state / "playbook_history" / "20260808-183824_ep004_champion" / "playbook_rides.md").exists()
         # ...and the run that follows must not pick the prewipe dir as a champion.
         assert runner.restore_champion_playbooks().endswith("ep004_champion")
 
@@ -77,18 +81,65 @@ def test_strip_learned_keeps_the_baseline_and_the_header():
 
     with tempfile.TemporaryDirectory() as td:
         seed = Path(td) / "seed_playbook_rides.md"
-        seed.write_text("- hand-authored baseline\n"
-                        f"{PromoteTrial.LEARNED_SECTION}\n"
-                        f"- price carousels at 4 {PromoteTrial.LEARNED_MARKER}003)\n")
+        seed.write_text(
+            "- hand-authored baseline\n"
+            f"{PromoteTrial.LEARNED_SECTION}\n"
+            f"- price carousels at 4 {PromoteTrial.LEARNED_MARKER}003)\n"
+        )
         PromoteTrial.SEED_DIR, original = td, PromoteTrial.SEED_DIR
         try:
             assert runner.strip_learned_from_seeds() == 1
         finally:
             PromoteTrial.SEED_DIR = original
         left = seed.read_text()
-        assert PromoteTrial.LEARNED_MARKER not in left           # the promoted rule is gone
-        assert "hand-authored baseline" in left                  # ...the baseline is not
-        assert PromoteTrial.LEARNED_SECTION in left              # header stays; append-only needs it
+        assert PromoteTrial.LEARNED_MARKER not in left  # the promoted rule is gone
+        assert "hand-authored baseline" in left  # ...the baseline is not
+        assert PromoteTrial.LEARNED_SECTION in left  # header stays; append-only needs it
+
+
+def test_champion_status_is_frozen_at_promotion():
+    """The best run's finished park is copied aside; the next champion replaces it."""
+    with tempfile.TemporaryDirectory() as td:
+        state = Path(td)
+        runner.PLAYBOOK_STATE_DIR = str(state)
+        (state / "status_full.json").write_text('{"ep": 4, "complete": true}')
+        (state / "status_layout.json").write_text('{"ep": 4, "layout": true}')
+        runner.save_champion_status()
+        assert (state / "status_champion.json").read_text() == ('{"ep": 4, "complete": true}')
+        # Baseline gets all layout data through status_champion; no duplicate.
+        assert not (state / "status_layout_champion.json").exists()
+
+        (state / "status_full.json").write_text('{"ep": 9, "complete": true}')
+        runner.save_champion_status()
+        assert (state / "status_champion.json").read_text() == ('{"ep": 9, "complete": true}')
+
+
+def test_legacy_champion_status_is_renamed_without_overwriting_it():
+    with tempfile.TemporaryDirectory() as td:
+        state = Path(td)
+        runner.PLAYBOOK_STATE_DIR = str(state)
+        legacy = state / "status_coordinator_champion.json"
+        legacy.write_text('{"ep": 4, "champion": true}')
+
+        assert runner.migrate_legacy_champion_status()
+        assert not legacy.exists()
+        assert (state / "status_champion.json").read_text() == ('{"ep": 4, "champion": true}')
+
+
+def test_ablation_legacy_champion_is_copied_to_canonical_name(
+    tmp_path: Path,
+    monkeypatch,
+):
+    """Verbatim baseline planner prompts resolve against older ablation state."""
+    legacy = tmp_path / "status_coordinator_champion.json"
+    legacy.write_text('{"ep": 7, "champion": true}')
+    monkeypatch.setattr(runner, "PLAYBOOK_STATE_DIR", str(tmp_path))
+    monkeypatch.setattr(runner, "STATUS_CHAMPION_PATH", str(legacy))
+    monkeypatch.setattr(runner, "_STATUS_BASENAME", "status_full.json")
+
+    assert runner.ensure_canonical_champion_status()
+    assert legacy.exists()
+    assert (tmp_path / "status_champion.json").read_text() == legacy.read_text()
 
 
 if __name__ == "__main__":
@@ -96,4 +147,6 @@ if __name__ == "__main__":
     test_restore_returns_none_without_a_champion()
     test_fresh_archives_state_instead_of_deleting_it()
     test_strip_learned_keeps_the_baseline_and_the_header()
+    test_champion_status_is_frozen_at_promotion()
+    test_legacy_champion_status_is_renamed_without_overwriting_it()
     print("ok")

@@ -1,0 +1,9 @@
+# Optional dependencies for the pinned upstream GMemory checkout.
+langchain-chroma>=0.2.3,<1.2
+sentence-transformers>=3.4.1,<4
+finch-clust>=0.2.0,<1
+transformers>=4.41,<5
+huggingface-hub>=0.23,<1
+kubernetes>=28.1,<37
+python-dateutil>=2.8,<3
+click>=8.1,<8.2

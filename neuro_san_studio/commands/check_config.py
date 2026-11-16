@@ -322,9 +322,9 @@ def print_results(
     failures: List[Tuple[List[str], Dict[str, Any], str]],
 ):
     """Print the final results summary."""
-    print("=" * 70)
+    print("======================================================================")
     print("RESULTS SUMMARY")
-    print("=" * 70)
+    print("======================================================================")
 
     if successes:
         print(f"\nWorking ({len(successes)} unique config(s)):")

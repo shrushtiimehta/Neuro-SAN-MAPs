@@ -17,6 +17,8 @@
 """Tests for NeuroSanRunner."""
 
 import os
+import signal
+import subprocess
 from collections.abc import Callable
 from collections.abc import Iterable
 from pathlib import Path
@@ -201,3 +203,36 @@ class TestNeuroSanRunner:
         monkeypatch.setattr(run_module, "timedinput", _capturing_input)
         self._make_runner()._validate_yes_no_input("Kill processes? ")
         assert seen_prompts == ["Kill processes? "]
+
+    def test_stop_process_escalates_timeout_without_traceback(
+        self, monkeypatch: MonkeyPatch, capsys: CaptureFixture[str]
+    ) -> None:
+        """A server that ignores TERM is killed and reaped, not raised to the CLI."""
+
+        class SlowProcess:
+            pid = 1234
+
+            def __init__(self) -> None:
+                self.waits: list[float] = []
+
+            def poll(self) -> None:
+                return None
+
+            def wait(self, timeout: float) -> int:
+                self.waits.append(timeout)
+                if len(self.waits) == 1:
+                    raise subprocess.TimeoutExpired("server", timeout)
+                return 0
+
+        sent: list[signal.Signals] = []
+        monkeypatch.setattr(os, "getpgid", lambda _pid: 1234)
+        monkeypatch.setattr(os, "killpg", lambda _pgid, sig: sent.append(sig))
+        runner = self._make_runner()
+        runner.is_windows = False
+        process = SlowProcess()
+
+        runner._stop_process(process, "SERVER")  # type: ignore[arg-type]
+
+        assert sent == [signal.SIGTERM, signal.SIGKILL]
+        assert process.waits == [10, 5]
+        assert "sending SIGKILL" in capsys.readouterr().out

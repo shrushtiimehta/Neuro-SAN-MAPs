@@ -3,6 +3,12 @@ leaf-common>=1.2.40
 neuro-san==0.6.60
 nsflow==0.6.15
 
+# Experiment telemetry. W&B 0.27+ requires click>=8.2, which conflicts with
+# nsflow's gTTS dependency (click<8.2), so keep the newest compatible W&B line.
+wandb==0.26.1
+wandb-workspaces==0.4.5
+click>=8.0.1,<8.2
+
 # For config parsing
 pyhocon>=0.3.60
 

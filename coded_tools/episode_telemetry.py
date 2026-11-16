@@ -35,9 +35,11 @@ Returns:
     "steps":    [ {step, action, type, subtype, subclass, price,
                    order_quantity, x, y, reward,
                    cumulative_reward, cash, park_value, park_rating,
-                   research_speed, num_rides, num_shops, num_staff,
-                   min_cleanliness, min_uptime, shop_revenue,
-                   ride_op_cost}, ... ],   # sorted by step
+                   asset_investment, daily_profit,
+                   research_speed, research_progress,
+                   num_rides, num_shops, num_staff,
+                   min_cleanliness, min_uptime, ride_revenue, shop_revenue,
+                   ride_op_cost, shop_op_cost, staff_op_cost}, ... ],
     "rejections": [ {step, rejected_action, subtype, subclass, price,
                      error}, ... ],  # actions the sim refused (logged as wait)
     "rollup":   { step_count, first_step, last_step, reached_step_100,
@@ -70,6 +72,8 @@ from typing import ClassVar
 from neuro_san.interfaces.coded_tool import CodedTool
 
 from coded_tools.file_io import FileIO
+from coded_tools.state_dir import LOG_DIR as _LOG_DIR
+from coded_tools.state_dir import state_path
 
 
 class EpisodeTelemetry(CodedTool):
@@ -80,20 +84,37 @@ class EpisodeTelemetry(CodedTool):
     post-step rows  no tool-name filtering needed.
     """
 
-    RUN_LOG_DIR: ClassVar[str] = "logs/maps_park"
+    RUN_LOG_DIR: ClassVar[str] = _LOG_DIR
+    NO_CROSS_EPISODE_ENV: ClassVar[str] = "MAPS_NO_CROSS_EPISODE"
+    EPISODE_FLOOR_PATH: ClassVar[str] = state_path("no_carry_episode.txt")
 
     # Metric fields copied verbatim from each run.jsonl row.
     METRIC_FIELDS: ClassVar[tuple[str, ...]] = (
-        "reward", "cumulative_reward", "cash", "park_value", "park_rating",
-        "research_speed", "num_rides", "num_shops", "num_staff",
-        "min_cleanliness", "min_uptime", "shop_revenue", "ride_op_cost",
+        "reward",
+        "cumulative_reward",
+        "cash",
+        "park_value",
+        "park_rating",
+        "asset_investment",
+        "daily_profit",
+        "research_speed",
+        "research_progress",
+        "num_rides",
+        "num_shops",
+        "num_staff",
+        "min_cleanliness",
+        "min_uptime",
+        "ride_revenue",
+        "shop_revenue",
+        "ride_op_cost",
+        "shop_op_cost",
+        "staff_op_cost",
     )
     # Action fields the runner spreads into the row from the dispatched args.
     # Carry the FULL action shape (coords, quantity, type included) so `steps`
     # is the faithful run the close-out judge reads to decide whether a trial's
     # intended move actually fired.
-    ACTION_FIELDS: ClassVar[tuple[str, ...]] = (
-        "type", "subtype", "subclass", "price", "order_quantity", "x", "y")
+    ACTION_FIELDS: ClassVar[tuple[str, ...]] = ("type", "subtype", "subclass", "price", "order_quantity", "x", "y")
 
     def invoke(self, args: dict[str, Any], sly_data: dict[str, Any]) -> dict[str, Any]:
         """
@@ -104,41 +125,54 @@ class EpisodeTelemetry(CodedTool):
         :return: structured per-episode telemetry (see module docstring).
         """
         del sly_data
-        # Resolve which episode's file to read.
+        # Resolve the local episode file to read. W&B is a write-only mirror;
+        # operational learning always uses this arm's isolated JSONL logs.
         episode = FileIO.to_int(args.get("episode")) if args.get("episode") is not None else None
         path = args.get("run_log_path")
+        episode_floor = self._episode_floor()
+        if episode_floor is not None and episode is not None and episode < episode_floor:
+            return self._hidden_episode(episode, episode_floor)
+
         if path:
             path = str(path)
+            path_episode = self._episode_from_path(path)
+            if episode_floor is not None and path_episode is not None and path_episode < episode_floor:
+                return self._hidden_episode(path_episode, episode_floor)
+            ep_rows = self._read_rows(path) if os.path.exists(path) else []
+            source = path
         elif episode is not None:
             path = self._episode_path(episode)
+            ep_rows = self._read_rows(path) if os.path.exists(path) else []
+            source = path
         else:
             episode, path = self._latest_episode()
-
-        if not path or not os.path.exists(path):
-            return {"exists": False, "episode": episode, "steps": [],
-                    "rejections": [], "rollup": {},
-                    "error": f"run log not found: {path}"}
-
-        ep_rows = self._read_rows(path)
+            ep_rows = self._read_rows(path) if path and os.path.exists(path) else []
+            source = path
         if not ep_rows:
-            return {"exists": False, "episode": episode, "steps": [],
-                    "rejections": [], "rollup": {},
-                    "error": f"no committed rows in {path}"}
+            return {
+                "exists": False,
+                "episode": episode,
+                "steps": [],
+                "rejections": [],
+                "rollup": {},
+                "error": f"no committed rows in {source}",
+            }
 
         if episode is None:
-            episode = next((r.get("episode") for r in ep_rows
-                            if r.get("episode") is not None), None)
+            episode = next((r.get("episode") for r in ep_rows if r.get("episode") is not None), None)
 
         from_step = FileIO.to_int(args.get("from_step")) if args.get("from_step") is not None else None
 
         ep_rows.sort(key=lambda r: (r.get("step") if r.get("step") is not None else 0))
 
         steps: list[dict[str, Any]] = []
+        r: Any
         for r in ep_rows:
             step = r.get("step")
             if from_step is not None and step is not None and step < from_step:
                 continue
             entry: dict[str, Any] = {"step": step, "action": r.get("action")}
+            f: Any
             for f in self.ACTION_FIELDS:
                 if r.get(f) is not None:
                     entry[f] = r.get(f)
@@ -149,14 +183,20 @@ class EpisodeTelemetry(CodedTool):
             err = r.get("error")
             if err:
                 entry["error"] = err.get("message") if isinstance(err, dict) else err
+            f: Any
             for f in self.METRIC_FIELDS:
                 entry[f] = r.get(f)
             steps.append(entry)
 
         rejections = [
-            {"step": s["step"], "rejected_action": s.get("rejected_action"),
-             "subtype": s.get("subtype"), "subclass": s.get("subclass"),
-             "price": s.get("price"), "error": s.get("error")}
+            {
+                "step": s["step"],
+                "rejected_action": s.get("rejected_action"),
+                "subtype": s.get("subtype"),
+                "subclass": s.get("subclass"),
+                "price": s.get("price"),
+                "error": s.get("error"),
+            }
             for s in steps
             if s.get("rejected_action") is not None or s.get("error")
         ]
@@ -169,19 +209,64 @@ class EpisodeTelemetry(CodedTool):
             "rollup": self._rollup(steps),
         }
 
+    def episode_numbers(self) -> list[int]:
+        """Episode numbers present in this arm's local log directory."""
+        episodes: list[int] = []
+        path: Any
+        for path in glob.glob(os.path.join(self.RUN_LOG_DIR, "run.ep*.jsonl")):
+            match = re.search(r"run\.ep(\d+)\.jsonl$", os.path.basename(path))
+            if match:
+                episodes.append(int(match.group(1)))
+        episode_floor = self._episode_floor()
+        if episode_floor is not None:
+            episodes = [episode for episode in episodes if episode >= episode_floor]
+        return sorted(episodes)
+
     def _episode_path(self, episode: int) -> str:
         return os.path.join(self.RUN_LOG_DIR, f"run.ep{episode:03d}.jsonl")
 
     def _latest_episode(self) -> tuple[int | None, str | None]:
         """Highest-numbered episode file present (episode, path)."""
         best: tuple[int, str] | None = None
+        p: Any
         for p in glob.glob(os.path.join(self.RUN_LOG_DIR, "run.ep*.jsonl")):
             m = re.search(r"run\.ep(\d+)\.jsonl$", os.path.basename(p))
             if m:
                 ep = int(m.group(1))
+                episode_floor = self._episode_floor()
+                if episode_floor is not None and ep < episode_floor:
+                    continue
                 if best is None or ep > best[0]:
                     best = (ep, p)
         return best if best is not None else (None, None)
+
+    @classmethod
+    def _episode_floor(cls) -> int | None:
+        """Return the earliest episode visible to no-carryover strategy agents."""
+        if os.environ.get(cls.NO_CROSS_EPISODE_ENV) != "1":
+            return None
+        try:
+            return int(FileIO.read_text(cls.EPISODE_FLOOR_PATH).strip())
+        except (OSError, TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _episode_from_path(path: str) -> int | None:
+        """Extract an episode number from a canonical run-log filename."""
+        match = re.search(r"run\.ep(\d+)\.jsonl$", os.path.basename(path))
+        return int(match.group(1)) if match else None
+
+    @staticmethod
+    def _hidden_episode(episode: int, episode_floor: int) -> dict[str, Any]:
+        """Return a normal empty payload when an agent asks for prior telemetry."""
+        return {
+            "exists": False,
+            "episode": episode,
+            "steps": [],
+            "rejections": [],
+            "rollup": {},
+            "error": f"episode {episode} is hidden by no-carryover floor {episode_floor}",
+        }
 
     def _read_rows(self, path: str) -> list[dict[str, Any]]:
         """Committed post-step rows from one episode file (real step only).
@@ -192,6 +277,7 @@ class EpisodeTelemetry(CodedTool):
         rows: list[dict[str, Any]] = []
         try:
             with open(path, encoding="utf-8") as fh:
+                line: Any
                 for line in fh:
                     line = line.strip()
                     if not line:
@@ -218,6 +304,7 @@ class EpisodeTelemetry(CodedTool):
         rejection_count = 0
         peak_rides = peak_shops = peak_staff = 0
         research_on_step: int | None = None
+        s: Any
         for s in steps:
             if s.get("action"):
                 actions_by_type[s["action"]] += 1
@@ -280,20 +367,23 @@ class EpisodeTelemetry(CodedTool):
         episode took off, without re-reading every per-step row."""
         bounds = [(1, 25), (26, 50), (51, 75), (76, 100)]
         bands: list[dict[str, Any]] = []
+        lo: Any
+        hi: Any
         for lo, hi in bounds:
-            in_band = [s for s in steps
-                       if s.get("step") is not None and lo <= s["step"] <= hi]
+            in_band = [s for s in steps if s.get("step") is not None and lo <= s["step"] <= hi]
             if not in_band:
                 continue
             total = sum(FileIO.to_float(s.get("reward")) for s in in_band)
             last = in_band[-1]
-            bands.append({
-                "band": f"{lo}-{hi}",
-                "steps": len(in_band),
-                "avg_reward_per_step": round(total / len(in_band), 1),
-                "end_value": last.get("park_value"),
-                "end_rating": last.get("park_rating"),
-            })
+            bands.append(
+                {
+                    "band": f"{lo}-{hi}",
+                    "steps": len(in_band),
+                    "avg_reward_per_step": round(total / len(in_band), 1),
+                    "end_value": last.get("park_value"),
+                    "end_rating": last.get("park_rating"),
+                }
+            )
         return bands
 
     async def async_invoke(self, args: dict[str, Any], sly_data: dict[str, Any]) -> dict[str, Any]:

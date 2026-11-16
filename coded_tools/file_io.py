@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import logging
 import os
+import tempfile
 from typing import Any
 from typing import Optional
 
@@ -87,6 +88,40 @@ class FileIO:
             handle.write(content)
 
     @staticmethod
+    def write_text_atomic(path: str, content: str) -> None:
+        """Atomically replace ``path`` with ``content``.
+
+        The temporary file is created beside ``path`` so ``os.replace`` stays
+        on one filesystem.  A process crash therefore leaves either the old
+        complete file or the new complete file, never a partially-truncated
+        ledger.  Raises ``OSError`` on failure.
+        """
+        FileIO.ensure_parent(path)
+        parent = os.path.dirname(path) or "."
+        basename = os.path.basename(path)
+        temp_path = ""
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=parent,
+                prefix=f".{basename}.",
+                delete=False,
+            ) as handle:
+                temp_path = handle.name
+                handle.write(content)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temp_path, path)
+        except OSError:
+            if temp_path:
+                try:
+                    os.remove(temp_path)
+                except OSError:
+                    pass
+            raise
+
+    @staticmethod
     def append_text(path: str, content: str) -> None:
         """Append ``content`` to ``path`` (creating parents).
 
@@ -100,9 +135,7 @@ class FileIO:
             handle.write(content)
 
     @staticmethod
-    def write_guarded(
-        path: str, content: str, logger: Optional[logging.Logger] = None
-    ) -> Optional[str]:
+    def write_guarded(path: str, content: str, logger: Optional[logging.Logger] = None) -> Optional[str]:
         """Overwrite ``path``; return ``None`` on success or an ``ERROR:`` string.
 
         The error-string convention (rather than raising) mirrors the
@@ -131,9 +164,7 @@ class FileIO:
             return default
 
     @staticmethod
-    def read_capped(
-        path: str, max_bytes: int, logger: Optional[logging.Logger] = None
-    ) -> str:
+    def read_capped(path: str, max_bytes: int, logger: Optional[logging.Logger] = None) -> str:
         """Return the file body, or a descriptive ``ERROR:`` string.
 
         Distinct from :meth:`read_text`: surfaces ``file_not_found`` /

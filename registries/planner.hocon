@@ -121,7 +121,7 @@ Repeated tool calls increase cost, so avoid unnecessary repetitions.
    complete outputs:
     1. TEMPORAL EXECUTION PLAN — Cover turns 1-100 with detailed, ordered, gap-free phases. Each phase must be
     formatted as "turns A-B: <goal and complete phase instructions>". Based on the turn, the corresponding phase
-    instructions are injected into every player agent. Keep all the details for all the domains here. Include the
+    instructions and the complete next phase are injected into every player agent. Keep all the details for all the domains here. Include the
     prioritized move order, cash availability, reward targets, relevant actions across all domains, and
     phase-specific details.  Preserve the proven champion's temporal plan while integrating new trials.
     2. COORDINATOR STRATEGY — Write the complete phase-independent policy used to compare proposals and choose the
@@ -278,7 +278,7 @@ ERROR HANDLING FOR EVERY KIND: if any tool returns an error, STOP and reply with
                         checklist_items = {
                             type = "array",
                             items = { type = "string" },
-                            description = "TEMPORAL EXECUTION PLAN: Cover turns 1-100 with detailed, ordered, gap-free phases. Each phase must be formatted as 'turns A-B: <goal and complete phase instructions>' and include the prioritized move order, cash availability, reward targets, relevant actions across all domains, and phase-specific details. Preserve the proven champion's temporal plan while integrating new trials. This is the only place for phase-specific instructions. Based on the current turn, middleware injects the corresponding phase instructions into every player agent. Keep all the details."
+                            description = "TEMPORAL EXECUTION PLAN: Cover turns 1-100 with detailed, ordered, gap-free phases. Each phase must be formatted as 'turns A-B: <goal and complete phase instructions>' and include the prioritized move order, cash availability, reward targets, relevant actions across all domains, and phase-specific details. Preserve the proven champion's temporal plan while integrating new trials. This is the only place for phase-specific instructions. Based on the current turn, middleware injects the corresponding phase instructions and the complete next phase into every player agent. Keep all the details."
                         }
                         strategy_summary = {
                             type = "string",

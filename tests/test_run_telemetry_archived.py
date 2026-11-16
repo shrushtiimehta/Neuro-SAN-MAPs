@@ -18,6 +18,7 @@
 import json
 import os
 import tempfile
+from typing import Any
 
 from coded_tools.run_telemetry import RunTelemetry
 
@@ -26,6 +27,8 @@ def _write_episode(run_dir: str, ep: int, final_cum: float) -> None:
     os.makedirs(run_dir, exist_ok=True)
     path = os.path.join(run_dir, f"run.ep{ep:03d}.jsonl")
     with open(path, "w", encoding="utf-8") as fh:
+        step: Any
+        cum: Any
         for step, cum in ((1, 0.0), (2, final_cum)):
             fh.write(json.dumps({"episode": ep, "step": step, "cumulative_reward": cum}) + "\n")
 
@@ -40,24 +43,40 @@ def test_include_archived_flag() -> None:
         telemetry = RunTelemetry()
         telemetry.RUN_LOG_DIR = tmp
 
+        # No-archive is the default: current run only.
         os.environ.pop(RunTelemetry.ENV_INCLUDE_ARCHIVED, None)
-        with_archived = telemetry.invoke({"select": "best"}, {})
-        assert with_archived["include_archived"] is True
-        assert with_archived["reference_episode"]["final_cum"] == 900.0
-        assert telemetry.invoke({"num_runs": 5}, {})["runs_analyzed"] == 2
+        current_only = telemetry.invoke({"select": "best"}, {})
+        assert current_only["include_archived"] is False
+        assert current_only["reference_episode"]["run_id"] == "current"
+        assert current_only["reference_episode"]["final_cum"] == 100.0
+        assert telemetry.invoke({"num_runs": 5}, {})["runs_analyzed"] == 1
 
-        # run_all.sh --no-archived exports the switch: current run only.
-        os.environ[RunTelemetry.ENV_INCLUDE_ARCHIVED] = "0"
+        # Prior runs are available only through an explicit opt-in.
+        os.environ[RunTelemetry.ENV_INCLUDE_ARCHIVED] = "1"
         try:
-            current_only = telemetry.invoke({"select": "best"}, {})
-            assert current_only["include_archived"] is False
-            assert current_only["reference_episode"]["run_id"] == "current"
-            assert current_only["reference_episode"]["final_cum"] == 100.0
-            assert telemetry.invoke({"num_runs": 5}, {})["runs_analyzed"] == 1
+            with_archived = telemetry.invoke({"select": "best"}, {})
+            assert with_archived["include_archived"] is True
+            assert with_archived["reference_episode"]["final_cum"] == 900.0
+            assert telemetry.invoke({"num_runs": 5}, {})["runs_analyzed"] == 2
         finally:
             del os.environ[RunTelemetry.ENV_INCLUDE_ARCHIVED]
 
 
+def test_best_select_explicitly_reports_no_first_episode_reference() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        _write_episode(tmp, 0, 100.0)
+        telemetry = RunTelemetry()
+        telemetry.RUN_LOG_DIR = tmp
+
+        result = telemetry.invoke({"select": "best"}, {})
+
+        assert result["exists"] is False
+        assert result["reference_available"] is False
+        assert result["reference_episode"] is None
+        assert "no completed reference" in result["reason"]
+
+
 if __name__ == "__main__":
     test_include_archived_flag()
+    test_best_select_explicitly_reports_no_first_episode_reference()
     print("ok")

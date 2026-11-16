@@ -18,12 +18,11 @@ Champion-plan checkpoint — deterministic, driven by the runner (no LLM).
 
 WriteEpisodePlan dumps each episode's plan args to plan_current.json. The runner
 calls these two functions directly:
-  - promote_plan(aborted, reward, min_reward): after a CLEAN episode, copy
-    plan_current -> plan_last_good ONLY if its reward clears min_reward AND beats
-    the current champion (best-so-far, above the floor).
-  - restore_last_good(): before the next episode start, if the prior one doomed,
-    re-apply plan_last_good via WriteEpisodePlan instead of re-deriving off the
-    doomed run.
+  - promote_plan(reward, min_reward): after an episode, copy plan_current ->
+    plan_last_good ONLY if its reward clears min_reward AND beats the current
+    champion (best-so-far, above the floor).
+  - restore_last_good(): before the next episode start, re-apply plan_last_good
+    via WriteEpisodePlan as the base the macro refines.
 """
 
 from __future__ import annotations
@@ -32,9 +31,10 @@ import json
 import os
 import shutil
 
+from coded_tools.state_dir import STATE_DIR
 from coded_tools.write_episode_plan import WriteEpisodePlan
 
-_STATE_DIR = "coded_tools/state"
+_STATE_DIR = STATE_DIR
 PLAN_CURRENT_PATH = os.path.join(_STATE_DIR, "plan_current.json")
 PLAN_LAST_GOOD_PATH = os.path.join(_STATE_DIR, "plan_last_good.json")
 CHAMPION_REWARD_PATH = os.path.join(_STATE_DIR, "champion_reward.json")
@@ -57,19 +57,17 @@ def _champion_reward() -> float | None:
 
 
 def best_reward() -> float:
-    """Best clean-episode reward promoted so far — the rising doom floor — or 0.0
-    if no episode has been promoted yet. The runner holds each new episode against
-    this: it starts at 0 (nothing is doomed before there's a baseline) and only
-    ever rises as better episodes land."""
+    """Best episode reward promoted so far — the rising champion bar — or 0.0 if
+    no episode has been promoted yet. It starts at 0 (there is no bar before the
+    first baseline lands) and only ever rises as better episodes land."""
     reward = _champion_reward()
     return reward if reward is not None else 0.0
 
 
-def promote_plan(aborted: bool, reward: float, min_reward: float = CHAMPION_MIN_REWARD) -> bool:
-    """On a clean run, promote the current plan to the champion ONLY if its reward
-    clears min_reward (the doom floor) AND beats the current champion (or there is
-    no champion yet). Returns True if the champion was updated."""
-    if aborted or not os.path.exists(PLAN_CURRENT_PATH):
+def promote_plan(reward: float, min_reward: float = CHAMPION_MIN_REWARD) -> bool:
+    """Promote the current plan to the champion only when its reward clears
+    the champion bar and beats the current champion (or none exists yet)."""
+    if not os.path.exists(PLAN_CURRENT_PATH):
         return False
     try:
         reward = float(reward)
@@ -90,14 +88,21 @@ def promote_plan(aborted: bool, reward: float, min_reward: float = CHAMPION_MIN_
 
 
 def restore_last_good() -> bool:
-    """Re-apply the champion plan (checklist + coordinator/specialist summaries)
-    via WriteEpisodePlan. Returns True if a good plan was restored."""
+    """Re-apply the champion plan via WriteEpisodePlan.
+
+    Solo snapshots contain one complete ``strategy``; structured multi-agent
+    snapshots contain ``strategy_summary`` plus all six domain strategies.
+    """
     try:
         with open(PLAN_LAST_GOOD_PATH, encoding="utf-8") as fh:
             plan = json.load(fh)
     except (OSError, json.JSONDecodeError):
         return False
-    if not isinstance(plan, dict) or not plan.get("checklist_items") or not plan.get("strategy_summary"):
+    if (
+        not isinstance(plan, dict)
+        or not plan.get("checklist_items")
+        or not (plan.get("strategy") or plan.get("strategy_summary"))
+    ):
         return False
     result = WriteEpisodePlan().invoke(plan, {})
     return not isinstance(result, str)  # WriteEpisodePlan returns "ERROR: ..." on failure

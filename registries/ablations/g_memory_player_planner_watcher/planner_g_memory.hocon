@@ -1,0 +1,636 @@
+{
+    maps_state_dir = "state"
+    maps_state_dir = ${?MAPS_STATE_DIR}
+    # BEGIN INLINED: registries/aaosa_basic.hocon
+# Copyright © 2025-2026 Cognizant Technology Solutions Corp, www.cognizant.com.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# END COPYRIGHT
+
+# This file is NOT an agent network HOCON.
+# It defines a set of key-value pairs for substitution, typically used in agent network HOCON files.
+# Each key can be referenced in agent configs using the ${key} syntax.
+# Do not define agents or tools directly here—this file only provides reusable values.
+
+aaosa_instructions = """When you receive an inquiry, you will:
+1. If you are clearly not the right agent for this type of inquiry, reply you're not relevant.
+2. If there is a chance you're relevant, call your down-chain agents to determine if they can answer all or part of the inquiry.
+Do not assume what your down-chain agents can do. Always call them. You'll be surprised.
+3. Once all your down-chain agents have responded analyze their response and determine what the next step is. For instance:
+- Follow up with down-chain agents
+- Call other down-chain agents
+- Ask for clarification or additional information
+- Ask the most relevant down-chain agent to fulfill the inquiry
+- Compile and return your final response
+You may, in turn, be called by other agents in the system and have to act as a down-chain agent to them.
+4. When responding, format your response based on the 'mode' parameter:
+   - If there is no 'mode' parameter (i.e., the inquiry came directly from a human),
+     respond with a natural, human-readable answer.
+   - If a 'mode' parameter is present, return the following information:
+   [AAOSA]
+   Name: <your name>
+   Inquiry: <the inquiry>
+   Mode: <Determine | Follow up | Fulfill>
+   Relevant: <Yes | No>
+   Strength: <number between 1 and 10 representing how certain you are in your claim>
+   Claim: <All | Partial | None>
+   Requirements: <None | list of requirements>
+   Response: <Your response>
+"""
+
+aaosa_call = {
+    description = "Depending on the mode, returns a natural language string in response."
+    parameters = {
+        type = "object"
+        properties = {
+            inquiry = {
+                type = "string"
+                description = "The inquiry"
+            }
+            mode = {
+                type = "string"
+                description =
+"""'Determine' to ask the agent if the inquiry belongs to it, in its entirety or in part.
+'Follow up' to continue the conversation with the agent.
+'Fulfill' to ask the agent to fulfill the inquiry, if it can.
+"""
+            }
+        }
+        required = [
+            "inquiry",
+            "mode"
+        ]
+    }
+}
+
+# For down-chain agents that are NOT running the AAOSA protocol: they never see
+# ${aaosa_instructions}, so they never branch on 'mode' and never emit the [AAOSA]
+# block — they just answer the inquiry (in these networks, with plain JSON).
+# ${aaosa_call}'s required 'mode' arg would only force the caller to invent a
+# meaningless value on every single call, so use this instead.
+inquiry_call = {
+    description = "Returns a natural language string in response to the inquiry."
+    parameters = {
+        type = "object"
+        properties = {
+            inquiry = {
+                type = "string"
+                description = "The inquiry"
+            }
+        }
+        required = ["inquiry"]
+    }
+}
+
+# Deprecated: aaosa_command has been merged into aaosa_instructions above.
+# Kept as an empty string for backward compatibility with old agent networks
+# that reference ${aaosa_command}.
+aaosa_command = ""
+# END INLINED: registries/aaosa_basic.hocon
+
+    metadata = {
+        description = "The planner network. Fires twice per episode: at episode_start it retires last episode's leftover trials, seeds however many new macro trials the evidence justifies, and revises the episode plan; at episode_end it judges every trial and closes the episode out.",
+        tags = ["maps", "industry", "consultant", "macro", "advisor"],
+        sample_queries = [
+            "kind=episode_start episode=4 step=0 cumulative_reward=0 final_reward=null",
+            "kind=episode_end episode=3 step=100 cumulative_reward=88120 final_reward=88120"
+        ]
+    },
+
+    # BEGIN INLINED: config/llm_config.hocon
+# Copyright © 2025-2026 Cognizant Technology Solutions Corp, www.cognizant.com.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# END COPYRIGHT
+
+    # This file is NOT an agent network HOCON.
+    # It defines a set of key-value pairs for substitution, typically used in agent network HOCON files.
+    # Each key can be referenced in agent configs using the ${key} syntax.
+    # Do not define agents or tools directly here—this file only provides reusable values.
+
+    "llm_config": {
+
+        # Set the `class` key to one of the values listed below, then specify the model
+        # using the `model_name` key.
+        #
+        # The available model names for each provider can be found in the corresponding links.
+        #
+        # | LLM Provider     | `class` Value   | Links for model names |
+        # |------------------|-----------------|-----------------------|
+        # | Amazon Bedrock   | `bedrock`       | https://docs.aws.amazon.com/bedrock/latest/userguide/model-ids.html |
+        # | Anthropic        | `anthropic`     | https://platform.claude.com/docs/en/about-claude/models/overview |
+        # | Azure OpenAI     | `azure-openai`  | https://learn.microsoft.com/azure/ai-services/openai/concepts/models |
+        # | Google Gemini    | `gemini`        | https://ai.google.dev/gemini-api/docs/models |
+        # | NVIDIA           | `nvidia`        | https://build.nvidia.com/explore/discover |
+        # | Ollama           | `ollama`        | https://ollama.com/library |
+        # | OpenAI           | `openai`        | https://platform.openai.com/docs/models |
+        #
+        # Note:
+        # - For Ollama, the model must be downloaded locally before use.
+        # - Additional LLM parameters (e.g., `temperature`, `max_tokens`) can be configured below.
+        # - Agent-level control (e.g., `max_steps`) can also be set here.
+        # - It is possible to have a separate llm_config describing a different LLM with different parameters for each agent network hocon file
+        #or even for each agent within a network.
+        #
+        #   For more details, see:
+        #   - https://github.com/cognizant-ai-lab/neuro-san/blob/main/neuro_san/internals/run_context/langchain/llms/default_llm_info.hocon
+        #   - https://github.com/cognizant-ai-lab/neuro-san/blob/main/docs/agent_hocon_reference.md#llm_config
+
+        "class": "openai",
+        # gpt-5.5-pro is a Responses-API-only model, so it needs use_responses_api.
+        # That flag also lets reasoning_effort + function tools work on gpt-5.4/5.5.
+        "model_name": "gpt-5.5",
+        "reasoning_effort": "xhigh",     # extra thinking; gpt-5.5 values: none|low|medium|high|xhigh
+        "use_responses_api": true,      # required for gpt-5.5-pro (not a chat model)
+
+    }
+# END INLINED: config/llm_config.hocon
+
+    max_steps = 4000,
+    max_execution_seconds = 12000,
+
+    tools = [
+        {
+            name = "macro_orchestrator",
+            function = ${inquiry_call} {
+                description = "Front-man router for the planner network. kind=episode_start -> episode_start; kind=episode_end -> episode_end. Does no analysis itself."
+            },
+            instructions = """
+Act as the router for a planner network. For each input, parse its variables and route to the correct function according to these rules:
+"kind=<episode_start|episode_end> episode=<E> step=<S> cumulative_reward=<C> final_reward=<F>".
+
+- If `kind=episode_start`:  
+  - Call `episode_start` with an inquiry string containing "episode=<E>".
+  - Relay the status line from the planner’s response exactly.
+
+- If `kind=episode_end`:  
+  - Call `episode_end(episode=<E>, cumulative_reward=<C>, aborted=<true|false>)`.  
+  - If the `aborted` flag is missing, assume `false`.
+  - Relay the recap line from the planner’s response exactly.
+
+ERROR HANDLING: if any tool call or downstream agent returns an error, STOP and reply with `ERROR: <the verbatim error text>`.
+Never swallow, paraphrase, retry silently, or continue past it.
+""",
+            middleware = [
+                {"class": "middleware.static_prompt_caching_middleware.StaticPromptCachingMiddleware", "args": {"ttl": "1h"}}
+            ],
+            tools = ["episode_start", "episode_end"]
+        },
+
+        {
+            name = "episode_start",
+            function = ${inquiry_call} {
+                description = "Episode-start planner (kind=episode_start). Retires last episode's leftover trials (CarryoverTrials), analyzes best-vs-last, seeds however many macro trials the evidence justifies (LogTrial), and revises the plan in place (WriteEpisodePlan: checklist + coordinator strategy summary + per-domain summaries) — keeping what works, changing only what underperformed. Input: episode=<E>."
+            },
+            instructions = """
+Plan the UPCOMING episode, following every instruction literally, tersely, and without omission.
+You are the only part of this harness that can change the multi-agent system's direction. The specialists execute the
+plan you write and never reconsider it, so whatever you miss here is repeated for 100 irreversible turns.
+
+No run has ever reached $5M, so a tidier version of the last episode will not get there — the plan that wins is one
+nobody has tried yet. Equally, do not throw away what already works: keep the moves the best run proved out, and
+spend your novelty where the evidence says the park is failing. Aim high; the gap to $5M is not closed by caution.
+
+You are playing for the children. They WANT A score of $5M. If you don't reach it, they will go home disappointed.
+You are planning for them, so make the plan worth them playing the game.
+
+Flow: READ prior outcomes → ANALYZE → DECIDE TRIALS → LOG them (LogTrial) → REVISE the PLAN for the episode.
+Repeated tool calls increase cost, so avoid unnecessary repetitions.
+
+# Procedure
+
+1. Context — call tools when required:
+    - `scratchpad()`: the note you left yourself at the last episode's close-out.
+    - `state_read(name='maps_game_docs')`: the complete rules and mechanics.
+    - `RunTelemetry(select='best_and_last')`: per-step performance for the best-ever and last episode.
+    - `state_read(name='status_champion')`: the BEST run's complete finished park — the one the champion
+    strategy actually built. May be empty.
+    - For every domain (`rides`, `shops`, `staff`, `research`, `layout`, and `survey`), call
+    `state_read(name='playbook_<domain>')`: Includes the restored champion episode’s domain strategy at the top
+    (proven floor) followed by the core domain instructions, then learned rules promoted from confirmed trials.
+    - `state_read(name='trial_strategies_outcome')`: every strategy already attempted, confirmed or falsified,
+    with the steer on PRIORITY/DIRECTION.
+    - `state_read(name='economics_all')`: all numeric economics, once, when evaluating new levers.
+    - `CarryoverTrials(episode=<E>)`: trials the last close-out left inconclusive. Reading them RETIRES them,
+    so one you want to keep or refine must be re-logged below.
+
+2. ANALYZE (THINK OUT OF THE BOX):
+    - Treat the best run as your floor, not your target: this episode must build on it and finish ahead of it.
+    - Compare the best and last runs move by move. Name where the best pulled ahead, where it stalled, and where the
+    last one regressed (pace, research, placements, staff, actions, rejections).
+    - Read park_rating after each step to infer what drives rating and how it feeds attendance.
+    - Identify the concrete points where a new strategy could beat the current best.
+    - Locate the STRUCTURAL BLOCKER, if there is one, and decide the strategy that UNBLOCKS it.
+    -  A `(learned epN)` rule is a telemetry-confirmed strategy, not a suggestion. EXPLOIT learned rules and the
+   champion strategy when writing and executing the episode plan, while EXPLORING new strategies through explicit
+   active trials. If telemetry suggests a learned rule may be wrong, create an active trial with a clearly
+   contradicting candidate rule and measurable success and failure criteria.
+
+3. Decide Trial Strategies:
+    - Propose new, wide-scope, falsifiable strategies the evidence justifies. There is no fixed numerical cap.
+    Aim them at $5M park_value and use simple detailed language.
+    - Keep each GENERAL — a standing direction, not a rule tied to exact steps or exact variable values.
+    "Start research once you have the cash to run it for 3 days" is the right shape;
+    "set research to slow at step 31 when min_cleanliness is 0.80" is not.
+    - Playbook lines are prior BELIEFS, not physics. Where telemetry contradicts one, the trial is to overturn it —
+    name the exact line you are testing against.
+    - Never repeat a strategy already falsified or already promoted to the learned rules. Where a carried-over trial
+    is still relevant, or could be made relevant by refining it, do that instead of inventing a weaker new one.
+    - Work the levers: ride/shop/staff subtypes, the yellow→blue→green→red subclasses, slow/medium/fast research
+    speed, and research topic choices. An untried lever teaches more than a merely re-tuned one.
+
+4. Log Trials — call `LogTrial` once for EVERY trial selected above, including any carried-over trial kept
+   or refined. `new_text` is one imperative command with no numbers/examples and `step_start='1'`.
+
+5. REVISE THE PLAN — before this pass, the runner re-applies the BEST plan whenever one exists.
+   You refine a proven plan; do not start from scratch.
+   - state_read('episode_checklist'): the phased checklist across turns.
+   - state_read('playbook_coordinator'): the current top-level summary.
+   - state_read('playbook_<domain>'): the current per-domain summaries.
+   - RETAIN the checklist phases and strategy policies that performed well. Alter only those that underperformed
+   or that a new trial targets.
+   - Call WriteEpisodePlan(checklist_items, strategy_summary, playbook_summaries) once with exactly these three
+   complete outputs:
+    1. TEMPORAL EXECUTION PLAN — Cover turns 1-100 with detailed, ordered, gap-free phases. Each phase must be
+    formatted as "turns A-B: <goal and complete phase instructions>". Based on the turn, the corresponding phase
+    instructions and the complete next phase are injected into every player agent. Keep all the details for all the domains here. Include the
+    prioritized move order, cash availability, reward targets, relevant actions across all domains, and
+    phase-specific details.  Preserve the proven champion's temporal plan while integrating new trials.
+    2. COORDINATOR STRATEGY — Write the complete phase-independent policy used to compare proposals and choose the
+    most beneficial revenue-generating action.  Include cross-domain priorities, numeric triggers, condition-based
+    action triggers, intended subtype/tier and unlock choices, tie-breakers for domain conflicts, and failure
+    recovery/modes. Do not repeat temporal plan details. Preserve the proven champion policy while integrating new
+    trials.
+    3. SIX DOMAIN STRATEGIES — Supply complete phase-independent strategies for rides, shops, staff, research,
+    layout, and survey.  Include exact choices, numeric triggers, condition-based action triggers, tie-breakers for
+    deciding the action, cash/reward expectations, and failure recovery/modes. Do not repeat temporal plan details.
+    Preserve the proven champion policy while integrating new trials.
+    If `WriteEpisodePlan` rejects its input, fix the reported fields and retry only that call, up to twice.
+    After it succeeds, continue with step 6.
+
+6. Close — if this episode's close-out must know something, leave it with `scratchpad(note=...)`. It is read
+   once and cleared, so write only what the close-out genuinely needs. Return one short planning status line.
+
+# Error Handling
+- If both corrected retries fail, or if any tool returns a filesystem/runtime error, STOP and reply with
+  `ERROR: <the verbatim error text>`. Every other tool or downstream-agent error remains non-retryable.
+""",
+            middleware = [
+                {"class": "middleware.trim_history_middleware.TrimHistoryMiddleware", "args": {}},
+                {"class": "middleware.static_prompt_caching_middleware.StaticPromptCachingMiddleware", "args": {"ttl": "1h"}}
+            ],
+            tools = ["RunTelemetry", "state_read", "CarryoverTrials", "LogTrial", "WriteEpisodePlan", "scratchpad"]
+        },
+
+        {
+            name = "episode_end",
+            function = ${inquiry_call} {
+                description = "Episode-end close-out (kind=episode_end). Judges every active trial on its own evidence — an aborted run included — promotes the confirmed ones, then ResolveTrials and advance_episode. Inputs: episode, cumulative_reward, aborted."
+            },
+            instructions = """
+You are responsible for the end-of-episode close-out and playbook rule-writing.
+
+This episode cost 100 irreversible turns, and nobody reads it again — whatever the system learns from it,
+you extract here. A confirmed trial becomes live playbook rule followed in later runs, surviving even a
+fresh start, so every verdict you get wrong costs:
+- CONFIRM one that deserved falsifying — the park is aimed at a wrong strategy in later runs.
+- FALSIFY one that deserved confirming — that direction is shut down and may never be explored again.
+- Leave one INCONCLUSIVE — it takes unfinished-business capacity from a sharper idea.
+So read this evidence harshly, in both directions.
+
+A falsified trial is worth as much as a confirmed one because it removes a dead end, but only telemetry decides.
+Judge harshly in both directions and always use direct EpisodeTelemetry evidence.
+Never invent or assume data. Use the provided tools effectively.
+
+## Procedure
+1. Get context as needed:
+   - scratchpad() — the note from the planner invocation at start of the episode. Reading CLEARS it.
+   Empty means none.
+   - ActiveTrials() — trials you must evaluate this close-out
+   - EpisodeTelemetry() — step-by-step actions, telemetry and rejections
+   - state_read('status_full') — THIS EPISODE'S cumulative reward and complete finished park,
+     including every unlock and asset.
+   - state_read('trial_strategies_outcome') — every strategy already attempted, confirmed or falsified.
+2. For each active trial:
+   - Verify that the intended action fired from telemetry steps and full action args, including x/y; use
+   rejections to distinguish attempted from applied.
+   - Judge per trial:
+    - success on the decided metric AND no failure: confirmed
+    - failure: falsified
+    - neither: inconclusive, with a note citing why the evidence did not resolve it
+    - not_applied:intended action did not happen
+3. For confirmed trials: PromoteTrial(domain, edit_type='add_line', new_text=<imperative, general, one sentence>, episode=<E>, section='Learned rules (promoted from prior runs)'). Only append lines.
+4. Finish trials: ResolveTrials(episode=<E>, report=<exactly one verdict for every active trial>). Empty,
+   partial, duplicate, or unknown trial reports are rejected; every inconclusive verdict requires an evidence note.
+5. If the NEXT episode-start must know something, call `scratchpad(note=...)` now.
+6. COMMIT LAST: call `advance_episode(final_reward=<C>, episode=<E>)` once. This writes the durable
+   close-out receipt; do not call any tool after it.
+7. Output one short line: `<N> promoted, <M> falsified, final=<C>` and mention aborted if present.
+
+ERROR HANDLING FOR EVERY KIND: if any tool returns an error, STOP and reply with `ERROR: <the verbatim error text>`.
+
+# Notes
+- Never invent or assume results—always use direct telemetry and tool evidence.
+- Do not modify, paraphrase, or retry on errors.
+- Keep every action and output as short and formal as possible.
+""",
+            middleware = [
+                {"class": "middleware.trim_history_middleware.TrimHistoryMiddleware", "args": {}}
+                {"class": "middleware.static_prompt_caching_middleware.StaticPromptCachingMiddleware", "args": {"ttl": "1h"}}
+            ],
+            tools = ["state_read", "EpisodeTelemetry", "ActiveTrials", "PromoteTrial", "ResolveTrials", "advance_episode", "scratchpad"]
+        },
+
+        {
+            name = "scratchpad",
+            class = "coded_tools.ablations.g_memory_player_planner_watcher.g_memory_runtime_tool.GMemoryRuntimeTool",
+            function = {
+                description = "Private memo for this network; player and watcher hold their own. episode_start and episode_end share it, chaining start -> end -> next start. No args reads and clears the previous run's note; note=<text> leaves up to 5 lines for the next run. Writes replace; no history is kept.",
+                parameters = {
+                    type = "object",
+                    properties = {
+                        note = {
+                            type = "string",
+                            description = "Up to 5 lines to carry into the planner's NEXT run only. Omit to read-and-clear instead."
+                        }
+                    }
+                }
+            }
+            args = { pad = "planner", memory_operation = "scratchpad" }
+        },
+
+        {
+            name = "advance_episode",
+            class = "coded_tools.ablations.g_memory_player_planner_watcher.g_memory_advance_episode.GMemoryAdvanceEpisode",
+            function = {
+                description = "End-of-episode bookkeeping: saves the completed trajectory into G-Memory, persists the final reward, and clears the observation cache. Trial cleanup remains owned by the normal lifecycle.",
+                parameters = {
+                    type = "object",
+                    properties = {
+                        final_reward = {
+                            type = "float",
+                            description = "This episode's cumulative_reward for the durable close-out commit."
+                        },
+                        episode = {
+                            type = "int",
+                            description = "Current episode number; bounds which OUTCOME lines are kept."
+                        },
+                    },
+                    required = ["final_reward", "episode"]
+                }
+            }
+        },
+
+        {
+            name = "RunTelemetry",
+            class = "coded_tools.run_telemetry.RunTelemetry",
+            function = {
+                description = "Cross-episode telemetry in three modes. SELECT (select='best_and_last') returns the best-ever and the last episode as raw per-step rows, unaggregated — use this to read the moves themselves. RUNS (num_runs, default 5) returns per-run and per-episode rollups for the N most recent runs, plus a cross-run rollup. EPISODE (default) returns per-episode rollups for the current run, including reward_bands: mean reward per step over turns 1-25, 26-50, 51-75 and 76-100.",
+                parameters = {
+                    type = "object",
+                    properties = {
+                        select = { type = "string", description = "SELECT mode: pass 'best_and_last' for the best-ever and the last episode as raw per-step rows, unaggregated." }
+                        num_runs = { type = "int", description = "RUNS mode: analyze the N most recent runs (current + prior). Default 5." }
+                        scope = { type = "string", description = "Optional explicit mode: 'select', 'runs', or 'episodes'. Usually leave unset — select/num_runs select the mode." }
+                        from_episode = { type = "int", description = "EPISODE mode only: include episodes >= this. Omit for the whole current run." }
+                        max_episodes = { type = "int", description = "EPISODE mode only: keep only the most recent N episodes (after from_episode). Omit for all." }
+                    }
+                }
+            }
+        },
+
+        {
+            name = "WriteEpisodePlan",
+            class = "coded_tools.ablations.g_memory_player_planner_watcher.g_memory_write_episode_plan.GMemoryWriteEpisodePlan",
+            function = {
+                description = "Persists the complete episode plan in GMemory live state: the turn-phased checklist, coordinator strategy, and six required domain strategies. Player middleware injects the current and next phase at the same turns.",
+                parameters = {
+                    type = "object",
+                    properties = {
+                        checklist_items = {
+                            type = "array",
+                            items = { type = "string" },
+                            description = "TEMPORAL EXECUTION PLAN: Cover turns 1-100 with detailed, ordered, gap-free phases. Each phase must be formatted as 'turns A-B: <goal and complete phase instructions>' and include the prioritized move order, cash availability, reward targets, relevant actions across all domains, and phase-specific details. Preserve the proven champion's temporal plan while integrating new trials. This is the only place for phase-specific instructions. Based on the current turn, middleware injects the corresponding phase instructions and the complete next phase into every player agent. Keep all the details."
+                        }
+                        strategy_summary = {
+                            type = "string",
+                            description = "COORDINATOR STRATEGY: Write the complete phase-independent policy used to compare proposals and choose the most beneficial revenue-generating action. Preserve the proven champion policy while integrating new trials. Include cross-domain priorities, numeric triggers, intended subtype/tier and unlock choices, tie-breakers for domain conflicts, and failure recovery. Do not repeat temporal plan details. Written into playbook_coordinator, which strategy_coordinator reads every turn."
+                        }
+                        playbook_summaries = {
+                            type = "object",
+                            description = "SIX DOMAIN STRATEGIES: Supply complete phase-independent strategies for rides, shops, staff, research, layout, and survey. Preserve the proven champion policy while integrating new trials. Include exact choices, condition-based action triggers, tie-breakers for deciding the action, cash/reward expectations, and failure modes. Do not repeat temporal plan details. Each strategy is written to the top of that specialist's playbook and read on every consultation. Never omit a domain or pass null, 'None', 'unchanged', or another placeholder.",
+                            properties = {
+                                rides    = { type = "string", description = "Complete executable rides strategy for this episode." }
+                                shops    = { type = "string", description = "Complete executable shops strategy for this episode." }
+                                staff    = { type = "string", description = "Complete executable staffing strategy for this episode." }
+                                research = { type = "string", description = "Complete executable research strategy for this episode." }
+                                layout   = { type = "string", description = "Complete executable layout strategy for this episode." }
+                                survey   = { type = "string", description = "Complete executable survey strategy for this episode." }
+                            }
+                            required = ["rides", "shops", "staff", "research", "layout", "survey"]
+                            additionalProperties = false
+                        }
+                    }
+                    required = ["checklist_items", "strategy_summary", "playbook_summaries"]
+                    additionalProperties = false
+                }
+            }
+        },
+
+        {
+            name = "EpisodeTelemetry",
+            class = "coded_tools.episode_telemetry.EpisodeTelemetry",
+            function = {
+                description = "Per-step record for ONE episode, read from run.jsonl: {steps, rejections, rollup}, exists=false before any row is written. Each step carries its full action args and metrics. Judge whether a trial's move fired from `steps` and `rejections`, and its success from the per-step reward/value/rating deltas. `rejections` records every action the sim refused, booked as a wait with the original action and error; the same rejection repeating is a prime trial target.",
+                parameters = {
+                    type = "object",
+                    properties = {
+                        episode   = { type = "int", description = "Episode number to read. Omit to use the latest episode present in the log." }
+                        from_step = { type = "int", description = "Only return steps >= this (mid-episode tail). Omit for the full episode." }
+                    }
+                }
+            }
+        },
+
+        {
+            name = "LogTrial",
+            class = "coded_tools.ablations.g_memory_player_planner_watcher.g_memory_runtime_tool.GMemoryRuntimeTool",
+            function = {
+                description = "Mints a collision-free trial_id and atomically stores the rule and its success/failure criteria in GMemory live state.",
+                parameters = {
+                    type = "object",
+                    properties = {
+                        episode           = { type = "int", description = "Current episode number." }
+                        step_start        = { type = "string",  description = "Step at which the trial activates (as a string), or the literal 'end_of_episode'." }
+                        domain            = { type = "string",  description = "One of: rides, shops, staff, research, layout, survey, coordinator." }
+                        section           = { type = "string",  description = "Target playbook section header (or 'new')." }
+                        edit_type         = { type = "string",  description = "'add_line' or 'replace_line'." }
+                        new_text          = { type = "string",  description = "The one-line rule to add/replace (no rationale or metrics embedded)." }
+                        find_text         = { type = "string",  description = "replace_line only: the exact existing playbook line to replace." }
+                        rationale         = { type = "string",  description = "One sentence citing step(s) / metric delta." }
+                        success_criterion = { type = "string",  description = "Observable metric + direction + evaluation window (turns; fits in the fixed 100-step episode)." }
+                        failure_criterion = { type = "string",  description = "Observable metric that would falsify the trial." }
+                    }
+                    required = ["episode", "step_start", "domain", "section", "edit_type", "new_text", "rationale", "success_criterion", "failure_criterion"]
+                }
+            }
+            args = { origin = "macro", memory_operation = "log_trial" }
+        },
+
+        {
+            name = "ActiveTrials",
+            class = "coded_tools.ablations.g_memory_player_planner_watcher.g_memory_runtime_tool.GMemoryRuntimeTool",
+            args = { memory_operation = "active_trials" },
+            function = {
+                description = "Return active trial rules and criteria from GMemory live state, optionally filtered by domain and trial_origin.",
+                parameters = {
+                    type = "object",
+                    properties = {
+                        domain = { type = "string", description = "Filter to one domain: rides, shops, staff, research, layout, survey or coordinator. Omit for all domains." }
+                        trial_origin = { type = "string", description = "Filter to 'micro' or 'macro'; omit for both. Named trial_origin, not origin — the framework injects a reserved 'origin' key that would silently override it." }
+                    }
+                }
+            }
+        },
+
+        {
+            name = "CarryoverTrials",
+            class = "coded_tools.ablations.g_memory_player_planner_watcher.g_memory_runtime_tool.GMemoryRuntimeTool",
+            args = { memory_operation = "carryover_trials" },
+            function = {
+                description = "At episode start, returns prior inconclusive trials and retires them while saving outcomes in GMemory live state. Each leftover informs one planning pass.",
+                parameters = {
+                    type = "object",
+                    properties = {
+                        episode = { type = "int", description = "The episode being planned. Trials from EARLIER episodes are returned and cleared." }
+                    }
+                    required = ["episode"]
+                }
+            }
+        },
+
+        {
+            name = "ResolveTrials",
+            class = "coded_tools.ablations.g_memory_player_planner_watcher.g_memory_runtime_tool.GMemoryRuntimeTool",
+            args = { memory_operation = "resolve_trials" },
+            function = {
+                description = "Applies exactly one explicit verdict for every reportable active trial at episode end and saves its evidence in G-Memory. Empty, partial, duplicate, unknown, or malformed reports are rejected; inconclusive requires a non-empty evidence note. Canonical keep/remove semantics are unchanged.",
+                parameters = {
+                    type = "object",
+                    properties = {
+                        episode = { type = "int", description = "Current episode number." }
+                        report = {
+                            type = "array"
+                            items = {
+                                type = "object"
+                                properties = {
+                                    trial_id = { type = "string" }
+                                    domain = { type = "string" }
+                                    outcome = { type = "string", enum = ["confirmed", "falsified", "not_applied", "inconclusive"] }
+                                    note = { type = "string", description = "Evidence for the verdict; required when outcome is inconclusive." }
+                                }
+                                required = ["trial_id", "outcome"]
+                            }
+                            description = "One verdict object per active trial; use [] when there are no active trials."
+                        }
+                    }
+                    required = ["episode", "report"]
+                }
+            }
+        },
+
+        {
+            name = "PromoteTrial",
+            class = "coded_tools.ablations.g_memory_player_planner_watcher.g_memory_runtime_tool.GMemoryRuntimeTool",
+            args = { memory_operation = "promote_trial" },
+            function = {
+                description = "Saves one confirmed trial as a live rule and includes it in the completed episode sent to upstream GMemory.",
+                parameters = {
+                    type = "object",
+                    properties = {
+                        domain    = { type = "string",  description = "rides/shops/staff/research/layout/survey/coordinator." }
+                        edit_type = { type = "string",  description = "'add_line' or 'replace_line'." }
+                        new_text  = { type = "string",  description = "The rule line to add/replace (without the learned tag)." }
+                        episode   = { type = "int", description = "Episode number for the '(learned ep<N>)' tag." }
+                        section   = { type = "string",  description = "add_line: section header to insert after, or 'end'/'new' to append." }
+                        find_text = { type = "string",  description = "replace_line: the exact existing playbook line to replace." }
+                    }
+                    required = ["domain", "edit_type", "new_text", "episode"]
+                }
+            }
+        },
+
+        {
+            name = "state_read",
+            class = "coded_tools.ablations.g_memory_player_planner_watcher.g_memory_state_read.GMemoryStateRead",
+            function = {
+                description = "Read a file by its logical name from the operator-configured name_map.",
+                parameters = {
+                    type = "object",
+                    properties = {
+                        name = {
+                            type = "string",
+                            description = "Logical name of the file to read; must be one the operator mapped in name_map.",
+                            enum = [
+                                "economics_all",
+                                "maps_game_docs",
+                                "episode_checklist",
+                                "playbook_coordinator",
+                                "playbook_layout",
+                                "playbook_research",
+                                "playbook_rides",
+                                "playbook_shops",
+                                "playbook_staff",
+                                "playbook_survey",
+                                "status_full",
+                                "status_champion",
+                                "trial_strategies_outcome"
+                            ]
+                        }
+                    },
+                    required = ["name"]
+                }
+            },
+            args = {
+                name_map = {
+                    economics_all               = "coded_tools/config_files/economics_all.md"
+                    maps_game_docs              = "coded_tools/config_files/maps_game_docs.md"
+                    episode_checklist           = "gmemory:episode_checklist"
+                    playbook_coordinator        = "gmemory:playbook_coordinator"
+                    playbook_layout             = "gmemory:playbook_layout"
+                    playbook_research           = "gmemory:playbook_research"
+                    playbook_rides              = "gmemory:playbook_rides"
+                    playbook_shops              = "gmemory:playbook_shops"
+                    playbook_staff              = "gmemory:playbook_staff"
+                    playbook_survey             = "gmemory:playbook_survey"
+                    status_full                 = ${maps_state_dir}"/status_full.json"
+                    status_champion             = ${maps_state_dir}"/status_champion.json"
+                    trial_strategies_outcome    = "gmemory:trial_strategies_outcome"
+                }
+            }
+        },
+    ]
+
+}

@@ -22,7 +22,7 @@ Two responsibilities, both moved here from the LLM:
      used to compute by hand: one_time_cost (looked up from economics
      files), is_research, has_food_or_atm (scanned from placed_shops),
      has_profitable_ride (scanned from placed_rides), research_days
-     (ceil division), and an auto-generated label.
+     (read from the incremental timing table), and an auto-generated label.
   2. EVALUATE each enriched proposal against deterministic rules and
      return approve/reject + the enriched proposal.
 
@@ -58,20 +58,22 @@ observation rather than estimated from the economics tables.
 Break-even days come from the `break_even_days` column of
 config_files/economics_rides.md — the single source of truth. They were derived
 at 5 ops/day (moderate-park assumption):
-  break_even_ops  = ceil(building_cost / (max_ticket_price * capacity - operating_cost))
+  break_even_ops  = ceil(building_cost / (ticket_price * capacity - operating_cost))
   break_even_days = ceil(break_even_ops / 5)
 """
 
 from __future__ import annotations
 
 import json
-import math
 import os
 import re
 from typing import Any
 from typing import ClassVar
 
 from neuro_san.interfaces.coded_tool import CodedTool
+
+from coded_tools.state_dir import MERGED_CONTEXT
+from coded_tools.state_dir import state_path
 
 # The observation names a ride's price `ticket_price` and a shop's `item_price`,
 # but the env action takes plain `price` for both. Specialists read one name and
@@ -83,6 +85,7 @@ def normalize_price_key(args: Any) -> None:
     """Fold a `ticket_price`/`item_price` alias into `price`. Mutates in place."""
     if not isinstance(args, dict):
         return
+    alias: Any
     for alias in _PRICE_ALIASES:
         value = args.pop(alias, None)
         if value is not None and args.get("price") is None:
@@ -92,20 +95,21 @@ def normalize_price_key(args: Any) -> None:
 _SURVEY_GUESTS_COST_PER_GUEST = 500
 _SURVEY_GUESTS_MAX = 25
 
-# ParkStatus (called by the runner each turn) writes this lean slice; FinanceGate
+# ParkStatus (called by the runner each turn) writes this snapshot; FinanceGate
 # reads cash/step/placed_*/research_speed straight from it so the coordinator only
 # has to pass `proposals` — no per-field copy-paste on the LLM hop. Explicit args
 # still override (tests / direct callers).
-_STATUS_COORDINATOR_PATH = "coded_tools/state/status_coordinator.json"
+_STATUS_PATH = state_path("status_solo.json" if MERGED_CONTEXT else "status_full.json")
 
 
 def _load_status_slice() -> dict[str, Any]:
     try:
-        with open(_STATUS_COORDINATOR_PATH, encoding="utf-8") as fh:
+        with open(_STATUS_PATH, encoding="utf-8") as fh:
             data = json.load(fh)
         return data if isinstance(data, dict) else {}
     except (OSError, json.JSONDecodeError):
         return {}
+
 
 _RIDES_ECONOMICS_PATH = "coded_tools/config_files/economics_rides.md"
 _SHOPS_ECONOMICS_PATH = "coded_tools/config_files/economics_shops.md"
@@ -146,6 +150,7 @@ def _read_lookup_lines(path: str, domain: str) -> dict[tuple[str, str, str], dic
     header: list[str] | None = None
     cur_key: tuple[str, str, str] | None = None
     with open(path, encoding="utf-8") as fh:
+        line: Any
         for line in fh:
             s = line.strip()
             if not s:
@@ -163,6 +168,8 @@ def _read_lookup_lines(path: str, domain: str) -> dict[tuple[str, str, str], dic
                 if not subtype or not subclass:
                     continue
                 entry = out.setdefault((domain, subtype, subclass), {})
+                col: Any
+                val: Any
                 for col, val in row.items():
                     if col not in ("subtype", "subclass") and val != "":
                         entry[col] = _coerce(val)
@@ -190,15 +197,16 @@ def _read_research_lines(path: str) -> dict[tuple[str, str], Any]:
 
     Each table's FIRST column is the key dimension (speed or tier) and the
     remaining columns are fields, so a row maps to one entry per field:
-    e.g. '| slow | 25 | 2000 |' under header
-    '| speed | speed_progress | speed_cost |' yields
-    ('speed_progress','slow')=25 and ('speed_cost','slow')=2000.
+    e.g. '| slow | 4 | ... | 2000 |' under a header containing
+    'incremental_days_to_blue' and 'cost_per_day' yields
+    ('incremental_days_to_blue','slow')=4 and ('cost_per_day','slow')=2000.
     """
     out: dict[tuple[str, str], Any] = {}
     if not os.path.exists(path):
         return out
     header: list[str] | None = None
     with open(path, encoding="utf-8") as fh:
+        line: Any
         for line in fh:
             s = line.strip()
             if not s.startswith("|"):
@@ -211,6 +219,7 @@ def _read_research_lines(path: str) -> dict[tuple[str, str], Any]:
                 header = [c.lower() for c in cells]
                 continue
             key = cells[0].lower()
+            i: Any
             for i in range(1, len(cells)):
                 if cells[i] != "":
                     out[(header[i], key)] = _coerce(cells[i])
@@ -246,9 +255,7 @@ class FinanceGate(CodedTool):
     # column out of economics_rides.md, the same file the costs come from, so the
     # table and the gate can never drift apart.
 
-    async def async_invoke(
-        self, args: dict[str, Any], sly_data: dict[str, Any]
-    ) -> dict[str, Any] | str:
+    async def async_invoke(self, args: dict[str, Any], sly_data: dict[str, Any]) -> dict[str, Any] | str:
         # Everything except `proposals` comes straight from the status slice the
         # runner refreshes each turn — the agent passes only proposals.
         status = _load_status_slice()
@@ -286,12 +293,17 @@ class FinanceGate(CodedTool):
             daily_operating_cost = self._int(args.get("daily_operating_cost"))
         else:
             daily_operating_cost = self.operating_cost(
-                placed_staff, research_speed, staff_econ, research_econ,
-                placed_rides, placed_shops,
+                placed_staff,
+                research_speed,
+                staff_econ,
+                research_econ,
+                placed_rides,
+                placed_shops,
             )
 
         results: list[dict[str, Any]] = []
 
+        proposal: Any
         for proposal in proposals:
             enriched = self._enrich(
                 proposal,
@@ -321,9 +333,9 @@ class FinanceGate(CodedTool):
                 break_even_days=enriched["break_even_days"],
             )
             row: dict[str, Any] = {
-                "label":    enriched["label"],
+                "label": enriched["label"],
                 "approved": approved,
-                "reason":   reason,
+                "reason": reason,
             }
             # Only ship the full enriched proposal when the coordinator
             # might actually dispatch it. Rejected rows save ~300 chars
@@ -334,16 +346,20 @@ class FinanceGate(CodedTool):
             results.append(row)
 
         return {
-            "results":         results,
-            "cash":            cash,
+            "results": results,
+            "cash": cash,
             "daily_operating_cost": daily_operating_cost,
-            "days_remaining":  days_remaining,
+            "days_remaining": days_remaining,
         }
 
     @staticmethod
     def operating_cost(
-        placed_staff: Any, research_speed: str, staff_econ: dict, research_econ: dict,
-        placed_rides: Any = None, placed_shops: Any = None,
+        placed_staff: Any,
+        research_speed: str,
+        staff_econ: dict,
+        research_econ: dict,
+        placed_rides: Any = None,
+        placed_shops: Any = None,
     ) -> int:
         """The park's real per-day burn: staff salaries + research speed cost +
         the realized daily operating_cost of every placed ride and shop.
@@ -363,6 +379,7 @@ class FinanceGate(CodedTool):
         alone in the best run), making the "1-day buffer" rule vacuous.
         """
         total = 0
+        entry: Any
         for entry in placed_staff or []:
             if not isinstance(entry, dict):
                 continue
@@ -371,8 +388,10 @@ class FinanceGate(CodedTool):
             salary = staff_econ.get(("staff", subtype, subclass), {}).get("salary", 0)
             total += FinanceGate._int(salary)
         speed = str(research_speed or "none").lower().strip()
-        total += FinanceGate._int(research_econ.get(("speed_cost", speed), 0))
+        total += FinanceGate._int(research_econ.get(("cost_per_day", speed), 0))
+        placed: Any
         for placed in (placed_rides, placed_shops):
+            entry: Any
             for entry in placed or []:
                 if isinstance(entry, dict):
                     total += FinanceGate._int(entry.get("operating_cost", 0))
@@ -382,8 +401,12 @@ class FinanceGate(CodedTool):
         self,
         proposal: dict[str, Any],
         *,
-        ride_econ: dict, shop_econ: dict, staff_econ: dict, research_econ: dict,
-        has_food_or_atm: bool, has_profitable_ride: bool,
+        ride_econ: dict,
+        shop_econ: dict,
+        staff_econ: dict,
+        research_econ: dict,
+        has_food_or_atm: bool,
+        has_profitable_ride: bool,
         available_entities: dict | None = None,
     ) -> dict[str, Any]:
         """Fill in derived fields the LLM used to compute itself."""
@@ -402,41 +425,38 @@ class FinanceGate(CodedTool):
         one_time_cost = 0
         if action == "place" and entity_type in ("ride", "shop"):
             tier = (entity_type + "s", subtype, subclass)
-            one_time_cost = self._int((
-                ride_econ if entity_type == "ride" else shop_econ
-            ).get(tier, {}).get("building_cost", 0))
+            one_time_cost = self._int(
+                (ride_econ if entity_type == "ride" else shop_econ).get(tier, {}).get("building_cost", 0)
+            )
         elif action == "place" and entity_type == "staff":
             one_time_cost = self._int(staff_econ.get(("staff", subtype, subclass), {}).get("salary", 0))
 
         # is_research only for set_research that actually turns research ON.
         # "" (speed omitted) counts as off here too, so a malformed proposal is
         # never priced as if it were researching.
-        is_research = (action == "set_research" and research_speed not in ("", "none"))
+        is_research = action == "set_research" and research_speed not in ("", "none")
 
         # Runway a ride needs to recoup its build cost, read straight off the
         # economics table. 0 for anything that isn't a known ride tier (shops,
         # staff, a subtype the table doesn't carry) — the gate then skips the rule.
-        break_even_days = self._int(
-            ride_econ.get(("rides", subtype, subclass), {}).get("break_even_days", 0)
-        )
+        break_even_days = self._int(ride_econ.get(("rides", subtype, subclass), {}).get("break_even_days", 0))
 
         # Research cost is a FLAT per-speed daily fee — the sim charges it once
         # regardless of how many research_topics are selected (topics only pick
         # WHICH subtypes are eligible; the sim researches them in its own fixed
         # order). Confirmed against the MAPs simulator (research.js).
-        research_daily_cost = self._int(research_econ.get(("speed_cost", research_speed), 0))
+        research_daily_cost = self._int(research_econ.get(("cost_per_day", research_speed), 0))
         if is_research:
             next_tier = self._next_tier(available_entities, proposal.get("research_topics"))
-            points_required = self._int(research_econ.get(("points_required", next_tier), 0))
-            speed_progress = self._int(research_econ.get(("speed_progress", research_speed), 0))
-            research_days = math.ceil(points_required / speed_progress) if speed_progress > 0 else 0
+            research_days = self._int(research_econ.get((f"incremental_days_to_{next_tier}", research_speed), 0))
         else:
             research_days = 0
 
         # Label — short human-readable.
         if action == "set_research":
-            label = (f"set_research speed={research_speed or '<missing>'} "
-                     f"topics={proposal.get('research_topics') or '[]'}")
+            label = (
+                f"set_research speed={research_speed or '<missing>'} topics={proposal.get('research_topics') or '[]'}"
+            )
         elif action == "wait":
             label = "wait"
         elif entity_type and subtype and subclass:
@@ -446,7 +466,7 @@ class FinanceGate(CodedTool):
 
         # `price` is intentionally NOT derived here. ProposeAction is the single
         # source of truth for price: it deterministically forces the economics
-        # value (max_ticket_price / max_item_price / salary) at the env boundary,
+        # value (ticket_price / item_price / salary) at the env boundary,
         # AFTER the LLM coordinator has picked an action — so a price set here
         # could only be mangled on that hop anyway. FinanceGate's budget rules
         # never read price (only building_cost / salary), so we pass the raw
@@ -457,25 +477,25 @@ class FinanceGate(CodedTool):
         price = self._int(proposal.get("price", 0))
 
         return {
-            "label":               label,
-            "action":              action,
-            "type":                entity_type,
-            "subtype":             subtype,
-            "subclass":            subclass,
-            "price":               price,
-            "order_quantity":      self._int(proposal.get("order_quantity", 0)),
-            "x":                   proposal.get("x"),
-            "y":                   proposal.get("y"),
-            "research_speed":      research_speed if action == "set_research" else None,
-            "research_topics":     proposal.get("research_topics") if action == "set_research" else None,
-            "one_time_cost":       one_time_cost,
-            "break_even_days":     break_even_days,
-            "is_research":         is_research,
+            "label": label,
+            "action": action,
+            "type": entity_type,
+            "subtype": subtype,
+            "subclass": subclass,
+            "price": price,
+            "order_quantity": self._int(proposal.get("order_quantity", 0)),
+            "x": proposal.get("x"),
+            "y": proposal.get("y"),
+            "research_speed": research_speed if action == "set_research" else None,
+            "research_topics": proposal.get("research_topics") if action == "set_research" else None,
+            "one_time_cost": one_time_cost,
+            "break_even_days": break_even_days,
+            "is_research": is_research,
             "research_daily_cost": research_daily_cost,
-            "research_days":       research_days,
-            "has_food_or_atm":     has_food_or_atm,
+            "research_days": research_days,
+            "has_food_or_atm": has_food_or_atm,
             "has_profitable_ride": has_profitable_ride,
-            "num_guests":          self._int(proposal.get("num_guests", 0)),
+            "num_guests": self._int(proposal.get("num_guests", 0)),
         }
 
     # Tier ladder, cheapest first. Yellow is owned from the start, so a research
@@ -497,6 +517,7 @@ class FinanceGate(CodedTool):
             return cls._TIER_ORDER[0]
         names = [str(t).lower().strip() for t in topics] if isinstance(topics, list) else []
         wanted = [n for n in names if n in available_entities] or list(available_entities)
+        tier: Any
         for tier in cls._TIER_ORDER:
             if any(tier not in (available_entities.get(n) or []) for n in wanted):
                 return tier
@@ -506,6 +527,7 @@ class FinanceGate(CodedTool):
     def _scan_food_or_atm(placed_shops: Any) -> bool:
         if not isinstance(placed_shops, list):
             return False
+        shop: Any
         for shop in placed_shops:
             if not isinstance(shop, dict):
                 continue
@@ -530,6 +552,7 @@ class FinanceGate(CodedTool):
         """
         if not isinstance(placed_rides, list):
             return False
+        ride: Any
         for ride in placed_rides:
             if not isinstance(ride, dict):
                 continue
@@ -628,17 +651,12 @@ class FinanceGate(CodedTool):
                     f"1-day buffer; remaining days self-funded by operating "
                     f"profit), have ${cash}"
                 )
-            return True, (
-                f"research approved: {days_remaining} steps remain, "
-                f"cash ${cash} covers full duration"
-            )
+            return True, (f"research approved: {days_remaining} steps remain, cash ${cash} covers full duration")
 
         # Rule 8 — general cash sufficiency: keep at least 1 day of recurring costs
         cash_after = cash - one_time_cost
         if cash_after < daily_operating_cost:
-            return False, (
-                f"cash after spend ${cash_after} < 1-day recurring ${daily_operating_cost}"
-            )
+            return False, (f"cash after spend ${cash_after} < 1-day recurring ${daily_operating_cost}")
         return True, f"cash after spend ${cash_after} >= 1-day buffer ${daily_operating_cost}"
 
     @staticmethod

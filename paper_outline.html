@@ -1,0 +1,842 @@
+<title>Harness Over Weights</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,500;0,6..72,600;1,6..72,500&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+
+<style>
+:root{
+  --ground:#F2F5F4;
+  --surface:#FFFFFF;
+  --surface-2:#E7EDEB;
+  --ink:#131C1B;
+  --ink-soft:#4C5B58;
+  --ink-faint:#7B8A87;
+  --rule:#D2DBD9;
+  --rule-strong:#A9B8B5;
+  --accent:#0C6C66;
+  --accent-tint:#DCEBE9;
+  --good:#2B6D4A;
+  --good-tint:#DCEBE1;
+  --bad:#9C3A2D;
+  --bad-tint:#F2DFDB;
+  --warn:#87620F;
+  --warn-tint:#F0E7D2;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --ground:#0C1312;
+    --surface:#141D1C;
+    --surface-2:#1C2726;
+    --ink:#E1E9E7;
+    --ink-soft:#93A4A1;
+    --ink-faint:#6A7B78;
+    --rule:#253230;
+    --rule-strong:#3A4B48;
+    --accent:#4FC7BD;
+    --accent-tint:#112F2D;
+    --good:#5EBD86;
+    --good-tint:#122A1E;
+    --bad:#DF7869;
+    --bad-tint:#2E1A17;
+    --warn:#D4A644;
+    --warn-tint:#2C2413;
+  }
+}
+:root[data-theme="dark"]{
+  --ground:#0C1312;
+  --surface:#141D1C;
+  --surface-2:#1C2726;
+  --ink:#E1E9E7;
+  --ink-soft:#93A4A1;
+  --ink-faint:#6A7B78;
+  --rule:#253230;
+  --rule-strong:#3A4B48;
+  --accent:#4FC7BD;
+  --accent-tint:#112F2D;
+  --good:#5EBD86;
+  --good-tint:#122A1E;
+  --bad:#DF7869;
+  --bad-tint:#2E1A17;
+  --warn:#D4A644;
+  --warn-tint:#2C2413;
+}
+
+*{box-sizing:border-box;}
+body{
+  margin:0;
+  background:var(--ground);
+  color:var(--ink);
+  font-family:"IBM Plex Sans","Helvetica Neue",Arial,sans-serif;
+  font-size:16px;
+  line-height:1.62;
+  -webkit-font-smoothing:antialiased;
+}
+.wrap{max-width:1000px;margin:0 auto;padding:0 28px 120px;}
+.prose{max-width:70ch;}
+
+/* ─── masthead ─────────────────────────────────────────── */
+.mast{
+  border-bottom:2px solid var(--ink);
+  padding:56px 0 26px;
+  margin-bottom:40px;
+}
+.eyebrow{
+  font-family:"IBM Plex Mono",ui-monospace,monospace;
+  font-size:11.5px;
+  letter-spacing:.16em;
+  text-transform:uppercase;
+  color:var(--accent);
+  font-weight:500;
+  margin:0 0 18px;
+}
+h1{
+  font-family:"Newsreader",Georgia,serif;
+  font-weight:600;
+  font-size:clamp(38px,6vw,60px);
+  line-height:1.02;
+  letter-spacing:-.02em;
+  margin:0 0 18px;
+  text-wrap:balance;
+}
+.standfirst{
+  font-family:"Newsreader",Georgia,serif;
+  font-size:clamp(18px,2.2vw,21px);
+  line-height:1.5;
+  color:var(--ink-soft);
+  max-width:62ch;
+  margin:0 0 30px;
+}
+.mast-meta{
+  display:flex;flex-wrap:wrap;gap:8px 26px;
+  font-family:"IBM Plex Mono",ui-monospace,monospace;
+  font-size:12px;color:var(--ink-faint);
+}
+.mast-meta b{color:var(--ink-soft);font-weight:500;}
+
+/* ─── headline figures ─────────────────────────────────── */
+.figs{
+  display:grid;
+  grid-template-columns:repeat(auto-fit,minmax(158px,1fr));
+  gap:1px;
+  background:var(--rule);
+  border:1px solid var(--rule);
+  margin:0 0 52px;
+}
+.fig{background:var(--surface);padding:20px 18px;}
+.fig .n{
+  font-family:"IBM Plex Mono",ui-monospace,monospace;
+  font-size:clamp(21px,3vw,27px);
+  font-weight:600;
+  letter-spacing:-.02em;
+  font-variant-numeric:tabular-nums;
+  color:var(--accent);
+  display:block;line-height:1.15;
+}
+.fig .l{
+  font-size:12.5px;color:var(--ink-soft);
+  margin-top:7px;display:block;line-height:1.35;
+}
+
+/* ─── contents ─────────────────────────────────────────── */
+nav.toc{
+  border:1px solid var(--rule);
+  background:var(--surface);
+  padding:22px 24px 24px;
+  margin:0 0 56px;
+}
+nav.toc h2{
+  font-family:"IBM Plex Mono",ui-monospace,monospace;
+  font-size:11.5px;letter-spacing:.16em;text-transform:uppercase;
+  color:var(--ink-faint);font-weight:500;margin:0 0 14px;
+}
+nav.toc ol{
+  list-style:none;margin:0;padding:0;
+  display:grid;grid-template-columns:repeat(auto-fit,minmax(258px,1fr));
+  gap:2px 30px;counter-reset:toc;
+}
+nav.toc li{counter-increment:toc;}
+nav.toc a{
+  display:flex;gap:11px;align-items:baseline;
+  color:var(--ink);text-decoration:none;
+  padding:4px 0;font-size:14.5px;
+  border-bottom:1px solid transparent;
+}
+nav.toc a::before{
+  content:counter(toc,decimal-leading-zero);
+  font-family:"IBM Plex Mono",ui-monospace,monospace;
+  font-size:11.5px;color:var(--accent);flex:0 0 auto;
+}
+nav.toc a:hover,nav.toc a:focus-visible{color:var(--accent);border-bottom-color:var(--accent);outline:none;}
+
+/* ─── sections ─────────────────────────────────────────── */
+section{margin:0 0 60px;scroll-margin-top:20px;}
+h2.sec{
+  font-family:"Newsreader",Georgia,serif;
+  font-size:clamp(25px,3.4vw,33px);
+  font-weight:600;letter-spacing:-.015em;line-height:1.16;
+  margin:0 0 6px;text-wrap:balance;
+  padding-top:16px;border-top:2px solid var(--ink);
+}
+h2.sec .num{
+  display:block;
+  font-family:"IBM Plex Mono",ui-monospace,monospace;
+  font-size:11.5px;font-weight:500;letter-spacing:.16em;
+  color:var(--accent);margin-bottom:9px;
+}
+.deck{
+  font-size:15px;color:var(--ink-soft);max-width:68ch;
+  margin:0 0 24px;
+}
+h3{
+  font-family:"IBM Plex Sans",sans-serif;
+  font-size:15px;font-weight:600;letter-spacing:.005em;
+  margin:32px 0 10px;color:var(--ink);
+}
+h3.rule{border-top:1px solid var(--rule);padding-top:14px;}
+p{margin:0 0 15px;max-width:70ch;}
+ul,ol.body{margin:0 0 16px;padding-left:20px;max-width:70ch;}
+li{margin:0 0 7px;}
+li::marker{color:var(--ink-faint);}
+strong{font-weight:600;}
+em{font-style:italic;}
+code,.mono{
+  font-family:"IBM Plex Mono",ui-monospace,monospace;
+  font-size:.875em;
+}
+code{
+  background:var(--surface-2);
+  padding:1px 5px;border:1px solid var(--rule);
+  color:var(--ink);white-space:nowrap;
+}
+a.ln{color:var(--accent);text-decoration:none;border-bottom:1px solid var(--rule-strong);}
+a.ln:hover,a.ln:focus-visible{border-bottom-color:var(--accent);outline:none;}
+
+/* ─── tables ───────────────────────────────────────────── */
+.tw{overflow-x:auto;margin:0 0 22px;border:1px solid var(--rule);background:var(--surface);}
+table{border-collapse:collapse;width:100%;font-size:13.5px;min-width:520px;}
+caption{
+  caption-side:top;text-align:left;
+  font-family:"IBM Plex Mono",ui-monospace,monospace;
+  font-size:11px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--ink-faint);padding:12px 14px 10px;
+  border-bottom:1px solid var(--rule);
+}
+th,td{padding:8px 14px;text-align:left;vertical-align:top;border-bottom:1px solid var(--rule);}
+thead th{
+  font-family:"IBM Plex Mono",ui-monospace,monospace;
+  font-size:11px;letter-spacing:.09em;text-transform:uppercase;
+  color:var(--ink-soft);font-weight:500;
+  background:var(--surface-2);white-space:nowrap;
+}
+tbody tr:last-child td{border-bottom:none;}
+td.num,th.num{text-align:right;font-family:"IBM Plex Mono",ui-monospace,monospace;font-variant-numeric:tabular-nums;white-space:nowrap;}
+tr.hi td{background:var(--accent-tint);font-weight:500;}
+td.k{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:12.5px;white-space:nowrap;}
+
+/* ─── panels ───────────────────────────────────────────── */
+.panel{
+  border:1px solid var(--rule);
+  background:var(--surface);
+  padding:20px 22px;margin:0 0 22px;
+}
+.panel .tag{
+  font-family:"IBM Plex Mono",ui-monospace,monospace;
+  font-size:11px;letter-spacing:.15em;text-transform:uppercase;
+  font-weight:600;display:block;margin-bottom:10px;
+}
+.panel p:last-child,.panel ul:last-child{margin-bottom:0;}
+.panel.find{background:var(--accent-tint);border-color:var(--accent);}
+.panel.find .tag{color:var(--accent);}
+.panel.warn{background:var(--warn-tint);border-color:var(--warn);}
+.panel.warn .tag{color:var(--warn);}
+.panel.kill{background:var(--bad-tint);border-color:var(--bad);}
+.panel.kill .tag{color:var(--bad);}
+
+.pill{
+  font-family:"IBM Plex Mono",ui-monospace,monospace;
+  font-size:10.5px;letter-spacing:.07em;text-transform:uppercase;
+  padding:2px 7px;border:1px solid currentColor;white-space:nowrap;font-weight:500;
+}
+.pill.ok{color:var(--good);background:var(--good-tint);}
+.pill.no{color:var(--bad);background:var(--bad-tint);}
+.pill.mid{color:var(--warn);background:var(--warn-tint);}
+.pill.acc{color:var(--accent);background:var(--accent-tint);}
+
+/* ─── bar rows (trial outcomes) ────────────────────────── */
+.bars{display:grid;gap:9px;margin:0 0 22px;max-width:70ch;}
+.bar{display:grid;grid-template-columns:132px 1fr 92px;gap:12px;align-items:center;font-size:13px;}
+.bar .lab{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:12px;color:var(--ink-soft);}
+.bar .track{height:14px;background:var(--surface-2);border:1px solid var(--rule);}
+.bar .fill{height:100%;}
+.bar .val{
+  font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:12px;
+  font-variant-numeric:tabular-nums;color:var(--ink-soft);text-align:right;
+}
+
+footer{
+  border-top:2px solid var(--ink);
+  padding-top:20px;margin-top:24px;
+  font-family:"IBM Plex Mono",ui-monospace,monospace;
+  font-size:12px;color:var(--ink-faint);
+}
+@media (max-width:640px){
+  .wrap{padding:0 18px 80px;}
+  .bar{grid-template-columns:104px 1fr 76px;gap:8px;}
+  nav.toc{padding:18px;}
+}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;}}
+</style>
+
+<div class="wrap">
+
+<header class="mast">
+  <p class="eyebrow">Research paper · points to include</p>
+  <h1>Harness Over Weights</h1>
+  <p class="standfirst">Everything the repository and its git history can support for a paper on cross-episode self-improvement in a frozen multi-agent LLM system playing the MAPs amusement-park benchmark — what was built, what was tried and thrown away, what the numbers actually say, and where a reviewer will push back.</p>
+  <div class="mast-meta">
+    <span><b>Repo</b> neuro-san-studio (maps_park)</span>
+    <span><b>Evidence</b> 24 project commits · 166 episode logs · 73 costed episodes</span>
+    <span><b>Compiled</b> 2026-08-31</span>
+  </div>
+</header>
+
+<div class="figs">
+  <div class="fig"><span class="n">1,861,276</span><span class="l">Best episode reward (ep3, 2026‑08‑19)</span></div>
+  <div class="fig"><span class="n">139</span><span class="l">Complete 100‑step episodes on record</span></div>
+  <div class="fig"><span class="n">854.6M</span><span class="l">LLM tokens across 171,111 calls</span></div>
+  <div class="fig"><span class="n">$2,283</span><span class="l">Total inference spend</span></div>
+  <div class="fig"><span class="n">0</span><span class="l">Weight updates · human interventions mid‑run</span></div>
+</div>
+
+<nav class="toc">
+  <h2>Contents</h2>
+  <ol>
+    <li><a href="#s1">Thesis and contributions</a></li>
+    <li><a href="#s2">The benchmark</a></li>
+    <li><a href="#s3">System architecture</a></li>
+    <li><a href="#s4">The learning mechanism</a></li>
+    <li><a href="#s5">Development timeline</a></li>
+    <li><a href="#s6">Tried and abandoned</a></li>
+    <li><a href="#s7">Experimental record</a></li>
+    <li><a href="#s8">Results</a></li>
+    <li><a href="#s9">The abort guardrail</a></li>
+    <li><a href="#s10">Honest negatives</a></li>
+    <li><a href="#s11">Threats to validity</a></li>
+    <li><a href="#s12">Experiments still needed</a></li>
+    <li><a href="#s13">Figures to produce</a></li>
+    <li><a href="#s14">Reproducibility appendix</a></li>
+  </ol>
+</nav>
+
+<!-- ══════════════════════════════════════════════════════ -->
+<section id="s1">
+  <h2 class="sec"><span class="num">Section 01</span>Thesis and contributions</h2>
+  <p class="deck">The claim the paper has to defend, stated so it can be falsified.</p>
+
+  <div class="panel find">
+    <span class="tag">Central claim</span>
+    <p>A network of <strong>frozen</strong> LLM agents improves measurably across repeated episodes of a long-horizon business simulation when a <strong>deterministic harness</strong> — not the model — owns memory, validation, and selection. No gradient updates, no fine-tuning, no human editing prompts between episodes. The learning signal lives entirely in plain-text files the system writes for itself.</p>
+  </div>
+
+  <h3>Contributions to enumerate</h3>
+  <ol class="body">
+    <li><strong>A three-network, three-timescale decomposition.</strong> An acting network (per turn), a mid-episode analyst (every 10 turns), and a between-episode planner. The networks never share a conversation — they coordinate only through files on disk. Splitting act-from-reflect was measured, not assumed (§6).</li>
+    <li><strong>Deterministic gates that remove arithmetic and rule-checking from the LLM.</strong> <code>FinanceGate</code> (affordability, break-even, research burn) and <code>ProposeAction</code> (~25 syntactic and semantic predicates) run in code. Pre-validation never touches the environment, so a rejected proposal costs a re-prompt and nothing else.</li>
+    <li><strong>A falsifiable-trial protocol for strategy discovery.</strong> Each proposed strategy is written as rule + success condition (metric, direction, day-window) + failure condition, is graded at close-out <em>by a different network</em> against the deterministic log rather than the actor's self-report, and is recorded in an append-only ledger so falsified ideas cannot return.</li>
+    <li><strong>Champion selection as the compounding mechanism.</strong> An episode's plan is promoted to champion only if it beats the best reward on record; every subsequent episode starts from that champion. Pure file copy, no model in the loop. This is the ratchet that makes a bad episode survivable.</li>
+    <li><strong>A negative result with teeth.</strong> The early-abort guardrail — the component that looked most obviously correct — was the single largest drag on performance, for a reason that generalizes to any compounding-reward environment (§9).</li>
+    <li><strong>An honest accounting of which memory channel actually did the work.</strong> Rule-level accretion contributed almost nothing; plan-level selection contributed nearly everything (§10). This reframes the design lesson and is the most publishable surprise in the record.</li>
+  </ol>
+</section>
+
+<!-- ══════════════════════════════════════════════════════ -->
+<section id="s2">
+  <h2 class="sec"><span class="num">Section 02</span>The benchmark</h2>
+  <p class="deck">Why MAPs, and what makes it a genuine long-horizon credit-assignment problem rather than a puzzle.</p>
+
+  <h3>Setup to state precisely</h3>
+  <ul>
+    <li><strong>Mini Amusement Parks (MAPs)</strong>, Skyfall AI — <a class="ln" href="https://arxiv.org/abs/2511.15830">arXiv:2511.15830</a>. Node backend + a Python <code>map_py</code> interface, exposed to the agents through a vendored MCP server.</li>
+    <li><strong>Configuration used throughout:</strong> layout <code>the_islands</code>, difficulty <code>medium</code>, one park, 100 steps per episode, exactly one action per step.</li>
+    <li><strong>Action space:</strong> <code>place</code>, <code>move</code>, <code>modify</code>, <code>remove</code>, <code>set_research</code>, <code>survey_guests</code>, <code>wait</code>, over three entity types (ride / shop / staff), each with four subclasses (yellow → blue → green → red).</li>
+    <li><strong>Objective:</strong> maximize cumulative park value over the episode.</li>
+    <li><strong>Published difficulty anchor:</strong> the MAPs authors report that the best frontier models reach roughly <strong>10% of human performance</strong> on medium. That gap is the thing being attacked, and it belongs in the introduction.</li>
+  </ul>
+
+  <h3>Why the task is hard — the four properties to argue</h3>
+  <ul>
+    <li><strong>Research gating.</strong> On medium only yellow subclasses start unlocked. Research costs cash up front ($2k/$8k/$32k per day for slow/medium/fast) and pushes the park into loss before it unlocks anything that pays. Early decisions cap the ceiling of the ending.</li>
+    <li><strong>Compounding.</strong> Reward is super-linear in time — the champion episode banked $63,664 by day 50 and $1,861,276 by day 100 (§8). Any evaluation that reads the mid-episode number as a fraction of the final one is wrong by an order of magnitude.</li>
+    <li><strong>Spatial constraint.</strong> Attractions need a path-adjacent empty tile; water adjacency adds stacking excitement; some buildable tiles are permanently unreachable by guests ($0 revenue, capacity only). Tile scarcity turns tier upgrades into an eviction problem.</li>
+    <li><strong>Stochasticity and delayed feedback.</strong> Breakdowns, guest arrival, and a park rating computed at the start of each day mean an action's effect can surface two days later. Single-day deltas are noise.</li>
+  </ul>
+</section>
+
+<!-- ══════════════════════════════════════════════════════ -->
+<section id="s3">
+  <h2 class="sec"><span class="num">Section 03</span>System architecture</h2>
+  <p class="deck">What was implemented. The paper's method section — organize it as three networks, two gates, and one loop.</p>
+
+  <div class="tw">
+    <table>
+      <caption>Three networks, three timescales</caption>
+      <thead><tr><th>Network</th><th class="num">Cadence</th><th>Role</th><th>Owns</th></tr></thead>
+      <tbody>
+        <tr><td class="k">player</td><td class="num">every turn ×100</td><td>Acting. Picks and validates one action.</td><td>Nothing durable — deliberately stateless.</td></tr>
+        <tr><td class="k">watcher</td><td class="num">steps 10,20…90</td><td>Mid-episode analyst. Diagnoses trajectory, logs micro-trials.</td><td>Course corrections within the episode.</td></tr>
+        <tr><td class="k">planner</td><td class="num">episode start / end</td><td>Writes the episode plan; grades and promotes trials at close-out.</td><td>Playbooks, plan, trial ledger.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="rule">The player network, per turn</h3>
+  <p><code>park_director</code> reads park status → <code>strategy_coordinator</code> fans out <strong>in parallel</strong> to six domain specialists, each of which returns candidate typed actions for its vertical:</p>
+  <div class="tw">
+    <table>
+      <caption>Specialists and their separation of concerns</caption>
+      <thead><tr><th>Agent</th><th>Proposes</th><th>Design note worth stating</th></tr></thead>
+      <tbody>
+        <tr><td class="k">rides_manager</td><td>ride builds, tier upgrades, ticket pricing</td><td rowspan="3">Each reads only its own playbook and its own <code>status_&lt;domain&gt;.json</code> slice — never the full observation.</td></tr>
+        <tr><td class="k">shops_manager</td><td>shop builds, order quantity, pricing</td></tr>
+        <tr><td class="k">staffing_manager</td><td>hires, fires, staff siting</td></tr>
+        <tr><td class="k">park_layout_planner</td><td>every <code>(x,y)</code> in the system</td><td>Single owner of coordinate resolution. No other agent emits a tile — this removed a whole class of invalid-placement failures.</td></tr>
+        <tr><td class="k">research_manager</td><td>research speed and topic list</td><td>The only agent that can spend into future capability.</td></tr>
+        <tr><td class="k">guest_analyst</td><td>reads guest stats / paid surveys</td><td>Advisory; converts the free daily guest signal into pressure on the others.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="rule">The two deterministic gates</h3>
+  <ul>
+    <li><strong><code>FinanceGate</code></strong> — enriches each raw proposal with fields the LLM used to compute by hand (one-time cost from the economics tables, real daily burn read back from the observation, research day-count, break-even days), then approves or rejects against seven ordered rules. Break-even days come from the <code>economics_rides.md</code> table, the same source of truth the specialists read — so the model's judgment and the code's arithmetic never disagree.</li>
+    <li><strong><code>ProposeAction</code></strong> — validates syntax and legality against the cached observation before the simulator advances at all, then persists the proposal to disk. Checks include: staff must sit on a path or an occupied tile, placements must be path-adjacent, a subclass must actually be researched, unreachable tiles accept only lower-tier evictions, research speeds and topics must be in the legal sets, survey guest counts must be affordable and ≤25.</li>
+    <li><strong><code>ActionDispatcher</code></strong> — the runner, not an agent, dispatches the approved action exactly once through typed <code>Maps*</code> MCP wrappers. No LLM hop for dispatch.</li>
+  </ul>
+
+  <div class="panel">
+    <span class="tag">Method point worth its own paragraph</span>
+    <p><strong>Rejection is asymmetric and that asymmetry is the design.</strong> Pre-validation never touches the environment, so a rejected <em>proposal</em> costs one re-prompt and nothing else — there is no snapshot and no rollback anywhere in the loop. A rejected <em>dispatch</em> is unrecoverable (MAPs always advances the day), so it is logged as a <code>wait</code> and the reason is fed back into the next turn's prompt as literal <code>feedback:</code> text that the coordinator routes to the owning specialist.</p>
+  </div>
+
+  <h3 class="rule">Context engineering — the cost-control half of the system</h3>
+  <ul>
+    <li><strong>Per-specialist status slices.</strong> <code>ParkStatus</code> writes seven narrow <code>status_*.json</code> files each turn; each specialist reads only its own. The coordinator never sees the full observation.</li>
+    <li><strong>Phase-only checklist.</strong> The episode plan is a day-phased checklist, but <code>ParkStatus</code> surfaces only the line whose turn-range covers the current step. The player never carries the whole plan.</li>
+    <li><strong><code>TrimHistoryMiddleware</code></strong> — drops everything before the latest human message, so each turn starts from a clean history. This is what makes the player genuinely stateless, and it forces the discipline the whole design leans on: anything worth keeping must be written to disk where another network can read it.</li>
+    <li><strong><code>StaticPromptCachingMiddleware</code></strong> — caches system message and tool definitions only, deliberately skipping the per-call message-prefix breakpoint that the stock Anthropic caching middleware writes. That breakpoint tags the last message every call, creating a cache entry never reused on the next turn — pure write waste in a loop this shape. Worth reporting as a concrete finding about caching in long agent loops.</li>
+  </ul>
+</section>
+
+<!-- ══════════════════════════════════════════════════════ -->
+<section id="s4">
+  <h2 class="sec"><span class="num">Section 04</span>The learning mechanism</h2>
+  <p class="deck">The actual research contribution. Frame it as three memory channels with three different lifetimes.</p>
+
+  <div class="tw">
+    <table>
+      <caption>Three memory channels</caption>
+      <thead><tr><th>Channel</th><th>Lifetime</th><th>Written by</th><th>What it holds</th></tr></thead>
+      <tbody>
+        <tr><td><strong>Fixed reference</strong></td><td>never changes</td><td>humans, once</td><td>Game documentation and the per-vertical economics tables. Read-only seed.</td></tr>
+        <tr><td><strong>Learned rules</strong></td><td>durable, append-only</td><td>planner at close-out</td><td>Rules confirmed by a trial, each tagged with the episode it came from.</td></tr>
+        <tr><td><strong>Episode plan</strong></td><td>one episode</td><td>planner at episode start</td><td>Day-phased checklist + a strategy summary per specialist. Set at the start, never changed mid-episode.</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>The separation is load-bearing and should be argued explicitly: because the plan and the rules are separate files, a bad episode's plan can be discarded and rolled back to the champion <em>without</em> a single hard-won rule going with it.</p>
+
+  <h3 class="rule">The trial protocol</h3>
+  <ul>
+    <li>The planner proposes <strong>at most three</strong> candidate strategies per episode — a deliberate cap, added after an earlier version churned through strategies faster than any could prove out.</li>
+    <li>Each is written as a falsifiable hypothesis in three parts: <strong>a rule</strong> (a general instruction, not a one-off observation), <strong>a success condition</strong> (metric + direction + a day-window long enough that one lucky day cannot fake it), and <strong>a failure condition</strong>.</li>
+    <li>A trial steers real decisions for the full episode, then is graded at close-out <strong>against the deterministic log</strong>, by the planner network — never by the player that made the calls. Verdicts: <code>confirmed</code> → promoted into the learned rules; <code>falsified</code> → dropped and recorded; <code>not_applied</code> → its precondition never fired; <code>inconclusive</code> → carried forward.</li>
+    <li>The ledger (<code>trial_strategies_outcome.md</code>) is <strong>append-only and never wiped</strong>, so a falsified idea stays dead instead of returning as a "new" proposal three episodes later.</li>
+    <li>A deterministic backstop (<code>CarryoverTrials</code>) retires every trial stamped with an earlier episode at each boundary — no LLM, so nothing can skip it. This exists because a run killed mid-episode otherwise re-arms dead rules with last episode's cash floors.</li>
+  </ul>
+
+  <h3 class="rule">Champion selection — the ratchet</h3>
+  <ul>
+    <li><code>promote_plan(reward, floor)</code> copies <code>plan_current.json</code> → <code>plan_last_good.json</code> only if the episode clears a hard floor <em>and</em> beats the current champion. Pure file operation.</li>
+    <li>Every episode start restores the champion plan as the <strong>base</strong>, then the planner refines it — so a run always builds on the best strategy, never the most recent one.</li>
+    <li>Playbooks are snapshotted to <code>playbook_history/&lt;ts&gt;_&lt;tag&gt;/</code> <strong>only on promotion</strong>. The archive holds best-ever versions, not one directory per boundary. 51 snapshots exist.</li>
+    <li>Three run modes: <em>default</em> (restore champion and improve on it), <code>--resume</code> (continue an in-flight episode untouched), <code>--fresh</code> (move all state to an archive, reset to seeds, strip promoted rules from those seeds — nothing deleted, nothing carried in).</li>
+  </ul>
+</section>
+
+<!-- ══════════════════════════════════════════════════════ -->
+<section id="s5">
+  <h2 class="sec"><span class="num">Section 05</span>Development timeline</h2>
+  <p class="deck">Reconstructed from 24 project commits, 2026-04-27 to 2026-08-21. Useful as a methods appendix and as evidence that the architecture was arrived at, not designed up front.</p>
+
+  <div class="tw">
+    <table>
+      <caption>Git archaeology — what each stage contributed</caption>
+      <thead><tr><th class="num">Date</th><th>Commit</th><th>What landed</th></tr></thead>
+      <tbody>
+        <tr><td class="num">04‑27</td><td class="k">95115283</td><td>First system: <strong>one</strong> agent network (492-line hocon), a 118-line runner, a 1,815-LOC persistent-memory middleware stack, world-server logging, plotting.</td></tr>
+        <tr><td class="num">04‑29</td><td class="k">6129131a</td><td>Coded tools arrive: <code>ActionDispatcher</code>, eleven typed <code>Maps*</code> wrappers (including hard-mode <code>add_path</code>/<code>add_water</code>), YAML economics config, <code>extract_config.py</code>.</td></tr>
+        <tr><td class="num">05‑05</td><td class="k">66aead3a</td><td>Checklist agents, <strong>FinanceGate</strong>, <strong>ParkStatus</strong>. Economics moved YAML → Markdown. A 188,093-line <code>config_vector_store.json</code> is added for retrieval over the game docs.</td></tr>
+        <tr><td class="num">05‑19</td><td class="k">370453e3</td><td>Repository cleanup; the vector store and unrelated studio fixtures are stripped (−233k lines).</td></tr>
+        <tr><td class="num">06‑15</td><td class="k">662c020b</td><td>Commit message <code>"350k"</code> — first reward milestone. Test suite restructured.</td></tr>
+        <tr><td class="num">06‑24</td><td class="k">f193c192</td><td>Per-specialist <code>status_*.json</code> slices land, plus static prompt caching and output trimming. Main hocon rewritten (766 lines changed); the <code>director</code> playbook is deleted.</td></tr>
+        <tr><td class="num">07‑07</td><td class="k">95a42c5d</td><td>"MAPs implementation". <code>test_abort_verdict.py</code> added — the early-abort guardrail is now formalized and tested.</td></tr>
+        <tr><td class="num">07‑15</td><td class="k">87489e13</td><td>"generalization": <code>coded_tools/maps_park/*</code> flattened to <code>coded_tools/*</code>; macro and micro consultants split into their own networks.</td></tr>
+        <tr class="hi"><td class="num">07‑20</td><td class="k">01c5959b</td><td><strong>The three-network split lands.</strong> <code>player.hocon</code> / <code>watcher.hocon</code> / <code>planner.hocon</code> replace the monolith and the macro/micro pair. This is the architecture the paper describes.</td></tr>
+        <tr><td class="num">07‑29</td><td class="k">42eb39e3</td><td>Prompt overhaul across all three networks; <code>DeleteTrial</code> added; strategy documents rewritten.</td></tr>
+        <tr><td class="num">07‑30</td><td class="k">15055c17</td><td><strong>Adaptive reward floor</strong> — the champion bar starts at 0 and rises to the best episode's reward. (This is the change that later makes the abort guardrail lethal; see §9.)</td></tr>
+        <tr><td class="num">08‑05</td><td class="k">76908eba</td><td>Guest-happiness signal wired into the observation and strategy docs.</td></tr>
+        <tr><td class="num">08‑07</td><td class="k">a18ef4ba</td><td>Unreachable land and stacking water bonus surfaced to the layout planner; placement test suite added.</td></tr>
+        <tr><td class="num">08‑10</td><td class="k">ce3ed31b<br>3bf18c88</td><td>Unreachable-tile handling threaded through the runner (+211 lines) and every strategy document — enabling the "evict low tier to unreachable storage" upgrade pattern.</td></tr>
+        <tr class="hi"><td class="num">08‑19</td><td class="k">8f60d0ea</td><td><strong>"1.8million"</strong> — the champion episode. <code>state_1.8M/</code> snapshot committed with a replay script.</td></tr>
+        <tr><td class="num">08‑20</td><td class="k">(uncommitted)</td><td><strong>The abort guardrail is removed:</strong> runner −181/+90, <code>test_abort_verdict.py</code> deleted, <code>watcher.hocon</code> −110 lines. The best-performing runs on record follow this change.</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p><strong>Note for the paper:</strong> the final configuration is currently <em>uncommitted working-tree state</em>. Commit and tag it before submission, or the reported results cannot be tied to a revision.</p>
+</section>
+
+<!-- ══════════════════════════════════════════════════════ -->
+<section id="s6">
+  <h2 class="sec"><span class="num">Section 06</span>Tried and abandoned</h2>
+  <p class="deck">Dead ends are the most useful thing a systems paper can give a reader. Each of these was built, run, and removed.</p>
+
+  <div class="tw">
+    <table>
+      <caption>Removed components and why</caption>
+      <thead><tr><th>What was built</th><th>Why it was dropped</th><th class="num">Verdict</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><strong>One fused network</strong> — player and reviewer as a single agent network.</td>
+          <td>Token bleed: the two halves talked past each other turn after turn. Splitting made each sharper, far cheaper, and let the harness control in code exactly when reflection runs.</td>
+          <td class="num"><span class="pill no">replaced</span></td>
+        </tr>
+        <tr>
+          <td><strong>A single reviewer</strong> checking in every ten days.</td>
+          <td>Patched symptoms with no sense of where the episode was headed, and churned through strategies before any could prove out. Split into a planner (direction, between episodes) and a watcher (correction, within one).</td>
+          <td class="num"><span class="pill no">replaced</span></td>
+        </tr>
+        <tr>
+          <td><strong>Persistent-memory middleware</strong> — topic store, summarizer, JSON and Markdown backing stores, a memory tool, a factory (~1,815 LOC).</td>
+          <td>Replaced wholesale by plain files on disk that any network can read. The generalized memory abstraction bought nothing the file system did not already do, and hid state the harness needed to own.</td>
+          <td class="num"><span class="pill no">deleted</span></td>
+        </tr>
+        <tr>
+          <td><strong>Vector store over the game docs</strong> — a 188,093-line <code>config_vector_store.json</code>.</td>
+          <td>Replaced by small curated Markdown economics tables read in full every turn. Retrieval was solving a problem that did not exist at this document scale, and it broke the single-source-of-truth property FinanceGate depends on.</td>
+          <td class="num"><span class="pill no">deleted</span></td>
+        </tr>
+        <tr>
+          <td><strong>YAML economics files.</strong></td>
+          <td>Converted to Markdown tables. Same content; the models read the tabular form more reliably, and it doubles as human-readable documentation.</td>
+          <td class="num"><span class="pill mid">converted</span></td>
+        </tr>
+        <tr>
+          <td><strong>Hard-mode terraforming wrappers</strong> — <code>maps_add_path</code>, <code>maps_add_water</code>.</td>
+          <td>Out of scope: terrain is not modifiable on medium difficulty. Removed rather than left as dead action surface the agents could propose into.</td>
+          <td class="num"><span class="pill no">deleted</span></td>
+        </tr>
+        <tr>
+          <td><strong>Assorted middleware</strong> — agent checklist, output trimming, world-server logging.</td>
+          <td>Folded into the runner and the status slices. The checklist became a phase line in <code>ParkStatus</code>; logging became structured JSONL the analysts read directly.</td>
+          <td class="num"><span class="pill no">deleted</span></td>
+        </tr>
+        <tr>
+          <td><strong><code>specialist_snapshots.py</code></strong> — a separate snapshotting tool.</td>
+          <td>Merged into <code>ParkStatus</code> as a side effect of the turn-start refresh, so the observation is parsed once per turn instead of once per consumer.</td>
+          <td class="num"><span class="pill mid">merged</span></td>
+        </tr>
+        <tr>
+          <td><strong>A <code>director</code> agent</strong> with its own playbook.</td>
+          <td>Removed at the 06‑24 rewrite; its job collapsed into <code>park_director</code> plus the coordinator's own playbook.</td>
+          <td class="num"><span class="pill no">deleted</span></td>
+        </tr>
+        <tr>
+          <td><strong>Nested <code>coded_tools/maps_park/</code> package layout.</strong></td>
+          <td>Flattened in the "generalization" commit so the tools read as a general library rather than an app-specific one.</td>
+          <td class="num"><span class="pill mid">refactored</span></td>
+        </tr>
+        <tr>
+          <td><strong>The early-abort guardrail.</strong></td>
+          <td>The largest single drag on measured performance. See §9 — it deserves its own section, not a table row.</td>
+          <td class="num"><span class="pill no">removed</span></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════ -->
+<section id="s7">
+  <h2 class="sec"><span class="num">Section 07</span>Experimental record</h2>
+  <p class="deck">The scale of what was actually run, and the configuration it ran under. All figures below are counted directly from the logs in the repository.</p>
+
+  <div class="tw">
+    <table>
+      <caption>Scale of the experimental record</caption>
+      <thead><tr><th>Quantity</th><th class="num">Value</th><th>Source</th></tr></thead>
+      <tbody>
+        <tr><td>Episode log files</td><td class="num">166</td><td class="k">run.ep*.jsonl</td></tr>
+        <tr><td>Complete 100-step episodes</td><td class="num">139</td><td class="k">run.ep*.jsonl</td></tr>
+        <tr><td>Simulator steps logged</td><td class="num">14,922</td><td class="k">run.ep*.jsonl</td></tr>
+        <tr><td>Episodes with full cost telemetry</td><td class="num">73</td><td class="k">episode_cost.jsonl</td></tr>
+        <tr><td>Distinct runs (a run = one continuous learning sequence)</td><td class="num">12</td><td class="k">episode_cost.jsonl</td></tr>
+        <tr><td>LLM calls</td><td class="num">171,111</td><td class="k">episode_cost.jsonl</td></tr>
+        <tr><td>Tokens</td><td class="num">854,571,151</td><td class="k">episode_cost.jsonl</td></tr>
+        <tr><td>LLM wall-clock</td><td class="num">71 h</td><td class="k">episode_cost.jsonl</td></tr>
+        <tr><td>Total inference spend</td><td class="num">$2,283</td><td class="k">episode_cost.jsonl</td></tr>
+        <tr><td>Champion playbook snapshots retained</td><td class="num">51</td><td class="k">playbook_history/</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="rule">Configuration to report</h3>
+  <ul>
+    <li><strong>Model:</strong> OpenAI <code>gpt-5.5</code>, <code>reasoning_effort: xhigh</code>, Responses API. One model for all three networks — the paper should say so plainly, since a mixed-model setup would be a confound.</li>
+    <li><strong>Per-episode cost:</strong> ~$30–40, ~12–15M tokens, ~2,300–3,000 LLM calls, ~50–60 min wall clock.</li>
+    <li><strong>Cost efficiency:</strong> report cost-per-reward. The champion episode came in near <code>4.2e-05</code> USD per unit reward; weak episodes ran an order of magnitude worse. This metric is already logged per episode and is a cheap, honest efficiency curve.</li>
+  </ul>
+</section>
+
+<!-- ══════════════════════════════════════════════════════ -->
+<section id="s8">
+  <h2 class="sec"><span class="num">Section 08</span>Results</h2>
+  <p class="deck">What the system finally achieved, and the shape of the learning curve.</p>
+
+  <div class="tw">
+    <table>
+      <caption>All twelve runs, chronological</caption>
+      <thead><tr><th class="num">Run</th><th class="num">Date</th><th class="num">Eps</th><th class="num">Best</th><th class="num">Mean</th><th class="num">Aborted</th><th class="num">Cost</th></tr></thead>
+      <tbody>
+        <tr><td class="num">0</td><td class="num">08‑12</td><td class="num">3</td><td class="num">122,167</td><td class="num">85,652</td><td class="num">0</td><td class="num">$86</td></tr>
+        <tr><td class="num">1</td><td class="num">08‑13</td><td class="num">12</td><td class="num">506,045</td><td class="num">281,340</td><td class="num">8</td><td class="num">$347</td></tr>
+        <tr><td class="num">2</td><td class="num">08‑14</td><td class="num">4</td><td class="num">441,539</td><td class="num">278,832</td><td class="num">1</td><td class="num">$133</td></tr>
+        <tr><td class="num">3</td><td class="num">08‑14</td><td class="num">3</td><td class="num">258,646</td><td class="num">149,014</td><td class="num">2</td><td class="num">$77</td></tr>
+        <tr><td class="num">4</td><td class="num">08‑17</td><td class="num">2</td><td class="num">332,335</td><td class="num">209,296</td><td class="num">1</td><td class="num">$58</td></tr>
+        <tr><td class="num">5</td><td class="num">08‑17</td><td class="num">4</td><td class="num">289,328</td><td class="num">146,322</td><td class="num">1</td><td class="num">$126</td></tr>
+        <tr><td class="num">6</td><td class="num">08‑17</td><td class="num">17</td><td class="num">990,068</td><td class="num">434,376</td><td class="num">15</td><td class="num">$506</td></tr>
+        <tr><td class="num">7</td><td class="num">08‑18</td><td class="num">4</td><td class="num">656,431</td><td class="num">497,665</td><td class="num">2</td><td class="num">$137</td></tr>
+        <tr><td class="num">8</td><td class="num">08‑19</td><td class="num">4</td><td class="num">291,694</td><td class="num">207,695</td><td class="num">4</td><td class="num">$65</td></tr>
+        <tr class="hi"><td class="num">9</td><td class="num">08‑19</td><td class="num">8</td><td class="num">1,861,276</td><td class="num">534,925</td><td class="num">5</td><td class="num">$293</td></tr>
+        <tr class="hi"><td class="num">10</td><td class="num">08‑20</td><td class="num">11</td><td class="num">1,501,444</td><td class="num">794,209</td><td class="num">0</td><td class="num">$419</td></tr>
+        <tr class="hi"><td class="num">11</td><td class="num">08‑21</td><td class="num">1</td><td class="num">961,779</td><td class="num">961,779</td><td class="num">0</td><td class="num">$37</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="panel find">
+    <span class="tag">Headline result</span>
+    <p><strong>Best episode: 1,861,276</strong> cumulative reward (run 9, episode 3). <strong>Final configuration</strong> (runs 10–11, guardrail removed): 12 episodes, <strong>mean 808,173</strong>, median 718,218, minimum 437,459, with <strong>9 of 12 above 500k and 3 above 1M</strong>. For comparison, the earlier published write-up reported a climb from 12,121 to 483,019 over seven episodes — the current best is roughly <strong>3.9× that peak</strong>, and the current <em>mean</em> exceeds the old peak.</p>
+  </div>
+
+  <h3 class="rule">The champion episode, day by day</h3>
+  <p>This table is the paper's most important single piece of evidence, because it establishes the compounding property that §9 turns on.</p>
+  <div class="tw">
+    <table>
+      <caption>Episode 3, 2026-08-19 — cumulative reward 1,861,276</caption>
+      <thead><tr><th class="num">Day</th><th class="num">Cum. reward</th><th class="num">Park value</th><th class="num">Cash</th><th class="num">Rating</th><th class="num">Rides</th><th class="num">Staff</th></tr></thead>
+      <tbody>
+        <tr><td class="num">10</td><td class="num">1,730</td><td class="num">2,230</td><td class="num">1,207</td><td class="num">19.1</td><td class="num">5</td><td class="num">1</td></tr>
+        <tr><td class="num">20</td><td class="num">3,986</td><td class="num">4,486</td><td class="num">1,945</td><td class="num">17.4</td><td class="num">9</td><td class="num">2</td></tr>
+        <tr><td class="num">30</td><td class="num">11,639</td><td class="num">12,139</td><td class="num">7,453</td><td class="num">28.4</td><td class="num">16</td><td class="num">4</td></tr>
+        <tr><td class="num">40</td><td class="num">29,261</td><td class="num">29,761</td><td class="num">8,605</td><td class="num">33.0</td><td class="num">19</td><td class="num">6</td></tr>
+        <tr><td class="num">50</td><td class="num">63,664</td><td class="num">64,164</td><td class="num">25,548</td><td class="num">37.2</td><td class="num">23</td><td class="num">8</td></tr>
+        <tr><td class="num">60</td><td class="num">114,795</td><td class="num">115,295</td><td class="num">32,819</td><td class="num">34.9</td><td class="num">27</td><td class="num">8</td></tr>
+        <tr><td class="num">70</td><td class="num">236,147</td><td class="num">236,647</td><td class="num">94,651</td><td class="num">56.0</td><td class="num">30</td><td class="num">10</td></tr>
+        <tr><td class="num">80</td><td class="num">501,027</td><td class="num">501,527</td><td class="num">321,191</td><td class="num">42.0</td><td class="num">31</td><td class="num">12</td></tr>
+        <tr><td class="num">90</td><td class="num">894,535</td><td class="num">895,035</td><td class="num">668,859</td><td class="num">59.9</td><td class="num">32</td><td class="num">18</td></tr>
+        <tr class="hi"><td class="num">100</td><td class="num">1,861,276</td><td class="num">1,747,404</td><td class="num">1,489,779</td><td class="num">62.9</td><td class="num">32</td><td class="num">19</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>Action mix over the episode: 57 <code>place</code>, 19 <code>modify</code>, 13 <code>move</code>, 5 <code>set_research</code>, 4 <code>remove</code>, 2 <code>wait</code>. The final park held 32 rides, 2 shops and 19 staff at a rating of 62.86 — a capacity-maximizing configuration with minimal shop footprint, which is itself a finding worth discussing against the benchmark's guidance that guests need food and drink.</p>
+
+  <div class="panel">
+    <span class="tag">The strategy the system converged on</span>
+    <p>Readable directly from the champion's own checklist: build cheap water-adjacent carousel capacity first; bank and run <em>carousel-only</em> research so the tier ladder (blue → green → red) completes fast; convert each unlock into a build immediately; when prime tiles run out, <strong>move</strong> the weakest reachable low-tier ride to an unreachable tile rather than removing it, preserving capacity while freeing an earning tile; open a second ride track late, favouring ferris wheels over coasters; monetize the larger crowd with premium drink/food only near the end. The final ten days alone produced roughly half the episode's total reward.</p>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════ -->
+<section id="s9">
+  <h2 class="sec"><span class="num">Section 09</span>The abort guardrail</h2>
+  <p class="deck">The paper's best negative result. A component that was tested, documented, and obviously sensible — and that was cutting measured performance roughly in half.</p>
+
+  <h3>What it did</h3>
+  <p>At every mid-episode checkpoint (steps 10, 20 … 90) the watcher emitted <code>VERDICT: on_track | underperforming | doomed</code>, judged against a reward floor. A <code>doomed</code> verdict at or after step 50 aborted the episode immediately; before step 50 it took two consecutive strikes. An aborted episode was fast-forwarded to day 100 with empty <code>wait()</code> calls (the environment has no early reset), its trials were falsified, and the run rolled back to the champion. The rationale was straightforward: stop paying for hopeless episodes.</p>
+  <p>Crucially, the floor was <strong>adaptive</strong> — it rose to the best episode's reward as the champion improved (commit <code>15055c17</code>, 07‑30), with a hard minimum of 350,000.</p>
+
+  <div class="panel kill">
+    <span class="tag">Why it was wrong</span>
+    <p>The floor is a <strong>terminal</strong> quantity being compared against a <strong>mid-episode</strong> one in a compounding environment. Across all 139 complete episodes on record, the mean ratio of final reward to day-50 reward is <strong>10.0×</strong>, and for the strongest episodes it is <strong>25–29×</strong>. The consequence is stark: <strong>every one of the 139 episodes — 139 of 139 — sat below the 350,000 floor at day 50.</strong> The champion itself held just $63,664 at day 50 on its way to $1.86M. The guardrail was therefore firing on essentially every episode from the halfway point onward; which episodes survived came down to whether the analyst happened to return a non-<code>doomed</code> verdict, not to whether the episode was actually failing.</p>
+  </div>
+
+  <div class="tw">
+    <table>
+      <caption>Measured effect — natural A/B at the 08-20 code change</caption>
+      <thead><tr><th>Regime</th><th class="num">n</th><th class="num">Mean</th><th class="num">Median</th><th class="num">Min</th><th class="num">≥500k</th><th class="num">≥1M</th></tr></thead>
+      <tbody>
+        <tr><td>Guardrail active</td><td class="num">61</td><td class="num">339,091</td><td class="num">289,328</td><td class="num">−333</td><td class="num">11 / 61</td><td class="num">1 / 61</td></tr>
+        <tr><td>Guardrail active, non-aborted episodes only</td><td class="num">22</td><td class="num">409,918</td><td class="num">310,832</td><td class="num">—</td><td class="num">—</td><td class="num">—</td></tr>
+        <tr class="hi"><td>Guardrail removed</td><td class="num">12</td><td class="num">808,173</td><td class="num">718,218</td><td class="num">437,459</td><td class="num">9 / 12</td><td class="num">3 / 12</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <ul>
+    <li><strong>39 of 61</strong> episodes were aborted while the guardrail was active.</li>
+    <li>Mean reward roughly <strong>2.4×</strong> higher with the guardrail removed — and still <strong>2.0×</strong> higher when compared only against episodes the guardrail let run to completion, so the effect is not merely truncated episodes dragging the mean down.</li>
+    <li><strong>28 episodes</strong> that finished at or above 500k — including the 1,861,276 champion — were below the floor at day 50 and were candidates for the axe.</li>
+    <li>Correlation between day-50 and final reward is <strong>r = 0.688</strong>: real but far too weak to support a single-strike kill decision, quite apart from the scale error.</li>
+  </ul>
+
+  <div class="panel warn">
+    <span class="tag">Caveat — state this in the paper, do not bury it</span>
+    <p>This is a <strong>natural experiment, not a controlled ablation</strong>. The guardrail's removal was not the only change in the working tree at that point: <code>watcher.hocon</code> lost 110 lines, <code>planner.hocon</code> 90, and <code>player.hocon</code> 40, and the runs also began from a stronger champion. The mechanism (§9's floor-scale argument) is independently verifiable from the trajectory data and is strong on its own; the <em>effect size</em> is not yet cleanly attributable. Run the controlled ablation in §12 before claiming a causal 2.4×.</p>
+  </div>
+
+  <div class="panel find">
+    <span class="tag">The generalizable lesson</span>
+    <p>In any environment where reward compounds, an early-termination heuristic must be judged against a <strong>trajectory-shaped</strong> baseline — the champion's own reward <em>at that same step</em> — not against a terminal target. The system already stored everything needed to do this correctly (per-step logs of every champion episode) and did not use it. That is the fix, and it is a better contribution than simply deleting the guardrail.</p>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════ -->
+<section id="s10">
+  <h2 class="sec"><span class="num">Section 10</span>Honest negatives</h2>
+  <p class="deck">What did not work as designed. A reviewer will find these; better that the paper gets there first.</p>
+
+  <h3>The trial mechanism confirmed very little</h3>
+  <p>403 trial outcomes are recorded across the full history. Excluding the 138 <code>carried_over</code> entries (retirement bookkeeping rather than a verdict), 265 trials received a real judgement:</p>
+  <div class="bars">
+    <div class="bar"><span class="lab">falsified</span><span class="track"><span class="fill" style="width:100%;background:var(--bad)"></span></span><span class="val">135 · 51%</span></div>
+    <div class="bar"><span class="lab">not_applied</span><span class="track"><span class="fill" style="width:72%;background:var(--warn)"></span></span><span class="val">97 · 37%</span></div>
+    <div class="bar"><span class="lab">confirmed</span><span class="track"><span class="fill" style="width:19%;background:var(--good)"></span></span><span class="val">25 · 9%</span></div>
+    <div class="bar"><span class="lab">inconclusive</span><span class="track"><span class="fill" style="width:6%;background:var(--ink-faint)"></span></span><span class="val">8 · 3%</span></div>
+  </div>
+  <p>Two problems, both worth reporting. A <strong>9% confirmation rate</strong> means the planner is a weak strategy generator. Worse, <strong>37% were never applied at all</strong> — the hypothesis's precondition never fired inside the episode, so it consumed one of only three trial slots and returned no information. Trial preconditions were written too specifically (often naming exact turn windows and cash floors) for a stochastic 100-day episode to reliably exercise.</p>
+  <p>Trial coverage was also lopsided by domain: shops 115, rides 89, research 80, staff 68, layout 36, coordinator 14, survey 1 — despite layout and research being where the champion's actual edge came from.</p>
+
+  <div class="panel find">
+    <span class="tag">The most important finding in this section</span>
+    <p><strong>The 1,861,276 champion carries exactly one promoted learned rule</strong> — a single research-domain rule tagged <code>(learned ep2)</code>. Every other playbook's "Learned rules" section is empty. So the durable rule-accretion channel, which the architecture treats as the primary learning mechanism, contributed almost nothing to the best result. What actually compounded was <strong>plan-level selection</strong>: the champion checklist, the per-specialist strategy summaries, and the restore-the-best-plan ratchet.</p>
+    <p>This is a genuine and non-obvious result, and it should be promoted from a limitation to a contribution. The paper's design lesson is not "let agents write down rules"; it is <strong>"select whole plans on measured outcome, and let the rules follow."</strong></p>
+  </div>
+
+  <h3 class="rule">Other negatives to disclose</h3>
+  <ul>
+    <li><strong>High variance, small n.</strong> Even the best run's episodes span 437,459 to 1,501,444 — a 3.4× spread under an identical configuration. With 12 episodes in the final regime, confidence intervals will be wide. Report them.</li>
+    <li><strong>End-loading needs auditing.</strong> The champion earned roughly half its total in the final ten days, and its own README notes a late red-drink swap that took park value from $1.04M to $1.75M in eight steps. If terminal park-value accounting rewards end-loading disproportionately, part of the headline is an accounting artifact rather than better management. <strong>This must be checked before publication</strong> — it is the first thing a reviewer familiar with MAPs will ask.</li>
+    <li><strong>The ratchet may also be a trap.</strong> Always starting from the champion prevents regression but can lock in a local optimum. The convergence on 32 rides / 2 shops, and on "fill unreachable tiles with cheap capacity", suggests the system found one park topology and stopped exploring alternatives.</li>
+    <li><strong>Narrow generalization evidence.</strong> One layout (<code>the_islands</code>), one difficulty (medium), one park, one model. No seed control, no replication of a fixed configuration.</li>
+    <li><strong>No in-house baseline.</strong> There is no single-agent or no-harness control run in this repository. The leaderboard claim in the earlier write-up is external and undated; either cite it precisely with a retrieval date or run the baseline.</li>
+    <li><strong>Cost is non-trivial.</strong> ~$30–40 per episode. A method that needs a dozen episodes to reach its mean is a $400+ proposition per configuration, which bounds how much ablation is affordable — say so, and let it justify the ablation plan's scope.</li>
+    <li><strong>Prior published numbers are stale.</strong> The existing write-up's "40× climb, 12,121 → 483,019 over seven episodes" predates every result in §8. Reconcile the two accounts explicitly rather than letting them coexist.</li>
+  </ul>
+</section>
+
+<!-- ══════════════════════════════════════════════════════ -->
+<section id="s11">
+  <h2 class="sec"><span class="num">Section 11</span>Threats to validity</h2>
+  <p class="deck">Pre-empt these in the paper. Each one is an objection a reviewer will raise.</p>
+  <ul>
+    <li><strong>"Your headline ablation is confounded."</strong> Correct as things stand — §9's caveat. Fix with the controlled run in §12.</li>
+    <li><strong>"How much of this is the harness and how much is the LLM?"</strong> The strongest version of this paper answers it directly: run the same harness driving a scripted greedy or random-legal policy. If the harness alone gets most of the way, the contribution is the harness — which is still a result, but a different one.</li>
+    <li><strong>"You tuned prompts across runs, so this isn't hands-off learning."</strong> True within a run, false across the project: prompts changed between runs (see §5). Be precise that <em>within</em> a run nothing is touched, and report the run boundaries honestly.</li>
+    <li><strong>"You're overfitting to one layout."</strong> Only a second layout or difficulty answers this.</li>
+    <li><strong>"Contamination."</strong> MAPs is public with published documentation; the model may have prior exposure to it or to similar tycoon-genre strategy. Acknowledge and, if possible, test on the sandbox/held-out layouts the benchmark provides.</li>
+    <li><strong>"Not reproducible."</strong> Runtime state is gitignored, runs are unseeded, and the final configuration is uncommitted. All three are fixable before submission and all three will otherwise be raised.</li>
+    <li><strong>"Reward hacking."</strong> See the end-loading audit in §10.</li>
+  </ul>
+</section>
+
+<!-- ══════════════════════════════════════════════════════ -->
+<section id="s12">
+  <h2 class="sec"><span class="num">Section 12</span>Experiments still needed</h2>
+  <p class="deck">Ranked by how much each strengthens the paper per dollar. At ~$35 per episode, the whole programme below is roughly $3,500.</p>
+
+  <div class="tw">
+    <table>
+      <caption>Pre-submission experiment plan</caption>
+      <thead><tr><th class="num">#</th><th>Experiment</th><th>Answers</th><th class="num">Episodes</th></tr></thead>
+      <tbody>
+        <tr>
+          <td class="num">1</td>
+          <td><strong>Champion replay.</strong> Restore <code>state_1.8M/</code> and replay the champion's exact inputs on a fresh park, ×5.</td>
+          <td>Separates strategy from luck on the headline number. <em>The tooling for this already exists</em> — <code>restore.sh</code> and <code>replay_runner.py</code> are in the repo. Cheapest, highest-value experiment available.</td>
+          <td class="num">5</td>
+        </tr>
+        <tr>
+          <td class="num">2</td>
+          <td><strong>Guardrail ablation.</strong> Guardrail on vs. off, everything else frozen at the current configuration, n ≥ 10 each.</td>
+          <td>Turns §9 from a natural experiment into a causal claim. Consider a third arm with the <em>trajectory-shaped</em> floor as the proposed fix.</td>
+          <td class="num">20–30</td>
+        </tr>
+        <tr>
+          <td class="num">3</td>
+          <td><strong>Memory-channel ablation.</strong> Four arms: full system / champion-restore only / learned-rules only / neither.</td>
+          <td>Tests §10's central finding — that plan selection, not rule accretion, is what compounds. This is the experiment that makes the paper's thesis precise.</td>
+          <td class="num">40</td>
+        </tr>
+        <tr>
+          <td class="num">4</td>
+          <td><strong>Harness-without-intelligence control.</strong> Same harness, scripted greedy policy in place of the specialists.</td>
+          <td>Bounds how much credit the LLMs deserve. Cheap — no inference cost.</td>
+          <td class="num">10</td>
+        </tr>
+        <tr>
+          <td class="num">5</td>
+          <td><strong>Single-agent baseline.</strong> One frontier model, no harness, same MCP tools, same 100 steps.</td>
+          <td>Gives the paper the in-house comparison it currently lacks, instead of relying on an external leaderboard.</td>
+          <td class="num">10</td>
+        </tr>
+        <tr>
+          <td class="num">6</td>
+          <td><strong>Generalization.</strong> A second layout, and/or hard difficulty.</td>
+          <td>Whether the learned strategy is about MAPs or about <code>the_islands</code>.</td>
+          <td class="num">10–20</td>
+        </tr>
+        <tr>
+          <td class="num">7</td>
+          <td><strong>Trial-precondition repair.</strong> Loosen preconditions, then re-measure the not_applied rate.</td>
+          <td>Whether the 37% waste in §10 is fixable or intrinsic to short-horizon hypothesis testing.</td>
+          <td class="num">10</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════ -->
+<section id="s13">
+  <h2 class="sec"><span class="num">Section 13</span>Figures to produce</h2>
+  <p class="deck">Every one of these can be generated from data already in the repository.</p>
+  <ol class="body">
+    <li><strong>Architecture diagram.</strong> Three networks against a timescale axis (per turn / per 10 turns / per episode), with the file-based coupling drawn explicitly — the fact that they share no conversation is the point.</li>
+    <li><strong>Day-50 vs. final reward scatter.</strong> 139 points, log-scale y, with the 350k floor drawn as a horizontal line that sits above every single point. <em>This is the paper's money figure</em> — it makes §9's argument in one image.</li>
+    <li><strong>Cumulative reward trajectories.</strong> All episodes overlaid faintly, the champion picked out. Shows the compounding shape and the variance at once.</li>
+    <li><strong>Guardrail on/off distributions.</strong> Box or violin plot, ideally from the controlled ablation rather than the natural split.</li>
+    <li><strong>Trial outcome breakdown.</strong> Stacked bar by domain, using the confirmed/falsified/not_applied/inconclusive split from §10.</li>
+    <li><strong>Park state at days 10 / 50 / 100</strong> for the champion. Rendered park maps already exist in <code>logs/maps_park/</code> and <code>images/</code>.</li>
+    <li><strong>Cost per unit reward across episodes.</strong> Already logged; shows the efficiency curve alongside the performance curve.</li>
+    <li><strong>Memory-channel ablation results</strong> once experiment 3 runs — this becomes the figure that carries the thesis.</li>
+  </ol>
+</section>
+
+<!-- ══════════════════════════════════════════════════════ -->
+<section id="s14">
+  <h2 class="sec"><span class="num">Section 14</span>Reproducibility appendix</h2>
+  <p class="deck">What to ship so the work can be checked.</p>
+  <ul>
+    <li><strong>Two repositories.</strong> The agent side (this fork of neuro-san-studio) and the simulator (<code>Skyfall-Research/MAPs</code>), both pinned to a commit. Python 3.12, Node 22.15+.</li>
+    <li><strong>Four processes.</strong> MAPs Node backend (:3000), vendored MCP server (:8765), studio server (:8090) registering the three networks, and the loop runner. <code>run_all.sh</code> boots and tears down all four.</li>
+    <li><strong>Log schema.</strong> One <code>run.ep&lt;NNN&gt;.jsonl</code> per episode with per-step action, cash, reward, cumulative reward, park value, rating, counts, uptime, cleanliness; <code>turns.jsonl</code> as a per-turn ledger including token counts; <code>episode_cost.jsonl</code> for cost telemetry. Document these — they are what any replication would check against.</li>
+    <li><strong>The champion artifact.</strong> <code>state_1.8M/</code> contains the exact playbooks, checklist, trials and plan the champion episode read, with provenance notes on what was excluded and why. Ship it as supplementary material; it is the strongest reproducibility asset in the project.</li>
+    <li><strong>Three items to fix first:</strong> commit and tag the final configuration (it is currently uncommitted); add seed control to the runner; and stop gitignoring the state directory for the archived runs the paper cites.</li>
+  </ul>
+</section>
+
+<footer>
+  Compiled from the repository at <span class="mono">/home/ec2-user/neuro-san-studio</span> · 24 project commits (2026‑04‑27 → 2026‑08‑21) · 166 episode logs · all figures counted directly from logs, not from prior write-ups.
+</footer>
+
+</div>

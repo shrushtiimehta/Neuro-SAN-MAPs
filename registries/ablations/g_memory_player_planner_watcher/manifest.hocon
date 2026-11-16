@@ -1,0 +1,5 @@
+{
+    "player_g_memory.hocon": true
+    "watcher_g_memory.hocon": true
+    "planner_g_memory.hocon": true
+}

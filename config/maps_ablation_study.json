@@ -1,0 +1,105 @@
+{
+  "study_id": "maps-model-topology-self-improvement-v1",
+  "episodes_per_arm": 10,
+  "wandb_project": "maps-park-ablations",
+  "arms": [
+    {
+      "name": "qwen4b_multi",
+      "launcher": "run_study_qwen4b_multi.sh",
+      "topology": "multi_agent",
+      "self_improvement": true,
+      "provider": "ollama",
+      "player_model": "qwen3:4b",
+      "planner_model": "qwen3:4b",
+      "watcher_model": "qwen3:4b",
+      "ports": [3200, 8900, 8200],
+      "log_dir": "logs/maps_ablation_qwen4b_multi"
+    },
+    {
+      "name": "qwen4b_single",
+      "launcher": "run_study_qwen4b_single.sh",
+      "topology": "single_agent",
+      "self_improvement": true,
+      "provider": "ollama",
+      "player_model": "qwen3:4b",
+      "planner_model": "qwen3:4b",
+      "watcher_model": "qwen3:4b",
+      "ports": [3210, 8910, 8210],
+      "log_dir": "logs/maps_ablation_qwen4b_single"
+    },
+    {
+      "name": "qwen4b_strong_planner_multi",
+      "launcher": "run_study_qwen4b_strong_planner_multi.sh",
+      "topology": "multi_agent",
+      "self_improvement": true,
+      "provider": "ollama",
+      "player_model": "qwen3:4b",
+      "planner_model": "qwen3:30b-a3b",
+      "watcher_model": "qwen3:30b-a3b",
+      "ports": [3220, 8920, 8220],
+      "log_dir": "logs/maps_ablation_qwen4b_strong_planner_multi"
+    },
+    {
+      "name": "qwen4b_strong_planner_single",
+      "launcher": "run_study_qwen4b_strong_planner_single.sh",
+      "topology": "single_agent",
+      "self_improvement": true,
+      "provider": "ollama",
+      "player_model": "qwen3:4b",
+      "planner_model": "qwen3:30b-a3b",
+      "watcher_model": "qwen3:30b-a3b",
+      "ports": [3230, 8930, 8230],
+      "log_dir": "logs/maps_ablation_qwen4b_strong_planner_single"
+    },
+    {
+      "name": "no_self_improvement_multi",
+      "launcher": "run_study_no_self_improvement_multi.sh",
+      "topology": "multi_agent",
+      "self_improvement": false,
+      "macro_closeout": false,
+      "provider": "openai",
+      "player_model": "gpt-5.5",
+      "planner_model": "gpt-5.5",
+      "watcher_model": "gpt-5.5",
+      "ports": [3240, 8940, 8240],
+      "log_dir": "logs/maps_ablation_no_self_improvement_multi"
+    },
+    {
+      "name": "no_self_improvement_single",
+      "launcher": "run_study_no_self_improvement_single.sh",
+      "topology": "single_agent",
+      "self_improvement": false,
+      "macro_closeout": false,
+      "provider": "openai",
+      "player_model": "gpt-5.5",
+      "planner_model": "gpt-5.5",
+      "watcher_model": "gpt-5.5",
+      "ports": [3250, 8950, 8250],
+      "log_dir": "logs/maps_ablation_no_self_improvement_single"
+    },
+    {
+      "name": "baseline_gpt5_mini",
+      "launcher": "run_small_model_baseline.sh",
+      "topology": "multi_agent",
+      "self_improvement": true,
+      "provider": "openai",
+      "player_model": "gpt-5-mini",
+      "planner_model": "gpt-5-mini",
+      "watcher_model": "gpt-5-mini",
+      "ports": [3260, 8960, 8260],
+      "log_dir": "logs/maps_ablation_baseline_gpt5_mini"
+    },
+    {
+      "name": "single_agent_gpt5_mini",
+      "launcher": "run_single_agent_gpt5_mini.sh",
+      "topology": "single_agent",
+      "self_improvement": true,
+      "provider": "openai",
+      "player_model": "gpt-5-mini",
+      "planner_model": "gpt-5-mini",
+      "watcher_model": "gpt-5-mini",
+      "ports": [3270, 8970, 8270],
+      "log_dir": "logs/maps_ablation_single_agent_gpt5_mini"
+    }
+  ]
+}

@@ -21,7 +21,7 @@ file. The window machinery (older entries) exists for backwards-compat but
 defaults to 1 — no current caller consumes the prior observation, so only
 the latest is retained.
 
-File path:  ./coded_tools/state/latest_observations.json
+File path:  ./<MAPS_STATE_DIR, default state>/latest_observations.json
             (override with MAPS_LATEST_OBS_PATH env var)
 Window:     last 1 observation per park (override with MAPS_OBS_WINDOW
             env var; values >1 will store additional history but it is
@@ -44,6 +44,7 @@ from typing import ClassVar
 from neuro_san.interfaces.coded_tool import CodedTool
 
 from coded_tools.file_io import FileIO
+from coded_tools.state_dir import STATE_DIR
 
 
 class LatestObservation(CodedTool):
@@ -51,13 +52,11 @@ class LatestObservation(CodedTool):
 
     DEFAULT_PATH: ClassVar[str] = os.environ.get(
         "MAPS_LATEST_OBS_PATH",
-        "./coded_tools/state/latest_observations.json",
+        os.path.join(".", STATE_DIR, "latest_observations.json"),
     )
     DEFAULT_WINDOW: ClassVar[int] = int(os.environ.get("MAPS_OBS_WINDOW", "1"))
 
-    async def async_invoke(
-        self, args: dict[str, Any], sly_data: dict[str, Any]
-    ) -> dict[str, Any] | str:
+    async def async_invoke(self, args: dict[str, Any], sly_data: dict[str, Any]) -> dict[str, Any] | str:
         mode = args.get("mode")
         if mode not in {"read", "write"}:
             return {"error": f"mode must be 'read' or 'write', got {mode!r}"}
@@ -74,12 +73,7 @@ class LatestObservation(CodedTool):
 
         observation = args.get("observation")
         if not isinstance(observation, dict):
-            return {
-                "error": (
-                    f"observation must be an object/dict for mode=write, "
-                    f"got {type(observation).__name__}"
-                )
-            }
+            return {"error": (f"observation must be an object/dict for mode=write, got {type(observation).__name__}")}
         return self._write(park_key, observation)
 
     def _read(self, park_key: str) -> dict[str, Any]:

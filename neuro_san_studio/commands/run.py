@@ -95,9 +95,11 @@ class NeuroSanRunner:
 
         # Instantiate plugins now that args are fully built
         self.plugins = [cls(self.args) for cls in self.plugin_classes]
+        plugin: Any
         for plugin in self.plugins:
             self._logger.info("Loaded plugin: %s", plugin)
 
+        plugin: Any
         for plugin in self.plugins:
             self._logger.info("Updating args dict with plugin: %s", plugin)
             plugin.update_args_dict(self.args)
@@ -203,6 +205,7 @@ class NeuroSanRunner:
         )
 
         # add arguments from plugins
+        plugin: Any
         for plugin in self.plugins:
             self._logger.info("Updating parser args with plugin: %s", plugin)
             plugin.update_parser_args(parser)
@@ -244,7 +247,7 @@ class NeuroSanRunner:
 
     def set_environment_variables(self):
         """Set required environment variables, optionally using neuro-san defaults."""
-        print("\n" + "=" * 50 + "\n")
+        print("\n==================================================\n")
         print("Setting environment variables...\n")
         # Common env variables
         self.set_pythonpath()
@@ -292,7 +295,7 @@ class NeuroSanRunner:
             print(f"NEURO_SAN_SERVER_HOST set to: {os.environ['NEURO_SAN_SERVER_HOST']}")
             print(f"NEURO_SAN_SERVER_HTTP_PORT set to: {os.environ['NEURO_SAN_SERVER_HTTP_PORT']}\n")
 
-        print("\n" + "=" * 50 + "\n")
+        print("\n==================================================\n")
 
     def start_process(self, command, process_name, log_file):
         """Start a subprocess and capture logs."""
@@ -321,6 +324,7 @@ class NeuroSanRunner:
 
         print(f"Started {process_name} with PID {process.pid}")
 
+        plugin: Any
         for plugin in self.plugins:
             plugin.args["process_name"] = process_name
             plugin.args["process"] = process
@@ -363,26 +367,60 @@ class NeuroSanRunner:
         print(f"nsflow client started on {self.args['nsflow_host']}:{self.args['nsflow_port']}")
 
     # pylint: disable=unused-argument
+    def _stop_process(
+        self,
+        process: subprocess.Popen,
+        label: str,
+        graceful_timeout: float = 10,
+        force_immediately: bool = False,
+    ) -> None:
+        """Stop and reap one child without leaking TimeoutExpired tracebacks."""
+        if process.poll() is not None:
+            return
+
+        initial_signal = signal.SIGKILL if force_immediately else signal.SIGTERM
+        try:
+            if self.is_windows:
+                process.kill() if force_immediately else process.terminate()
+            else:
+                os.killpg(os.getpgid(process.pid), initial_signal)
+        except ProcessLookupError:
+            return
+
+        try:
+            process.wait(timeout=graceful_timeout)
+            return
+        except subprocess.TimeoutExpired:
+            if force_immediately:
+                print(f"WARNING: {label} did not exit after SIGKILL; continuing cleanup.")
+                return
+
+        print(f"WARNING: {label} did not stop within {graceful_timeout:g}s; sending SIGKILL.")
+        try:
+            if self.is_windows:
+                process.kill()
+            else:
+                os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+            process.wait(timeout=5)
+        except ProcessLookupError:
+            return
+        except subprocess.TimeoutExpired:
+            print(f"WARNING: {label} could not be reaped after SIGKILL; continuing cleanup.")
+
     def signal_handler(self, signum, frame):
         """Handle termination signals to cleanly exit."""
         print("\nTermination signal received. Stopping all processes...")
 
         if self.server_process:
             print(f"\nStopping SERVER (PID {self.server_process.pid})...")
-            if self.is_windows:
-                self.server_process.terminate()
-            else:
-                os.killpg(os.getpgid(self.server_process.pid), signal.SIGTERM)
             # Wait for the server to finish cleanup (e.g. flushing Langfuse traces)
-            self.server_process.wait(timeout=10)
+            self._stop_process(self.server_process, "SERVER")
 
         if self.nsflow_process:
             print(f"Stopping NSFLOW (PID {self.nsflow_process.pid})...")
-            if self.is_windows:
-                self.nsflow_process.terminate()
-            else:
-                os.killpg(os.getpgid(self.nsflow_process.pid), signal.SIGKILL)
+            self._stop_process(self.nsflow_process, "NSFLOW", graceful_timeout=5, force_immediately=True)
 
+        plugin: Any
         for plugin in self.plugins:
             self._logger.info("Running cleanup for plugin: %s", plugin)
             plugin.cleanup()
@@ -422,6 +460,7 @@ class NeuroSanRunner:
 
     def _kill_processes_on_ports(self, ports: list[int]):
         """Kill processes using the specified ports."""
+        port: Any
         for port in ports:
             print(f"Attempting to kill process on port {port}...")
             try:
@@ -430,6 +469,7 @@ class NeuroSanRunner:
                     result = subprocess.run(
                         ["netstat", "-ano", "-p", "TCP"], capture_output=True, text=True, check=True
                     )
+                    line: Any
                     for line in result.stdout.splitlines():
                         if f":{port}" in line and "LISTENING" in line:
                             pid = line.strip().split()[-1]
@@ -441,6 +481,7 @@ class NeuroSanRunner:
                     result = subprocess.run(["lsof", "-ti", f":{port}"], capture_output=True, text=True, check=False)
                     if result.stdout.strip():
                         pids = result.stdout.strip().split("\n")
+                        pid: Any
                         for pid in pids:
                             subprocess.run(["kill", "-9", pid], check=True)
                             print(f"  Killed process {pid} on port {port}")
@@ -462,6 +503,7 @@ class NeuroSanRunner:
 
         valid_yes = {"yes", "y"}
         valid_no = {"no", "n"}
+        attempt: Any
         for attempt in range(max_attempts):
             try:
                 # Default to "" (empty), which is an invalid input that triggers the prompt again
@@ -499,10 +541,11 @@ class NeuroSanRunner:
 
         # Exit early if any conflict is found
         if port_conflicts:
-            print("\n" + "=" * 50)
+            print("\n==================================================")
+            msg: Any
             for msg in port_conflicts:
                 print(msg)
-            print("=" * 50)
+            print("==================================================")
 
             if self._validate_yes_no_input("\nDo you want to kill the processes using these ports? (yes/no): "):
                 self._kill_processes_on_ports(conflicting_ports)
@@ -527,6 +570,7 @@ class NeuroSanRunner:
         # Set environment variables
         self.set_environment_variables()
 
+        plugin: Any
         for plugin in self.plugins:
             self._logger.info("Running pre server start action for plugin: %s", plugin)
             plugin.pre_server_start_action()
@@ -552,6 +596,8 @@ class NeuroSanRunner:
         has_process_logger = any(isinstance(p, ProcessLoggerInterface) for p in self.plugins)
         if not has_process_logger:
             simple_logger = SimpleProcessLogger()
+            name: Any
+            proc: Any
             for name, proc in [
                 ("NeuroSan", self.server_process),
                 ("nsflow", self.nsflow_process),
@@ -560,10 +606,10 @@ class NeuroSanRunner:
                     log_file = os.path.join(self.logs_dir, f"{name.lower()}.log")
                     simple_logger.attach_process_logger(proc, name, log_file)
 
-        print("\n" + "=" * 50 + "\n")
+        print("\n==================================================\n")
         print("All processes now running.")
         print("Press Ctrl+C to stop any running processes.")
-        print("\n" + "=" * 50 + "\n")
+        print("\n==================================================\n")
 
         # Wait on active processes to finish
         if self.nsflow_process:

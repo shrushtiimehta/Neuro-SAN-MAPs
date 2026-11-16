@@ -21,3 +21,4 @@ Guests are the heart of your park. The number of guests who visit depends on you
    - Staleness: check guest_survey_results.age_of_results. Small age = fresh; do not re-survey while fresh results still apply and nothing material has changed.
 
 ## Learned rules (promoted from prior runs)
+Avoid paid surveys when free metrics already identify the bottleneck; buy surveys only when a sustained rating stall lacks an observable cause. (learned ep0)

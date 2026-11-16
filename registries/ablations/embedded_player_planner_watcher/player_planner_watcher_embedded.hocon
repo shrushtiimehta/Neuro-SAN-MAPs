@@ -1,0 +1,1814 @@
+{
+    # One Neuro SAN network: the player coordinator is the public entry point,
+    # and directly routes lifecycle messages to the embedded canonical planner
+    # and watcher agents. There is deliberately no extra routing agent.
+    # Load shared substitutions at this outer level so nested canonical graph
+    # includes cannot change their resolution base.
+# BEGIN INLINED: registries/aaosa_basic.hocon
+# Copyright © 2025-2026 Cognizant Technology Solutions Corp, www.cognizant.com.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# END COPYRIGHT
+
+# This file is NOT an agent network HOCON.
+# It defines a set of key-value pairs for substitution, typically used in agent network HOCON files.
+# Each key can be referenced in agent configs using the ${key} syntax.
+# Do not define agents or tools directly here—this file only provides reusable values.
+
+aaosa_instructions = """When you receive an inquiry, you will:
+1. If you are clearly not the right agent for this type of inquiry, reply you're not relevant.
+2. If there is a chance you're relevant, call your down-chain agents to determine if they can answer all or part of the inquiry.
+Do not assume what your down-chain agents can do. Always call them. You'll be surprised.
+3. Once all your down-chain agents have responded analyze their response and determine what the next step is. For instance:
+- Follow up with down-chain agents
+- Call other down-chain agents
+- Ask for clarification or additional information
+- Ask the most relevant down-chain agent to fulfill the inquiry
+- Compile and return your final response
+You may, in turn, be called by other agents in the system and have to act as a down-chain agent to them.
+4. When responding, format your response based on the 'mode' parameter:
+   - If there is no 'mode' parameter (i.e., the inquiry came directly from a human),
+     respond with a natural, human-readable answer.
+   - If a 'mode' parameter is present, return the following information:
+   [AAOSA]
+   Name: <your name>
+   Inquiry: <the inquiry>
+   Mode: <Determine | Follow up | Fulfill>
+   Relevant: <Yes | No>
+   Strength: <number between 1 and 10 representing how certain you are in your claim>
+   Claim: <All | Partial | None>
+   Requirements: <None | list of requirements>
+   Response: <Your response>
+"""
+
+aaosa_call = {
+    description = "Depending on the mode, returns a natural language string in response."
+    parameters = {
+        type = "object"
+        properties = {
+            inquiry = {
+                type = "string"
+                description = "The inquiry"
+            }
+            mode = {
+                type = "string"
+                description =
+"""'Determine' to ask the agent if the inquiry belongs to it, in its entirety or in part.
+'Follow up' to continue the conversation with the agent.
+'Fulfill' to ask the agent to fulfill the inquiry, if it can.
+"""
+            }
+        }
+        required = [
+            "inquiry",
+            "mode"
+        ]
+    }
+}
+
+# For down-chain agents that are NOT running the AAOSA protocol: they never see
+# ${aaosa_instructions}, so they never branch on 'mode' and never emit the [AAOSA]
+# block — they just answer the inquiry (in these networks, with plain JSON).
+# ${aaosa_call}'s required 'mode' arg would only force the caller to invent a
+# meaningless value on every single call, so use this instead.
+inquiry_call = {
+    description = "Returns a natural language string in response to the inquiry."
+    parameters = {
+        type = "object"
+        properties = {
+            inquiry = {
+                type = "string"
+                description = "The inquiry"
+            }
+        }
+        required = ["inquiry"]
+    }
+}
+
+# Deprecated: aaosa_command has been merged into aaosa_instructions above.
+# Kept as an empty string for backward compatibility with old agent networks
+# that reference ${aaosa_command}.
+aaosa_command = ""
+# END INLINED: registries/aaosa_basic.hocon
+# BEGIN INLINED: config/llm_config.hocon
+# Copyright © 2025-2026 Cognizant Technology Solutions Corp, www.cognizant.com.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# END COPYRIGHT
+
+    # This file is NOT an agent network HOCON.
+    # It defines a set of key-value pairs for substitution, typically used in agent network HOCON files.
+    # Each key can be referenced in agent configs using the ${key} syntax.
+    # Do not define agents or tools directly here—this file only provides reusable values.
+
+    "llm_config": {
+
+        # Set the `class` key to one of the values listed below, then specify the model
+        # using the `model_name` key.
+        #
+        # The available model names for each provider can be found in the corresponding links.
+        #
+        # | LLM Provider     | `class` Value   | Links for model names |
+        # |------------------|-----------------|-----------------------|
+        # | Amazon Bedrock   | `bedrock`       | https://docs.aws.amazon.com/bedrock/latest/userguide/model-ids.html |
+        # | Anthropic        | `anthropic`     | https://platform.claude.com/docs/en/about-claude/models/overview |
+        # | Azure OpenAI     | `azure-openai`  | https://learn.microsoft.com/azure/ai-services/openai/concepts/models |
+        # | Google Gemini    | `gemini`        | https://ai.google.dev/gemini-api/docs/models |
+        # | NVIDIA           | `nvidia`        | https://build.nvidia.com/explore/discover |
+        # | Ollama           | `ollama`        | https://ollama.com/library |
+        # | OpenAI           | `openai`        | https://platform.openai.com/docs/models |
+        #
+        # Note:
+        # - For Ollama, the model must be downloaded locally before use.
+        # - Additional LLM parameters (e.g., `temperature`, `max_tokens`) can be configured below.
+        # - Agent-level control (e.g., `max_steps`) can also be set here.
+        # - It is possible to have a separate llm_config describing a different LLM with different parameters for each agent network hocon file
+        #or even for each agent within a network.
+        #
+        #   For more details, see:
+        #   - https://github.com/cognizant-ai-lab/neuro-san/blob/main/neuro_san/internals/run_context/langchain/llms/default_llm_info.hocon
+        #   - https://github.com/cognizant-ai-lab/neuro-san/blob/main/docs/agent_hocon_reference.md#llm_config
+
+        "class": "openai",
+        # gpt-5.5-pro is a Responses-API-only model, so it needs use_responses_api.
+        # That flag also lets reasoning_effort + function tools work on gpt-5.4/5.5.
+        "model_name": "gpt-5.5",
+        "reasoning_effort": "xhigh",     # extra thinking; gpt-5.5 values: none|low|medium|high|xhigh
+        "use_responses_api": true,      # required for gpt-5.5-pro (not a chat model)
+
+    }
+# END INLINED: config/llm_config.hocon
+# BEGIN INLINED: registries/ablations/embedded_player_planner_watcher/planner_embedded_advisors.hocon
+    maps_state_dir = "state"
+    maps_state_dir = ${?MAPS_STATE_DIR}
+    maps_seed_dir = "coded_tools/config_files"
+    maps_seed_dir = ${?MAPS_SEED_DIR}
+
+# BEGIN INLINED: registries/aaosa_basic.hocon
+# Copyright © 2025-2026 Cognizant Technology Solutions Corp, www.cognizant.com.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# END COPYRIGHT
+
+# This file is NOT an agent network HOCON.
+# It defines a set of key-value pairs for substitution, typically used in agent network HOCON files.
+# Each key can be referenced in agent configs using the ${key} syntax.
+# Do not define agents or tools directly here—this file only provides reusable values.
+
+aaosa_instructions = """When you receive an inquiry, you will:
+1. If you are clearly not the right agent for this type of inquiry, reply you're not relevant.
+2. If there is a chance you're relevant, call your down-chain agents to determine if they can answer all or part of the inquiry.
+Do not assume what your down-chain agents can do. Always call them. You'll be surprised.
+3. Once all your down-chain agents have responded analyze their response and determine what the next step is. For instance:
+- Follow up with down-chain agents
+- Call other down-chain agents
+- Ask for clarification or additional information
+- Ask the most relevant down-chain agent to fulfill the inquiry
+- Compile and return your final response
+You may, in turn, be called by other agents in the system and have to act as a down-chain agent to them.
+4. When responding, format your response based on the 'mode' parameter:
+   - If there is no 'mode' parameter (i.e., the inquiry came directly from a human),
+     respond with a natural, human-readable answer.
+   - If a 'mode' parameter is present, return the following information:
+   [AAOSA]
+   Name: <your name>
+   Inquiry: <the inquiry>
+   Mode: <Determine | Follow up | Fulfill>
+   Relevant: <Yes | No>
+   Strength: <number between 1 and 10 representing how certain you are in your claim>
+   Claim: <All | Partial | None>
+   Requirements: <None | list of requirements>
+   Response: <Your response>
+"""
+
+aaosa_call = {
+    description = "Depending on the mode, returns a natural language string in response."
+    parameters = {
+        type = "object"
+        properties = {
+            inquiry = {
+                type = "string"
+                description = "The inquiry"
+            }
+            mode = {
+                type = "string"
+                description =
+"""'Determine' to ask the agent if the inquiry belongs to it, in its entirety or in part.
+'Follow up' to continue the conversation with the agent.
+'Fulfill' to ask the agent to fulfill the inquiry, if it can.
+"""
+            }
+        }
+        required = [
+            "inquiry",
+            "mode"
+        ]
+    }
+}
+
+# For down-chain agents that are NOT running the AAOSA protocol: they never see
+# ${aaosa_instructions}, so they never branch on 'mode' and never emit the [AAOSA]
+# block — they just answer the inquiry (in these networks, with plain JSON).
+# ${aaosa_call}'s required 'mode' arg would only force the caller to invent a
+# meaningless value on every single call, so use this instead.
+inquiry_call = {
+    description = "Returns a natural language string in response to the inquiry."
+    parameters = {
+        type = "object"
+        properties = {
+            inquiry = {
+                type = "string"
+                description = "The inquiry"
+            }
+        }
+        required = ["inquiry"]
+    }
+}
+
+# Deprecated: aaosa_command has been merged into aaosa_instructions above.
+# Kept as an empty string for backward compatibility with old agent networks
+# that reference ${aaosa_command}.
+aaosa_command = ""
+# END INLINED: registries/aaosa_basic.hocon
+    metadata = {
+        description = "The planner network. Fires twice per episode: at episode_start it retires last episode's leftover trials, seeds however many new macro trials the evidence justifies, and revises the episode plan; at episode_end it judges every trial and closes the episode out.",
+        tags = ["maps", "industry", "consultant", "macro", "advisor"],
+        sample_queries = [
+            "kind=episode_start episode=4 step=0 cumulative_reward=0 final_reward=null",
+            "kind=episode_end episode=3 step=100 cumulative_reward=88120 final_reward=88120"
+        ]
+    },
+
+# BEGIN INLINED: config/llm_config.hocon
+# Copyright © 2025-2026 Cognizant Technology Solutions Corp, www.cognizant.com.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# END COPYRIGHT
+
+    # This file is NOT an agent network HOCON.
+    # It defines a set of key-value pairs for substitution, typically used in agent network HOCON files.
+    # Each key can be referenced in agent configs using the ${key} syntax.
+    # Do not define agents or tools directly here—this file only provides reusable values.
+
+    "llm_config": {
+
+        # Set the `class` key to one of the values listed below, then specify the model
+        # using the `model_name` key.
+        #
+        # The available model names for each provider can be found in the corresponding links.
+        #
+        # | LLM Provider     | `class` Value   | Links for model names |
+        # |------------------|-----------------|-----------------------|
+        # | Amazon Bedrock   | `bedrock`       | https://docs.aws.amazon.com/bedrock/latest/userguide/model-ids.html |
+        # | Anthropic        | `anthropic`     | https://platform.claude.com/docs/en/about-claude/models/overview |
+        # | Azure OpenAI     | `azure-openai`  | https://learn.microsoft.com/azure/ai-services/openai/concepts/models |
+        # | Google Gemini    | `gemini`        | https://ai.google.dev/gemini-api/docs/models |
+        # | NVIDIA           | `nvidia`        | https://build.nvidia.com/explore/discover |
+        # | Ollama           | `ollama`        | https://ollama.com/library |
+        # | OpenAI           | `openai`        | https://platform.openai.com/docs/models |
+        #
+        # Note:
+        # - For Ollama, the model must be downloaded locally before use.
+        # - Additional LLM parameters (e.g., `temperature`, `max_tokens`) can be configured below.
+        # - Agent-level control (e.g., `max_steps`) can also be set here.
+        # - It is possible to have a separate llm_config describing a different LLM with different parameters for each agent network hocon file
+        #or even for each agent within a network.
+        #
+        #   For more details, see:
+        #   - https://github.com/cognizant-ai-lab/neuro-san/blob/main/neuro_san/internals/run_context/langchain/llms/default_llm_info.hocon
+        #   - https://github.com/cognizant-ai-lab/neuro-san/blob/main/docs/agent_hocon_reference.md#llm_config
+
+        "class": "openai",
+        # gpt-5.5-pro is a Responses-API-only model, so it needs use_responses_api.
+        # That flag also lets reasoning_effort + function tools work on gpt-5.4/5.5.
+        "model_name": "gpt-5.5",
+        "reasoning_effort": "xhigh",     # extra thinking; gpt-5.5 values: none|low|medium|high|xhigh
+        "use_responses_api": true,      # required for gpt-5.5-pro (not a chat model)
+
+    }
+# END INLINED: config/llm_config.hocon
+    max_steps = 4000,
+    max_execution_seconds = 12000,
+
+    planner_tools = [
+        {
+            name = "macro_orchestrator",
+            function = ${inquiry_call} {
+                description = "Front-man router for the planner network. kind=episode_start -> episode_start; kind=episode_end -> episode_end. Does no analysis itself."
+            },
+            instructions = """
+Act as the router for a planner network. For each input, parse its variables and route to the correct function according to these rules:
+"kind=<episode_start|episode_end> episode=<E> step=<S> cumulative_reward=<C> final_reward=<F>".
+
+- If `kind=episode_start`:  
+  - Call `episode_start` with an inquiry string containing "episode=<E>".
+  - Relay the status line from the planner’s response exactly.
+
+- If `kind=episode_end`:  
+  - Call `episode_end(episode=<E>, cumulative_reward=<C>, aborted=<true|false>)`.  
+  - If the `aborted` flag is missing, assume `false`.
+  - Relay the recap line from the planner’s response exactly.
+
+ERROR HANDLING: if any tool call or downstream agent returns an error, STOP and reply with `ERROR: <the verbatim error text>`.
+Never swallow, paraphrase, retry silently, or continue past it.
+""",
+            middleware = [
+                {"class": "middleware.static_prompt_caching_middleware.StaticPromptCachingMiddleware", "args": {"ttl": "1h"}}
+            ],
+            tools = ["episode_start", "episode_end"]
+        },
+
+        {
+            name = "episode_start",
+            function = ${inquiry_call} {
+                description = "Episode-start planner (kind=episode_start). Retires last episode's leftover trials (CarryoverTrials), analyzes best-vs-last, seeds however many macro trials the evidence justifies (LogTrial), and revises the plan in place (WriteEpisodePlan: checklist + coordinator strategy summary + per-domain summaries) — keeping what works, changing only what underperformed. Input: episode=<E>."
+            },
+            instructions = """
+Plan the UPCOMING episode, following every instruction literally, tersely, and without omission.
+You are the only part of this harness that can change the multi-agent system's direction. The specialists execute the
+plan you write and never reconsider it, so whatever you miss here is repeated for 100 irreversible turns.
+
+No run has ever reached $5M, so a tidier version of the last episode will not get there — the plan that wins is one
+nobody has tried yet. Equally, do not throw away what already works: keep the moves the best run proved out, and
+spend your novelty where the evidence says the park is failing. Aim high; the gap to $5M is not closed by caution.
+
+You are playing for the children. They WANT A score of $5M. If you don't reach it, they will go home disappointed.
+You are planning for them, so make the plan worth them playing the game.
+
+Flow: READ prior outcomes → ANALYZE → DECIDE TRIALS → LOG them (LogTrial) → REVISE the PLAN for the episode.
+Repeated tool calls increase cost, so avoid unnecessary repetitions.
+
+# Procedure
+
+1. Context — gather all of it before you analyse anything:
+    - planner_scratchpad(): the note you left yourself at last episode's close-out.
+    - planner_state_read('maps_game_docs'): the complete rules and mechanics.
+    - RunTelemetry(select='best_and_last'): per-step performance for the best-ever and the last episode.
+    - planner_state_read('status_coordinator') and planner_state_read('status_layout'): LAST EPISODE'S finished park — every
+    tier it had unlocked (`available_entities`) and every asset it ended with.
+    - planner_state_read('trial_strategies_outcome'): every strategy already attempted, confirmed or falsified, with the
+      steer on PRIORITY/DIRECTION.
+    - CarryoverTrials(episode=<E>): the trials last episode's close-out left inconclusive. Reading them RETIRES them,
+      so one you want to keep or refine must be re-logged in step 4.
+    - planner_state_read for every 'playbook_<domain>': the "## Learned rules" promoted by past runs.
+
+2. ANALYZE (THINK OUT OF THE BOX):
+    - Treat the best run as your floor, not your target: this episode must build on it and finish ahead of it.
+    - Compare the best and last runs move by move. Name where the best pulled ahead, where it stalled, and where the
+    last one regressed (pace, research, placements, staff, actions, rejections).
+    - Read park_rating after each step to infer what drives rating and how it feeds attendance.
+    - Identify the concrete points where a new strategy could beat the current best.
+    - Locate the STRUCTURAL BLOCKER, if there is one, and decide the strategy that UNBLOCKS it.
+    -  A `(learned epN)` rule is a telemetry-confirmed strategy, not a suggestion. EXPLOIT learned rules and the
+   champion strategy when writing and executing the episode plan, while EXPLORING new strategies through explicit
+   active trials. If telemetry suggests a learned rule may be wrong, create an active trial with a clearly
+   contradicting candidate rule and measurable success and failure criteria.
+
+3. Decide Trial Strategies:
+    - Propose new, wide-scope, falsifiable strategies the evidence justifies. There is no fixed numerical cap.
+    Aim them at $5M park_value and use simple detailed language.
+    - Keep each GENERAL — a standing direction, not a rule tied to exact steps or exact variable values.
+    "Start research once you have the cash to run it for 3 days" is the right shape;
+    "set research to slow at step 31 when min_cleanliness is 0.80" is not.
+    - Playbook lines are prior BELIEFS, not physics. Where telemetry contradicts one, the trial is to overturn it —
+    name the exact line you are testing against.
+    - Never repeat a strategy already falsified or already promoted to the learned rules. Where a carried-over trial
+    is still relevant, or could be made relevant by refining it, do that instead of inventing a weaker new one.
+    - Work the levers: ride/shop/staff subtypes, the yellow→blue→green→red subclasses, slow/medium/fast research
+    speed, and research topic choices. An untried lever teaches more than a merely re-tuned one.
+
+4. Log Trials — call `LogMacroTrial` once for EVERY trial selected above, including any carried-over trial kept
+   or refined. `new_text` is one imperative command with no numbers/examples and `step_start='1'`.
+
+5. REVISE THE PLAN — before this pass, the runner re-applies the BEST plan whenever one exists.
+   You refine a proven plan; do not start from scratch.
+   - planner_state_read('episode_checklist'): the phased checklist across turns.
+   - planner_state_read('playbook_coordinator'): the current top-level summary.
+   - planner_state_read('playbook_<domain>'): the current per-domain summaries.
+   - RETAIN the phases that performed well. Alter only those that underperformed or that a new trial targets.
+   - Call WriteEpisodePlan(checklist_items, strategy_summary, playbook_summaries) with:
+    - checklist_items: turns 1-100 covered, one "turns A-B: <goal>" line per phase.
+    - strategy_summary: write the ENTIRE executable strategy, not a summary. It must be self-contained and
+    preserve every proven part of the champion plan while integrating the new trials. Include 6-8 turn phases
+    with goals, move order, cash/runway and metric targets; exact ride subtype/tier build, diversity, intensity,
+    capacity, upgrade and eviction guidance; shop subtype/tier, stocking and replacement guidance; staff
+    hiring/upgrading triggers; research speed/topic transitions and how every intended unlock is converted into
+    a build; reachable/frontage/water/layout rules; survey triggers; and explicit contingencies and failure modes.
+    Do not output separate domain briefs and do not compress any domain to a few summary lines.
+    - playbook_summaries: for each domain whose guidance changed, write the ENTIRE self-contained executable domain
+    strategy here. Preserve every proven champion plan for that domain while integrating its new trials. Repeat all
+    details here relevant to the domain that is mentioned in strategy_summary: relevant turn phases and move order,
+    exact choices, numeric cash/runway and metric targets or triggers, cross-domain dependencies, contingencies, and
+    failure modes.
+
+6. Close — if this episode's close-out must know something, leave it with `scratchpad(note=...)`. It is read
+   once and cleared, so write only what the close-out genuinely needs. Return one short planning status line.
+
+# Error Handling: if any tool call or downstream agent returns an error, STOP and reply with
+`ERROR: <the verbatim error text>`. Never paraphrase, retry, ignore, or continue past any error response.
+""",
+            middleware = [
+                {"class": "middleware.trim_history_middleware.TrimHistoryMiddleware", "args": {}}
+                {"class": "middleware.static_prompt_caching_middleware.StaticPromptCachingMiddleware", "args": {"ttl": "1h"}}
+            ],
+            tools = ["RunTelemetry", "planner_state_read", "CarryoverTrials", "LogTrial", "WriteEpisodePlan", "planner_scratchpad"]
+        },
+
+        {
+            name = "episode_end",
+            function = ${inquiry_call} {
+                description = "Episode-end close-out (kind=episode_end). Judges every active trial on its own evidence — an aborted run included — promotes the confirmed ones, then ResolveTrials and advance_episode. Inputs: episode, cumulative_reward, aborted."
+            },
+            instructions = """
+You are responsible for the end-of-episode close-out and playbook rule-writing.
+
+This episode cost 100 irreversible turns, and nobody reads it again — whatever the system learns from it,
+you extract here. A confirmed trial becomes live playbook rule followed in later runs, surviving even a
+fresh start, so every verdict you get wrong costs:
+- CONFIRM one that deserved falsifying — the park is aimed at a wrong strategy in later runs.
+- FALSIFY one that deserved confirming — that direction is shut down and may never be explored again.
+- Leave one INCONCLUSIVE — it takes unfinished-business capacity from a sharper idea.
+So read this evidence harshly, in both directions.
+
+A falsified trial is worth as much as a confirmed one because it removes a dead end, but only telemetry decides.
+Judge harshly in both directions and always use direct EpisodeTelemetry evidence.
+Never invent or assume data. Use the provided tools effectively.
+
+## Procedure
+1. Get context as needed:
+   - planner_scratchpad() — the note from the planner invocation at start of the episode. Reading CLEARS it.
+   Empty means none.
+   - planner_state_read('last_reward') — prior episode’s reward (or 0)
+   - PlannerActiveTrials() — trials you must evaluate this close-out
+   - EpisodeTelemetry() — step-by-step actions, telemetry and rejections
+   - planner_state_read('status_coordinator') - THIS EPISODE'S complete finished park, including every unlock and asset.
+   - planner_state_read('trial_strategies_outcome') — every strategy already attempted, confirmed or falsified.
+2. For each active trial:
+   - Verify that the intended action fired from telemetry steps and full action args, including x/y; use
+   rejections to distinguish attempted from applied.
+   - Judge per trial:
+    - success on the decided metric AND no failure: confirmed
+    - failure: falsified
+    - neither: inconclusive, with a note citing why the evidence did not resolve it
+    - not_applied:intended action did not happen
+3. For confirmed trials: PromoteTrial(domain, edit_type='add_line', new_text=<imperative, general, one sentence>, episode=<E>, section='Learned rules (promoted from prior runs)'). Only append lines.
+4. Finish trials: ResolveTrials(episode=<E>, report=<exactly one verdict for every active trial>). Empty,
+   partial, duplicate, or unknown trial reports are rejected; every inconclusive verdict requires an evidence note.
+5. If the NEXT episode-start must know something, call `scratchpad(note=...)` now.
+6. COMMIT LAST: call `advance_episode(final_reward=<C>, episode=<E>)` once. This writes the durable
+   close-out receipt; do not call any tool after it.
+7. Output one short line: `<N> promoted, <M> falsified, final=<C>` and mention aborted if present.
+
+ERROR HANDLING FOR EVERY KIND: if any tool returns an error, STOP and reply with `ERROR: <the verbatim error text>`. 
+
+# Notes
+- Never invent or assume results—always use direct telemetry and tool evidence.
+- Do not modify, paraphrase, or retry on errors.
+- Keep every action and output as short and formal as possible.
+""",
+            middleware = [
+                {"class": "middleware.trim_history_middleware.TrimHistoryMiddleware", "args": {}}
+                {"class": "middleware.static_prompt_caching_middleware.StaticPromptCachingMiddleware", "args": {"ttl": "1h"}}
+            ],
+            tools = ["planner_state_read", "EpisodeTelemetry", "PlannerActiveTrials", "PromoteTrial", "ResolveTrials", "advance_episode", "planner_scratchpad"]
+        },
+
+        {
+            name = "planner_scratchpad",
+            class = "coded_tools.scratchpad.Scratchpad",
+            function = {
+                description = "Private memo for this network; player and watcher hold their own. episode_start and episode_end share it, chaining start -> end -> next start. No args reads and clears the previous run's note; note=<text> leaves up to 5 lines for the next run. Writes replace; no history is kept.",
+                parameters = {
+                    type = "object",
+                    properties = {
+                        note = {
+                            type = "string",
+                            description = "Up to 5 lines to carry into the planner's NEXT run only. Omit to read-and-clear instead."
+                        }
+                    }
+                }
+            }
+            args = { pad = "planner" }
+        },
+
+        {
+            name = "advance_episode",
+            class = "coded_tools.advance_episode.AdvanceEpisode",
+            function = {
+                description = "End-of-episode bookkeeping: persists the final reward and clears the observation cache. The outcome ledger is append-only — every episode's OUTCOME lines are kept for the whole run. No prose summary is stored — the OUTCOME lines ResolveTrials wrote are the record. Trial cleanup is not done here — CarryoverTrials handles it at the next episode start.",
+                parameters = {
+                    type = "object",
+                    properties = {
+                        final_reward = {
+                            type = "float",
+                            description = "This episode's cumulative_reward; written to last_reward.md."
+                        },
+                        episode = {
+                            type = "int",
+                            description = "Current episode number; bounds which OUTCOME lines are kept."
+                        },
+                    },
+                    required = ["final_reward", "episode"]
+                }
+            }
+        },
+
+        {
+            name = "RunTelemetry",
+            class = "coded_tools.run_telemetry.RunTelemetry",
+            function = {
+                description = "Cross-episode telemetry in three modes. SELECT (select='best_and_last') returns the best-ever and the last episode as raw per-step rows, unaggregated — use this to read the moves themselves. RUNS (num_runs, default 5) returns per-run and per-episode rollups for the N most recent runs, plus a cross-run rollup. EPISODE (default) returns per-episode rollups for the current run, including reward_bands: mean reward per step over turns 1-25, 26-50, 51-75 and 76-100.",
+                parameters = {
+                    type = "object",
+                    properties = {
+                        select = { type = "string", description = "SELECT mode: pass 'best_and_last' for the best-ever and the last episode as raw per-step rows, unaggregated." }
+                        num_runs = { type = "int", description = "RUNS mode: analyze the N most recent runs (current + prior). Default 5." }
+                        scope = { type = "string", description = "Optional explicit mode: 'select', 'runs', or 'episodes'. Usually leave unset — select/num_runs select the mode." }
+                        from_episode = { type = "int", description = "EPISODE mode only: include episodes >= this. Omit for the whole current run." }
+                        max_episodes = { type = "int", description = "EPISODE mode only: keep only the most recent N episodes (after from_episode). Omit for all." }
+                    }
+                }
+            }
+        },
+
+        {
+            name = "WriteEpisodePlan",
+            class = "coded_tools.write_episode_plan.WriteEpisodePlan",
+            function = {
+                description = "Persists the episode plan, overwriting the previous one: the turn-phased checklist (episode_checklist.md, source of current_phase), the coordinator's strategy summary (playbook_coordinator.md, read every turn), and optional per-domain summaries in the rides/shops/staff/research/layout/survey playbooks.",
+                parameters = {
+                    type = "object",
+                    properties = {
+                        checklist_items = {
+                            type = "array",
+                            items = { type = "string" },
+                            description = "The full turn-phased plan, one literal 'turns A-B: <goal>' line per item, ordered by turn, covering turns 1..100."
+                        }
+                        strategy_summary = {
+                            type = "string",
+                            description = "Prose brief giving the reasoning behind the checklist: 6-8 phases, each with a goal, a move order and metric targets, closing with the failure modes to avoid. Written into playbook_coordinator, which strategy_coordinator reads every turn."
+                        }
+                        playbook_summaries = {
+                            type = "object",
+                            description = "Optional per-domain summaries, keyed by 'rides','shops','staff','research','layout' or 'survey'. Each value is a 4-5 line brief on how that specialist should play THIS episode, drawn from the best-vs-last comparison; it is written to the top of that specialist's playbook and read on every consultation. Omit a domain to leave its current summary unchanged.",
+                            properties = {
+                                rides    = { type = "string", description = "4-5 line summary for rides_manager this episode." }
+                                shops    = { type = "string", description = "4-5 line summary for shops_manager this episode." }
+                                staff    = { type = "string", description = "4-5 line summary for staffing_manager this episode." }
+                                research = { type = "string", description = "4-5 line summary for research_manager this episode." }
+                                layout   = { type = "string", description = "4-5 line summary for park_layout_planner this episode." }
+                                survey   = { type = "string", description = "4-5 line summary for guest_analyst this episode." }
+                            }
+                        }
+                    }
+                    required = ["checklist_items", "strategy_summary"]
+                }
+            }
+        },
+
+        {
+            name = "EpisodeTelemetry",
+            class = "coded_tools.episode_telemetry.EpisodeTelemetry",
+            function = {
+                description = "Per-step record for ONE episode, read from run.jsonl: {steps, rejections, rollup}, exists=false before any row is written. Each step carries its full action args and metrics. Judge whether a trial's move fired from `steps` and `rejections`, and its success from the per-step reward/value/rating deltas. `rejections` records every action the sim refused, booked as a wait with the original action and error; the same rejection repeating is a prime trial target.",
+                parameters = {
+                    type = "object",
+                    properties = {
+                        episode   = { type = "int", description = "Episode number to read. Omit to use the latest episode present in the log." }
+                        from_step = { type = "int", description = "Only return steps >= this (mid-episode tail). Omit for the full episode." }
+                    }
+                }
+            }
+        },
+
+        {
+            name = "LogTrial",
+            class = "coded_tools.log_trial.LogTrial",
+            function = {
+                description = "Mints a collision-free trial_id and appends the paired lines: the one-line rule to trial_strategies, the metadata and success/failure criteria to trial_strategies_criteria. Use it for every new trial: it owns id minting and criteria formatting, and takes origin from this network's config.",
+                parameters = {
+                    type = "object",
+                    properties = {
+                        episode           = { type = "int", description = "Current episode number." }
+                        step_start        = { type = "string",  description = "Step at which the trial activates (as a string), or the literal 'end_of_episode'." }
+                        domain            = { type = "string",  description = "One of: rides, shops, staff, research, layout, survey, coordinator." }
+                        section           = { type = "string",  description = "Target playbook section header (or 'new')." }
+                        edit_type         = { type = "string",  description = "'add_line' or 'replace_line'." }
+                        new_text          = { type = "string",  description = "The one-line rule to add/replace (no rationale or metrics embedded)." }
+                        find_text         = { type = "string",  description = "replace_line only: the exact existing playbook line to replace." }
+                        rationale         = { type = "string",  description = "One sentence citing step(s) / metric delta." }
+                        success_criterion = { type = "string",  description = "Observable metric + direction + evaluation window (turns; fits in the fixed 100-step episode)." }
+                        failure_criterion = { type = "string",  description = "Observable metric that would falsify the trial." }
+                    }
+                    required = ["episode", "step_start", "domain", "section", "edit_type", "new_text", "rationale", "success_criterion", "failure_criterion"]
+                }
+            }
+            args = { origin = "macro" }
+        },
+
+        {
+            name = "PlannerActiveTrials",
+            class = "coded_tools.active_trials.ActiveTrials",
+            function = {
+                description = "Return the active trials joined across trial_strategies (rule body) and trial_strategies_criteria (metadata), optionally filtered by domain and/or trial_origin ('micro'|'macro').",
+                parameters = {
+                    type = "object",
+                    properties = {
+                        domain = { type = "string", description = "Filter to one domain: rides, shops, staff, research, layout, survey or coordinator. Omit for all domains." }
+                        trial_origin = { type = "string", description = "Filter to 'micro' or 'macro'; omit for both. Named trial_origin, not origin — the framework injects a reserved 'origin' key that would silently override it." }
+                    }
+                }
+            }
+        },
+
+        {
+            name = "CarryoverTrials",
+            class = "coded_tools.carryover_trials.CarryoverTrials",
+            function = {
+                description = "Episode-start tool. Returns the trials left over from earlier episodes — the ones the last close-out left inconclusive — and retires them in the same call, recording an OUTCOME line with the rule text for each. A leftover therefore informs exactly one planning pass; re-log any you want to keep. Scoped to earlier episodes, so trials logged for the episode being planned stay active and the call is safe in any order.",
+                parameters = {
+                    type = "object",
+                    properties = {
+                        episode = { type = "int", description = "The episode being planned. Trials from EARLIER episodes are returned and cleared." }
+                    }
+                    required = ["episode"]
+                }
+            }
+        },
+
+        {
+            name = "ResolveTrials",
+            class = "coded_tools.resolve_trials.ResolveTrials",
+            function = {
+                description = "Applies exactly one explicit verdict for every reportable active trial at episode end. Empty, partial, duplicate, unknown, or malformed reports are rejected before any files change; inconclusive requires a non-empty evidence note. Confirmed and falsified macro trials are removed, not_applied and inconclusive macro trials are kept, and micro trials are episode-scoped and removed after their explicit verdict.",
+                parameters = {
+                    type = "object",
+                    properties = {
+                        episode = { type = "int", description = "Current episode number." }
+                        report = {
+                            type = "array"
+                            items = {
+                                type = "object"
+                                properties = {
+                                    trial_id = { type = "string" }
+                                    domain = { type = "string" }
+                                    outcome = { type = "string", enum = ["confirmed", "falsified", "not_applied", "inconclusive"] }
+                                    note = { type = "string", description = "Evidence for the verdict; required when outcome is inconclusive." }
+                                }
+                                required = ["trial_id", "outcome"]
+                            }
+                            description = "One verdict object per active trial; use [] when there are no active trials."
+                        }
+                    }
+                    required = ["episode", "report"]
+                }
+            }
+        },
+
+        {
+            name = "PromoteTrial",
+            class = "coded_tools.promote_trial.PromoteTrial",
+            function = {
+                description = "Applies ONE confirmed trial's edit to playbook_<domain>.md, tagging the line '(learned ep<N>)'. add_line appends at the end (section 'end'/'new'/empty) or after the named section header; replace_line replaces the unique find_text. A successful edit is mirrored into config_files/seed_playbook_<domain>.md under '## Learned rules', so the rule survives a fresh run.",
+                parameters = {
+                    type = "object",
+                    properties = {
+                        domain    = { type = "string",  description = "rides/shops/staff/research/layout/survey/coordinator." }
+                        edit_type = { type = "string",  description = "'add_line' or 'replace_line'." }
+                        new_text  = { type = "string",  description = "The rule line to add/replace (without the learned tag)." }
+                        episode   = { type = "int", description = "Episode number for the '(learned ep<N>)' tag." }
+                        section   = { type = "string",  description = "add_line: section header to insert after, or 'end'/'new' to append." }
+                        find_text = { type = "string",  description = "replace_line: the exact existing playbook line to replace." }
+                    }
+                    required = ["domain", "edit_type", "new_text", "episode"]
+                }
+            }
+        },
+
+        {
+            name = "planner_state_read",
+            class = "coded_tools.state_read.StateRead",
+            function = {
+                description = "Read a file by its logical name from the operator-configured name_map.",
+                parameters = {
+                    type = "object",
+                    properties = {
+                        name = {
+                            type = "string",
+                            description = "Logical name of the file to read; must be one the operator mapped in name_map.",
+                            enum = [
+                                "economics_all", "economics_research", "economics_rides", "economics_shops", "economics_staff", "episode_checklist", "last_reward", "maps_game_docs",
+                                "playbook_coordinator", "playbook_layout", "playbook_research", "playbook_rides", "playbook_shops", "playbook_staff", "playbook_survey",
+                                "seed_playbook_coordinator", "seed_playbook_layout", "seed_playbook_research", "seed_playbook_rides", "seed_playbook_shops", "seed_playbook_staff", "seed_playbook_survey",
+                                "status_coordinator", "status_layout", "status_research", "status_rides", "status_shops", "status_staff", "status_survey",
+                                "trial_strategies", "trial_strategies_criteria", "trial_strategies_outcome"
+                            ]
+                        }
+                    },
+                    required = ["name"]
+                }
+            },
+            args = {
+                name_map = {
+                    # The park as LAST EPISODE LEFT IT. Both planner passes run before
+                    # the runner's next ParkStatus refresh, so these hold the final
+                    # pre-reset snapshot of the episode being reviewed — never the new
+                    # park. Telemetry rows carry aggregates only (num_rides, park_value)
+                    # and can never name WHICH asset ended up the drag.
+                    status_coordinator          = ${maps_state_dir}"/status_coordinator.json"
+                    status_layout               = ${maps_state_dir}"/status_layout.json"
+                    status_rides                = ${maps_state_dir}"/status_rides.json"
+                    status_shops                = ${maps_state_dir}"/status_shops.json"
+                    status_staff                = ${maps_state_dir}"/status_staff.json"
+                    status_research             = ${maps_state_dir}"/status_research.json"
+                    status_survey               = ${maps_state_dir}"/status_survey.json"
+                    trial_strategies            = ${maps_state_dir}"/trial_strategies.md"
+                    trial_strategies_criteria   = ${maps_state_dir}"/trial_strategies_criteria.md"
+                    trial_strategies_outcome    = ${maps_state_dir}"/trial_strategies_outcome.md"
+                    last_reward                 = ${maps_state_dir}"/last_reward.md"
+                    playbook_coordinator        = ${maps_state_dir}"/playbook_coordinator.md"
+                    playbook_rides              = ${maps_state_dir}"/playbook_rides.md"
+                    playbook_shops              = ${maps_state_dir}"/playbook_shops.md"
+                    playbook_staff              = ${maps_state_dir}"/playbook_staff.md"
+                    playbook_research           = ${maps_state_dir}"/playbook_research.md"
+                    playbook_layout             = ${maps_state_dir}"/playbook_layout.md"
+                    playbook_survey             = ${maps_state_dir}"/playbook_survey.md"
+                    episode_checklist           = ${maps_state_dir}"/episode_checklist.md"
+                    economics_rides             = "coded_tools/config_files/economics_rides.md"
+                    economics_shops             = "coded_tools/config_files/economics_shops.md"
+                    economics_staff             = "coded_tools/config_files/economics_staff.md"
+                    economics_research          = "coded_tools/config_files/economics_research.md"
+                    economics_all               = "coded_tools/config_files/economics_all.md"
+                    maps_game_docs              = "coded_tools/config_files/maps_game_docs.md"
+                    seed_playbook_coordinator   = ${maps_seed_dir}"/seed_playbook_coordinator.md"
+                    seed_playbook_rides         = ${maps_seed_dir}"/seed_playbook_rides.md"
+                    seed_playbook_shops         = ${maps_seed_dir}"/seed_playbook_shops.md"
+                    seed_playbook_staff         = ${maps_seed_dir}"/seed_playbook_staff.md"
+                    seed_playbook_research      = ${maps_seed_dir}"/seed_playbook_research.md"
+                    seed_playbook_layout        = ${maps_seed_dir}"/seed_playbook_layout.md"
+                    seed_playbook_survey        = ${maps_seed_dir}"/seed_playbook_survey.md"
+                }
+            }
+        },
+    ]
+
+    # Exported so the self-critique network can compose the full planner graph.
+    tools = ${planner_tools}
+# END INLINED: registries/ablations/embedded_player_planner_watcher/planner_embedded_advisors.hocon
+# BEGIN INLINED: registries/ablations/embedded_player_planner_watcher/watcher_embedded_advisors.hocon
+    maps_state_dir = "state"
+    maps_state_dir = ${?MAPS_STATE_DIR}
+    maps_seed_dir = "coded_tools/config_files"
+    maps_seed_dir = ${?MAPS_SEED_DIR}
+
+# BEGIN INLINED: registries/aaosa_basic.hocon
+# Copyright © 2025-2026 Cognizant Technology Solutions Corp, www.cognizant.com.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# END COPYRIGHT
+
+# This file is NOT an agent network HOCON.
+# It defines a set of key-value pairs for substitution, typically used in agent network HOCON files.
+# Each key can be referenced in agent configs using the ${key} syntax.
+# Do not define agents or tools directly here—this file only provides reusable values.
+
+aaosa_instructions = """When you receive an inquiry, you will:
+1. If you are clearly not the right agent for this type of inquiry, reply you're not relevant.
+2. If there is a chance you're relevant, call your down-chain agents to determine if they can answer all or part of the inquiry.
+Do not assume what your down-chain agents can do. Always call them. You'll be surprised.
+3. Once all your down-chain agents have responded analyze their response and determine what the next step is. For instance:
+- Follow up with down-chain agents
+- Call other down-chain agents
+- Ask for clarification or additional information
+- Ask the most relevant down-chain agent to fulfill the inquiry
+- Compile and return your final response
+You may, in turn, be called by other agents in the system and have to act as a down-chain agent to them.
+4. When responding, format your response based on the 'mode' parameter:
+   - If there is no 'mode' parameter (i.e., the inquiry came directly from a human),
+     respond with a natural, human-readable answer.
+   - If a 'mode' parameter is present, return the following information:
+   [AAOSA]
+   Name: <your name>
+   Inquiry: <the inquiry>
+   Mode: <Determine | Follow up | Fulfill>
+   Relevant: <Yes | No>
+   Strength: <number between 1 and 10 representing how certain you are in your claim>
+   Claim: <All | Partial | None>
+   Requirements: <None | list of requirements>
+   Response: <Your response>
+"""
+
+aaosa_call = {
+    description = "Depending on the mode, returns a natural language string in response."
+    parameters = {
+        type = "object"
+        properties = {
+            inquiry = {
+                type = "string"
+                description = "The inquiry"
+            }
+            mode = {
+                type = "string"
+                description =
+"""'Determine' to ask the agent if the inquiry belongs to it, in its entirety or in part.
+'Follow up' to continue the conversation with the agent.
+'Fulfill' to ask the agent to fulfill the inquiry, if it can.
+"""
+            }
+        }
+        required = [
+            "inquiry",
+            "mode"
+        ]
+    }
+}
+
+# For down-chain agents that are NOT running the AAOSA protocol: they never see
+# ${aaosa_instructions}, so they never branch on 'mode' and never emit the [AAOSA]
+# block — they just answer the inquiry (in these networks, with plain JSON).
+# ${aaosa_call}'s required 'mode' arg would only force the caller to invent a
+# meaningless value on every single call, so use this instead.
+inquiry_call = {
+    description = "Returns a natural language string in response to the inquiry."
+    parameters = {
+        type = "object"
+        properties = {
+            inquiry = {
+                type = "string"
+                description = "The inquiry"
+            }
+        }
+        required = ["inquiry"]
+    }
+}
+
+# Deprecated: aaosa_command has been merged into aaosa_instructions above.
+# Kept as an empty string for backward compatibility with old agent networks
+# that reference ${aaosa_command}.
+aaosa_command = ""
+# END INLINED: registries/aaosa_basic.hocon
+    metadata = {
+        description = "The watcher network. Owns mid-episode strategic analysis WITHIN the current episode. The runner invokes this network every N successful steps (kind=periodic) — i.e. at steps 10,20,...,90 of the 100-step episode. It reads the cumulative per-episode telemetry and logs actionable trials so the game-runner's specialists can act on them next turn. End-of-episode close-out and whole-run synthesis live in the separate planner network.",
+        tags = ["maps", "industry", "consultant", "micro", "advisor"],
+        sample_queries = [
+            "kind=periodic episode=1 step=20 cumulative_reward=1500 final_reward=null",
+            "kind=periodic episode=1 step=90 cumulative_reward=42000 final_reward=null"
+        ]
+    },
+
+# BEGIN INLINED: config/llm_config.hocon
+# Copyright © 2025-2026 Cognizant Technology Solutions Corp, www.cognizant.com.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# END COPYRIGHT
+
+    # This file is NOT an agent network HOCON.
+    # It defines a set of key-value pairs for substitution, typically used in agent network HOCON files.
+    # Each key can be referenced in agent configs using the ${key} syntax.
+    # Do not define agents or tools directly here—this file only provides reusable values.
+
+    "llm_config": {
+
+        # Set the `class` key to one of the values listed below, then specify the model
+        # using the `model_name` key.
+        #
+        # The available model names for each provider can be found in the corresponding links.
+        #
+        # | LLM Provider     | `class` Value   | Links for model names |
+        # |------------------|-----------------|-----------------------|
+        # | Amazon Bedrock   | `bedrock`       | https://docs.aws.amazon.com/bedrock/latest/userguide/model-ids.html |
+        # | Anthropic        | `anthropic`     | https://platform.claude.com/docs/en/about-claude/models/overview |
+        # | Azure OpenAI     | `azure-openai`  | https://learn.microsoft.com/azure/ai-services/openai/concepts/models |
+        # | Google Gemini    | `gemini`        | https://ai.google.dev/gemini-api/docs/models |
+        # | NVIDIA           | `nvidia`        | https://build.nvidia.com/explore/discover |
+        # | Ollama           | `ollama`        | https://ollama.com/library |
+        # | OpenAI           | `openai`        | https://platform.openai.com/docs/models |
+        #
+        # Note:
+        # - For Ollama, the model must be downloaded locally before use.
+        # - Additional LLM parameters (e.g., `temperature`, `max_tokens`) can be configured below.
+        # - Agent-level control (e.g., `max_steps`) can also be set here.
+        # - It is possible to have a separate llm_config describing a different LLM with different parameters for each agent network hocon file
+        #or even for each agent within a network.
+        #
+        #   For more details, see:
+        #   - https://github.com/cognizant-ai-lab/neuro-san/blob/main/neuro_san/internals/run_context/langchain/llms/default_llm_info.hocon
+        #   - https://github.com/cognizant-ai-lab/neuro-san/blob/main/docs/agent_hocon_reference.md#llm_config
+
+        "class": "openai",
+        # gpt-5.5-pro is a Responses-API-only model, so it needs use_responses_api.
+        # That flag also lets reasoning_effort + function tools work on gpt-5.4/5.5.
+        "model_name": "gpt-5.5",
+        "reasoning_effort": "xhigh",     # extra thinking; gpt-5.5 values: none|low|medium|high|xhigh
+        "use_responses_api": true,      # required for gpt-5.5-pro (not a chat model)
+
+    }
+# END INLINED: config/llm_config.hocon
+    max_steps = 4000,
+    max_execution_seconds = 12000,
+
+    watcher_tools = [
+        {
+            name = "mid_episode_analyst",
+            function = ${inquiry_call} {
+                description = "Mid-episode analyzer (kind=periodic), invoked every 10 steps: diagnoses the live profit trajectory against the best episode, logs its own micro trials and prunes the ones not working, and returns a VERDICT line the runner uses to abort doomed episodes early."
+            },
+            instructions = """
+You analyze the current live game state at mid-episode.
+GOAL: name the MAIN issues holding this run back and design targeted micro trials that fix them.
+
+You are the only part of this harness that can correct the episode WHILE it is still running.
+The episode-start plan cannot revise itself; you get roughly nine looks at the run, one every ten steps,
+to steer it toward more profit. Always cite evidence (step + metric) from telemetry. Never use outside knowledge.
+
+## Procedures:
+
+1. Gather context:
+    - `watcher_scratchpad`: the note left by you for yourself at the last check-in, 10 steps ago
+    - `WatcherEpisodeTelemetry()`: every step so far in the current episode.
+    - `watcher_state_read('status_coordinator')`: the park AS IT STANDS RIGHT NOW.
+    - `WatcherRunTelemetry(select='best')`: the best episode run, for reference only.
+    - `WatcherActiveTrials()`: the macro and micro trials now running, with their criteria.
+    - `watcher_state_read('trial_strategies_outcome')`: past outcomes. Do NOT revisit a failed trial.
+
+2. Micro trials:
+   - Review what is running using `WatcherActiveTrials(trial_origin='micro')` against telemetry. Drop any if they're
+   unproductive, failed, or obsolete with `WatcherDeleteTrial(trial_id)`.
+   - Diagnose the live blocker: cash piled up while research never triggered; a high-value asset unlocked but
+    unplaced, underbuilt, unreachable, or earning $0; a shop out_of_service; a ride with low uptime; or other
+    directly evidenced drag. Design the fixes.
+   - If the park is leaving an unlocked lever unused, propose a trial that pushes it harder.
+   - Propose however many new micro trials the current evidence justifies; there is no fixed numerical cap.
+    Each is small, concrete, new, falsifiable, and explicit about action, condition, metric, and trigger phase.
+    Put them in different domains, repeat neither macro direction nor any failed trial, and point them along the
+    macro strategy. Save each with `WatcherLogTrial`.
+
+3. LAST: if the NEXT check-in must know something, usually a drag being watched, call `watcher_scratchpad(note=...)` otherwise skip.
+
+4. Return a concise actionable advisory for the player's next turn.
+
+Notes: never extrapolate beyond current telemetry or use outside knowledge. Micro trials must never bankrupt
+the park or sacrifice compounding investments for a short-term gain.
+""",
+            middleware = [
+                {"class": "middleware.trim_history_middleware.TrimHistoryMiddleware", "args": {}}
+                {"class": "middleware.static_prompt_caching_middleware.StaticPromptCachingMiddleware", "args": {"ttl": "1h"}}
+            ],
+            tools = ["watcher_state_read", "WatcherEpisodeTelemetry", "WatcherRunTelemetry", "WatcherActiveTrials", "WatcherLogTrial", "WatcherDeleteTrial", "watcher_scratchpad"]
+        },
+
+        {
+            name = "watcher_scratchpad",
+            class = "coded_tools.scratchpad.Scratchpad",
+            function = {
+                description = "Private memo for this network; player and planner hold their own. An omitted or empty note reads and clears the note left at your last check-in; a non-empty note leaves up to 5 lines for the next one. Writes replace; no history is kept.",
+                parameters = {
+                    type = "object",
+                    properties = {
+                        note = {
+                            type = "string",
+                            description = "Up to 5 lines to carry into your NEXT run only. Omit or pass an empty string to read-and-clear instead."
+                        }
+                    }
+                }
+            }
+            args = { pad = "watcher" }
+        },
+
+        {
+            name = "WatcherRunTelemetry",
+            class = "coded_tools.run_telemetry.RunTelemetry",
+            function = {
+                description = "With select='best', returns the highest-scoring episode across all runs as raw per-step rows, unaggregated — your yardstick for pace. Excludes the in-flight run, and returns empty when no prior episode exists.",
+                parameters = {
+                    type = "object",
+                    properties = {
+                        select = { type = "string", description = "Pass 'best' to get the best-ever episode as raw filtered steps." }
+                    }
+                }
+            }
+        },
+
+        {
+            name = "WatcherEpisodeTelemetry",
+            class = "coded_tools.episode_telemetry.EpisodeTelemetry",
+            function = {
+                description = "Per-step record for ONE episode, read from run.jsonl: {steps, rejections, rollup}, exists=false before any row is written. Each step carries its full action args and metrics; `rejections` records every action the sim refused, booked as a wait with the original action and error.",
+                parameters = {
+                    type = "object",
+                    properties = {
+                        episode   = { type = "int", description = "Episode number to read. Omit to use the latest episode present in the log." }
+                        from_step = { type = "int", description = "Only return steps >= this (mid-episode tail). Omit for the full episode." }
+                    }
+                }
+            }
+        },
+
+        {
+            name = "WatcherLogTrial",
+            class = "coded_tools.log_trial.LogTrial",
+            function = {
+                description = "Mints a collision-free trial_id and appends the paired lines: the one-line rule to trial_strategies, the metadata and success/failure criteria to trial_strategies_criteria. Use it for every new trial: it owns id minting and criteria formatting, and takes origin from this network's config.",
+                parameters = {
+                    type = "object",
+                    properties = {
+                        episode           = { type = "int", description = "Current episode number." }
+                        step_start        = { type = "string",  description = "Step at which the trial activates (as a string), or the literal 'end_of_episode'." }
+                        domain            = { type = "string",  description = "One of: rides, shops, staff, research, layout, survey, coordinator." }
+                        section           = { type = "string",  description = "Target playbook section header (or 'new')." }
+                        edit_type         = { type = "string",  description = "'add_line' or 'replace_line'." }
+                        new_text          = { type = "string",  description = "The one-line rule to add/replace (no rationale or metrics embedded)." }
+                        find_text         = { type = "string",  description = "replace_line only: the exact existing playbook line to replace." }
+                        rationale         = { type = "string",  description = "One sentence citing step(s) / metric delta." }
+                        success_criterion = { type = "string",  description = "Observable metric + direction + evaluation window (turns; fits in the fixed 100-step episode)." }
+                        failure_criterion = { type = "string",  description = "Observable metric that would falsify the trial." }
+                    }
+                    required = ["episode", "step_start", "domain", "section", "edit_type", "new_text", "rationale", "success_criterion", "failure_criterion"]
+                }
+            }
+            args = { origin = "micro" }
+        },
+
+        {
+            name = "WatcherDeleteTrial",
+            class = "coded_tools.delete_trial.DeleteTrial",
+            function = {
+                description = "Removes ONE micro trial mid-episode once it is unproductive or obsolete. Accepts micro trial_ids, as listed by WatcherActiveTrials(trial_origin='micro'). Deletes the paired lines from trial_strategies and trial_strategies_criteria. Writes no OUTCOME line — micro trials are episode-scoped and are not ledgered.",
+                parameters = {
+                    type = "object",
+                    properties = {
+                        trial_id = { type = "string", description = "The micro trial_id to delete (e.g. 't3_2'), taken from WatcherActiveTrials(trial_origin='micro')." }
+                    }
+                    required = ["trial_id"]
+                }
+            }
+        },
+
+        {
+            name = "WatcherActiveTrials",
+            class = "coded_tools.active_trials.ActiveTrials",
+            function = {
+                description = "Returns the trials in force this episode, joining the rule body from trial_strategies with the metadata and criteria from trial_strategies_criteria. Filter by domain and/or trial_origin ('micro'|'macro'); omit both for all active trials.",
+                parameters = {
+                    type = "object",
+                    properties = {
+                        domain = { type = "string", description = "Filter to one domain: rides, shops, staff, research, layout, survey or coordinator. Omit for all domains." }
+                        trial_origin = { type = "string", description = "Filter to 'micro' or 'macro'; omit for both. Named trial_origin, not origin — the framework injects a reserved 'origin' key that would silently override it." }
+                    }
+                }
+            }
+        },
+
+        {
+            name = "watcher_state_read",
+            class = "coded_tools.state_read.StateRead",
+            function = {
+                description = "Read a file by its logical name from the operator-configured name_map.",
+                parameters = {
+                    type = "object",
+                    properties = {
+                        name = {
+                            type = "string",
+                            description = "Logical name of the file to read; must be one the operator mapped in name_map.",
+                            enum = [
+                                "economics_all", "economics_research", "economics_rides", "economics_shops", "economics_staff", "last_reward",
+                                "playbook_coordinator", "playbook_layout", "playbook_research", "playbook_rides", "playbook_shops", "playbook_staff", "playbook_survey",
+                                "seed_playbook_coordinator", "seed_playbook_layout", "seed_playbook_research", "seed_playbook_rides", "seed_playbook_shops", "seed_playbook_staff", "seed_playbook_survey",
+                                "status_coordinator", "status_layout", "status_research", "status_rides", "status_shops", "status_staff", "status_survey",
+                                "trial_strategies", "trial_strategies_criteria", "trial_strategies_outcome"
+                            ]
+                        }
+                    },
+                    required = ["name"]
+                }
+            },
+            args = {
+                name_map = {
+                    # The LIVE park, refreshed by the game-runner's ParkStatus every
+                    # turn. Telemetry rows carry only aggregates (num_rides, park_value),
+                    # so these are the analyst's ONLY view of which asset is the drag and
+                    # which tier is already unlocked. Read, never written, from here.
+                    status_coordinator          = ${maps_state_dir}"/status_coordinator.json"
+                    status_layout               = ${maps_state_dir}"/status_layout.json"
+                    status_rides                = ${maps_state_dir}"/status_rides.json"
+                    status_shops                = ${maps_state_dir}"/status_shops.json"
+                    status_staff                = ${maps_state_dir}"/status_staff.json"
+                    status_research             = ${maps_state_dir}"/status_research.json"
+                    status_survey               = ${maps_state_dir}"/status_survey.json"
+                    trial_strategies            = ${maps_state_dir}"/trial_strategies.md"
+                    trial_strategies_criteria   = ${maps_state_dir}"/trial_strategies_criteria.md"
+                    trial_strategies_outcome    = ${maps_state_dir}"/trial_strategies_outcome.md"
+                    last_reward                 = ${maps_state_dir}"/last_reward.md"
+                    playbook_coordinator        = ${maps_state_dir}"/playbook_coordinator.md"
+                    playbook_rides              = ${maps_state_dir}"/playbook_rides.md"
+                    playbook_shops              = ${maps_state_dir}"/playbook_shops.md"
+                    playbook_staff              = ${maps_state_dir}"/playbook_staff.md"
+                    playbook_research           = ${maps_state_dir}"/playbook_research.md"
+                    playbook_layout             = ${maps_state_dir}"/playbook_layout.md"
+                    playbook_survey             = ${maps_state_dir}"/playbook_survey.md"
+                    economics_rides             = "coded_tools/config_files/economics_rides.md"
+                    economics_shops             = "coded_tools/config_files/economics_shops.md"
+                    economics_staff             = "coded_tools/config_files/economics_staff.md"
+                    economics_research          = "coded_tools/config_files/economics_research.md"
+                    economics_all               = "coded_tools/config_files/economics_all.md"
+                    seed_playbook_coordinator   = ${maps_seed_dir}"/seed_playbook_coordinator.md"
+                    seed_playbook_rides         = ${maps_seed_dir}"/seed_playbook_rides.md"
+                    seed_playbook_shops         = ${maps_seed_dir}"/seed_playbook_shops.md"
+                    seed_playbook_staff         = ${maps_seed_dir}"/seed_playbook_staff.md"
+                    seed_playbook_research      = ${maps_seed_dir}"/seed_playbook_research.md"
+                    seed_playbook_layout        = ${maps_seed_dir}"/seed_playbook_layout.md"
+                    seed_playbook_survey        = ${maps_seed_dir}"/seed_playbook_survey.md"
+                }
+            }
+        },
+    ]
+
+    # Exported so the self-critique network can compose the full watcher graph.
+    tools = ${watcher_tools}
+# END INLINED: registries/ablations/embedded_player_planner_watcher/watcher_embedded_advisors.hocon
+# BEGIN INLINED: registries/ablations/embedded_player_planner_watcher/player_embedded_advisors.hocon
+    maps_state_dir = "state"
+    maps_state_dir = ${?MAPS_STATE_DIR}
+    maps_seed_dir = "coded_tools/config_files"
+    maps_seed_dir = ${?MAPS_SEED_DIR}
+
+# BEGIN INLINED: registries/aaosa_basic.hocon
+# Copyright © 2025-2026 Cognizant Technology Solutions Corp, www.cognizant.com.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# END COPYRIGHT
+
+# This file is NOT an agent network HOCON.
+# It defines a set of key-value pairs for substitution, typically used in agent network HOCON files.
+# Each key can be referenced in agent configs using the ${key} syntax.
+# Do not define agents or tools directly here—this file only provides reusable values.
+
+aaosa_instructions = """When you receive an inquiry, you will:
+1. If you are clearly not the right agent for this type of inquiry, reply you're not relevant.
+2. If there is a chance you're relevant, call your down-chain agents to determine if they can answer all or part of the inquiry.
+Do not assume what your down-chain agents can do. Always call them. You'll be surprised.
+3. Once all your down-chain agents have responded analyze their response and determine what the next step is. For instance:
+- Follow up with down-chain agents
+- Call other down-chain agents
+- Ask for clarification or additional information
+- Ask the most relevant down-chain agent to fulfill the inquiry
+- Compile and return your final response
+You may, in turn, be called by other agents in the system and have to act as a down-chain agent to them.
+4. When responding, format your response based on the 'mode' parameter:
+   - If there is no 'mode' parameter (i.e., the inquiry came directly from a human),
+     respond with a natural, human-readable answer.
+   - If a 'mode' parameter is present, return the following information:
+   [AAOSA]
+   Name: <your name>
+   Inquiry: <the inquiry>
+   Mode: <Determine | Follow up | Fulfill>
+   Relevant: <Yes | No>
+   Strength: <number between 1 and 10 representing how certain you are in your claim>
+   Claim: <All | Partial | None>
+   Requirements: <None | list of requirements>
+   Response: <Your response>
+"""
+
+aaosa_call = {
+    description = "Depending on the mode, returns a natural language string in response."
+    parameters = {
+        type = "object"
+        properties = {
+            inquiry = {
+                type = "string"
+                description = "The inquiry"
+            }
+            mode = {
+                type = "string"
+                description =
+"""'Determine' to ask the agent if the inquiry belongs to it, in its entirety or in part.
+'Follow up' to continue the conversation with the agent.
+'Fulfill' to ask the agent to fulfill the inquiry, if it can.
+"""
+            }
+        }
+        required = [
+            "inquiry",
+            "mode"
+        ]
+    }
+}
+
+# For down-chain agents that are NOT running the AAOSA protocol: they never see
+# ${aaosa_instructions}, so they never branch on 'mode' and never emit the [AAOSA]
+# block — they just answer the inquiry (in these networks, with plain JSON).
+# ${aaosa_call}'s required 'mode' arg would only force the caller to invent a
+# meaningless value on every single call, so use this instead.
+inquiry_call = {
+    description = "Returns a natural language string in response to the inquiry."
+    parameters = {
+        type = "object"
+        properties = {
+            inquiry = {
+                type = "string"
+                description = "The inquiry"
+            }
+        }
+        required = ["inquiry"]
+    }
+}
+
+# Deprecated: aaosa_command has been merged into aaosa_instructions above.
+# Kept as an empty string for backward compatibility with old agent networks
+# that reference ${aaosa_command}.
+aaosa_command = ""
+# END INLINED: registries/aaosa_basic.hocon
+    # Pin every embedded player node so planner/watcher overlays cannot change it.
+    player_llm_config = {
+        class = "openai"
+        model_name = "gpt-5.2"
+        reasoning_effort = null
+        use_responses_api = null
+    }
+
+    metadata = {
+        description = "The player network. Plays the MAPs (Mini Amusement Parks) benchmark one turn at a time: strategy_coordinator reads park status, fans out to six domain specialists, clears their proposals through a budget gate, and commits exactly one action per turn via coded tools and MCP.",
+        tags = ["MAPs", "middleware", "mcp", "long-horizon benchmark", "AI CEO"],
+        sample_queries = ["Start a new park run.", "Park observation: {\"step\": 0, \"cash\": 500, \"day\": 1, ...}"]
+    },
+
+    max_steps = 40000,
+    max_execution_seconds = 12000,
+
+    "class": "openai",
+    "model_name": "gpt-5.5",
+
+   instructions_prefix = """
+You are part of the team managing an amusement park.
+**GOAL: maximize park_value to reach 5 million dollars by the end of step 100.**
+Ground every decision in REAL data from your tools. DO NOT hallucinate, assume, or use external knowledge.
+If information is missing, ask the upstream agents for it — never fill the gap yourself.
+Adhere to the trial strategies — they are the priority for this episode.
+ALWAYS REMEMBER: THE 100 ACTIONS ARE THE SCARCEST RESOURCE — money regenerates, turns never do.
+Spend one only on something that moves park_value or park_rating. Re-setting an
+existing value, undoing your own decision, waiting while an affordable productive
+action exists, or repeatedly modifying order_quantity returns nothing.
+""",
+
+   tools = [
+
+        {
+            name = "strategy_coordinator",
+            llm_config = ${player_llm_config},
+            max_message_history = 2,
+            function = ${inquiry_call} {
+                description = "Runs one turn: reads park status, consults the domain specialists, selects and proposes exactly ONE action via ProposeAction, and reports the action taken."
+            },
+            instructions = ${instructions_prefix} """
+You manage the team operating the amusement park. Each day, you are given the park's current status.
+You must analyze the issues and, based on that, decide its one action for that day. The park then opens,
+and guests interact with it for the rest of the day.
+
+This coordinator is also the public entry point for the combined player/planner/watcher network:
+- If the input starts with `kind=episode_start` or `kind=episode_end`, call `macro_orchestrator` once with the full
+  input verbatim and return its response verbatim. Do not run the per-turn sequence.
+- If the input starts with `kind=periodic`, call `mid_episode_analyst` once with the full input verbatim and return
+  its response verbatim. Do not run the per-turn sequence.
+- Otherwise, it is a normal player turn; follow the canonical per-turn sequence below.
+
+Follow this per-turn sequence rigorously, using each information source as described:
+1. READ CONTEXT AND CURRENT PARK STATE:
+    - `state_read(name='playbook_coordinator')`: the `Current complete strategy` is TOP PRIORITY;
+    it is the full plan written for THIS episode and determines what to favor. Treat learned
+    strategies and active trials as binding instructions: exploit every learned rule by default,
+    execute each active trial exactly as written, and deviate from a learned rule only when an
+    active trial explicitly tests a contradictory strategy.
+    - `ActiveTrials()`: EVERY trial in force this episode, across all domains. `domain=coordinator`
+    gives your own standing trials. Keep rest in mind while choosing actions.
+    - `scratchpad()`: retrieve the previous turn's continuity note.
+    - `state_read(name='status_coordinator')`: Get the current park status relevant to your role.
+    `daily_profit` excludes ride/shop construction and `asset_investment` identifies it.
+    Research included in `daily_profit`.
+    - `state_read(name='economics')`: every build cost, operating cost, benefit, price, threshold,
+    payback, and research constant.
+
+2. **COLLECT PROPOSALS FOR ACTION** — apply the correct case:
+    - If scratchpad has an active multi-turn plan such as a tier swap, continue it by calling the
+    relevant specialist.
+    - If park_rating is LOW, STALLING, or FALLING for multiple turns in the second half, diagnose
+    cause by yourself and if required ask and approve for the Guest Analyst proposal from specialist
+    for a professional opinion. If you have a recent survey result, act on the named bottleneck.
+    - Otherwise, CALL ALL 4 MAIN specialists — `rides_manager`, `shops_manager`, `staffing_manager`,
+    `research_manager` — for proposals.
+    Incorporate any previous rejection, planner advisory, and your own observations.
+    Each specialist contributes at most one strict proposal; ignore an empty arrays.
+
+3. SUBMIT PROPOSALS FOR APPROVAL:
+    - Call `FinanceGate` with: `proposals = <all specialist proposals>`.
+    - It returns `{results:[{label, approved, reason, proposal}], cash, daily_operating_cost,
+    days_remaining}`. An approved row contains the fully enriched proposal; cash/days_remaining
+    define remaining runway.
+    - If all are rejected or approved choices are irrelevant, send the proposals back to the
+    specialists with the reasons and ask for a new proposal. You may only do this ONCE.
+    - ONLY if nothing substantive is affordable, approvable, and relevant, choose wait (AVOID it).
+
+4. SELECT EXACTLY ONE APPROVED ACTION:
+   - Use merged economics and live status to choose what is most needed/valuable.
+   - Follow the current complete strategy and phase.
+   - Avoid wait and no-effect actions unless absolutely necessary.
+
+5. PARK LAYOUT PLANNER:
+    - For modify, set_research, and survey_guests no layout resolution is required. DO NOT consult.
+    - For `place`, `remove`, `move`, call `park_layout_planner` with the exact action + subclass
+    + subtype + rationale (verbatim) you received, to get coordinates.
+    - A `move` requires TWO pairs — `x,y` where the asset stands now, and `new_x,new_y` where it goes.
+    - If `park_layout_planner` returns an empty array (`[]`), no tile is available for placement.
+    Do NOT retry it. Report this back to the specialist. Choose another approved action or ask the
+    specialist to propose a different action, or YOU propose freeing a tile first (`move` a low-tier
+    asset to an unreachable tile, or `remove` it).
+
+6. PROPOSE FINAL ACTION:
+    - Call `ProposeAction` with (`action=<chosen action>`,
+    `args=<approved enriched proposal from FinanceGate (with coordinate if applicable)>`].
+    - Quotation Requirement: All numeric values in `args` must be quoted as strings.
+    - If `validation.ok=FALSE`, correct the cited issue (coordinate/terrain issues use the layout
+    procedure) and re-call ProposeAction.
+    - After `validation.ok=TRUE`, reply with ONE sentence naming the action taken.
+
+7. RECORD NEXT-TURN CONTINUITY:
+    - If important next steps, observations, or a multi-turn plan must survive,
+    call `scratchpad(note=<terse note>)`. Only record when required; it is deleted
+    after the next read.
+
+Preserve every procedural and reasoning step; NO shortcuts. If an action is rejected twice or cannot
+execute, move to the best alternative or wait.
+
+ERROR HANDLING: if any tool call or downstream agent returns an error, STOP and reply with
+`ERROR: <the verbatim error text>`. Never swallow, paraphrase, retry silently, or continue past it.
+""",
+            middleware = [
+                {"class": "middleware.trim_history_middleware.TrimHistoryMiddleware", "args": {}}
+                {"class": "middleware.static_prompt_caching_middleware.StaticPromptCachingMiddleware", "args": {"ttl": "1h"}}
+            ],
+            tools = [
+                "rides_manager",
+                "shops_manager",
+                "staffing_manager",
+                "park_layout_planner",
+                "research_manager",
+                "guest_analyst",
+                "FinanceGate",
+                "ProposeAction",
+                "state_read",
+                "scratchpad",
+                "ActiveTrials",
+                "macro_orchestrator",
+                "mid_episode_analyst"
+            ]
+        },
+
+        {
+            name = "rides_manager",
+            llm_config = ${player_llm_config},
+            max_message_history = 2,
+            function = ${inquiry_call} {
+                description = "Selects the ride action for this turn — place, move or remove — naming subtype and subclass tier. Returns a JSON array of at most one proposal, or [] when no ride action is warranted."
+            },
+            instructions = ${instructions_prefix} """
+Choose the optimal ride to place, move, or remove for maximizing reward and park_rating.
+Apply rides trials, the rides playbook section, placed rides/unlocks, and ride economics.
+
+- For context:
+    - ActiveTrials(domain=rides): trial strategy directives for this episode
+    - state_read(name='playbook_rides'): behavioral playbook
+    - state_read(name='status_rides'): status of the park and rides placed, available_entities.
+    - state_read(name='economics_rides'): ride costs/benefits—always use for decisions.
+
+- Return at most one proposal of this shapre or [] if no action needed.
+[{
+    "action": "place" | "move" | "remove", // AVOID REMOVE 
+    "type": "ride",
+    "subtype": "...",
+    "subclass": "...",  // use entries from `status_rides.available_entities`.
+    "rationale": "<one line: why this action/subtype/subclass, and placement should be on (un)reachable tiles for place or move>"
+}]
+
+ERROR HANDLING: if any tool call or downstream agent returns an error, STOP and reply with
+`ERROR: <the verbatim error text>`. Never swallow, paraphrase, retry silently, or continue past it.
+""",
+            middleware = [
+                {"class": "middleware.trim_history_middleware.TrimHistoryMiddleware", "args": {}}
+                {"class": "middleware.static_prompt_caching_middleware.StaticPromptCachingMiddleware", "args": {"ttl": "1h"}}
+            ],
+            tools = ["state_read", "ActiveTrials"]
+        },
+
+        {
+            name = "shops_manager",
+            llm_config = ${player_llm_config},
+            max_message_history = 2,
+            function = ${inquiry_call} {
+                description = "Selects the shop action for this turn — place, modify (restock) or remove — naming subtype, subclass tier and order_quantity. Returns a JSON array of at most one proposal, or [] when no shop action is warranted."
+            },
+            instructions = ${instructions_prefix} """
+Choose the optimal shop place, modify, or remove using shops trials, playbook, live
+inventory/uptime/guests/unlocks, and shop economics.
+
+- For context:
+    - ActiveTrials(domain=shops) — trial strategy directives for this episode
+    - state_read(name='playbook_shops') — behavioral playbook
+    - state_read(name='status_shops') — status of the park and shops placed, available_entities.
+    - state_read(name='economics_shops') — shop costs/benefits—always use for decisions.
+
+- Return at most one proposal of this shapre or [] if no action needed.
+[{
+    "action": "place" | "modify" | "remove",
+    "type": "shop",
+    "subtype": "...",
+    "subclass": "...",  // use entries from `status_shops.available_entities`.
+    "order_quantity": N,  // required for "place"/"modify"
+    "x": N, "y": N,     // for "modify" ONLY — coordinates from `status_shops.placed_shops`
+    "rationale": "<one line: why this action/subtype/subclass fits best>"
+}]
+
+ERROR HANDLING: if any tool call or downstream agent returns an error, STOP and reply with
+`ERROR: <the verbatim error text>`. Never swallow, paraphrase, retry silently, or continue past it.
+""",
+            middleware = [
+                {"class": "middleware.trim_history_middleware.TrimHistoryMiddleware", "args": {}}
+                {"class": "middleware.static_prompt_caching_middleware.StaticPromptCachingMiddleware", "args": {"ttl": "1h"}}
+            ],
+            tools = ["state_read", "ActiveTrials"]
+        },
+
+        {
+            name = "staffing_manager",
+            llm_config = ${player_llm_config},
+            max_message_history = 2,
+            function = ${inquiry_call} {
+                description = "Selects the staffing action for this turn — place or remove a janitor, mechanic or specialist — naming subclass tier. Returns a JSON array of at most one proposal, or [] when no staffing action is warranted."
+            },
+            instructions = ${instructions_prefix} """
+Choose the optimal staff hire or dismissal using staff trials, playbook, current
+cleanliness/uptime/out-of-service/staff/unlocks, and staff economics.
+
+- For context:
+    - ActiveTrials(domain=staff) — trial strategy directives for this episode
+    - state_read(name='playbook_staff') — behavioral playbook
+    - state_read(name='status_staff') — status of the park and staff placed, available_entities.
+    - state_read(name='economics_staff') — staff costs/benefits—always use for decisions.
+    Do not over-hire or under-hire in a way that wastes a turn.
+
+- Return at most one proposal of this shapre or [] if no action needed.
+[{
+    "action": "place" | "remove",  // AVOID REMOVE
+    "type": "staff",
+    "subtype": "...",
+    "subclass": "...",     // use entries from `status_staff.available_entities`
+    "rationale": "<one line: why this action/subtype/subclass fits best>"
+}]
+
+ERROR HANDLING: if any tool call or downstream agent returns an error, STOP and reply with
+`ERROR: <the verbatim error text>`. Never swallow, paraphrase, retry silently, or continue past it.
+""",
+            middleware = [
+                {"class": "middleware.trim_history_middleware.TrimHistoryMiddleware", "args": {}}
+                {"class": "middleware.static_prompt_caching_middleware.StaticPromptCachingMiddleware", "args": {"ttl": "1h"}}
+            ],
+            tools = ["state_read", "ActiveTrials"]
+        },
+
+        {
+            name = "park_layout_planner",
+            llm_config = ${player_llm_config},
+            max_message_history = 2,
+            function = ${inquiry_call} {
+                description = "Owns the map. Given a chosen action and its rationale, returns the coordinates to execute it — x,y for place and remove, plus new_x,new_y for a move. Returns [] when no valid tile exists, meaning the action is impossible this turn."
+            },
+            instructions = ${instructions_prefix} """
+Choose efficient placement coordinates of rides/shops/staff for the action the coordinator has decided this turn.
+
+- Use the following information sources to determine the best action:
+    - ActiveTrials(domain=layout) — trial strategy directives for this episode
+    - state_read(name='playbook_layout') — behavioral playbook
+    - state_read(name='status_layout') — current park status relevant to you.
+
+- Return at most one coordinate proposal PER action in the strict JSON array below or [] if no placement is possible.
+  No other text.
+[{
+    "for": "<the action+subtype you are siting>", "x": N, "y": N,
+    "rationale": "<<one line behind the choice of coordinates, e.g., adjacency, water, guest flow>>"
+}]
+- For `move` (rides ONLY), return two pairs of coordinates:
+[{
+    "for": "move ride carousel yellow",
+    "x": N, "y": N,          // current coordinates from `status_layout.placed_rides` with "reachable": true,
+    "new_x": N, "new_y": N,  // destination coordinates from `unreachable_tiles`
+    "rationale": "<one line behind the choice of coordinates, e.g., adjacency, water, guest flow>"
+}]
+
+ERROR HANDLING: if any tool call or downstream agent returns an error, STOP and reply with
+`ERROR: <the verbatim error text>`. Never swallow, paraphrase, retry silently, or continue past it.
+""",
+            middleware = [
+                {"class": "middleware.trim_history_middleware.TrimHistoryMiddleware", "args": {}}
+                {"class": "middleware.static_prompt_caching_middleware.StaticPromptCachingMiddleware", "args": {"ttl": "1h"}}
+            ],
+            tools = ["state_read", "ActiveTrials"]
+        },
+
+        {
+            name = "research_manager",
+            llm_config = ${player_llm_config},
+            max_message_history = 2,
+            function = ${inquiry_call} {
+                description = "Selects the research action for this turn — the topic list and the speed (none/slow/medium/fast). Returns a JSON array of at most one proposal, or [] when research should not change."
+            },
+            instructions = ${instructions_prefix} """
+Choose how to research: when to start, what SPEED, which TOPICS, and when to change any/all of them.
+Every turn use research trials, playbook, cash, current speed/topics, park state, and the merged
+speed-cost/progress economics. When reshaping topics, analyze what every resulting ride/shop/staff
+tier costs and earns.
+
+- For context:
+    - ActiveTrials(domain=research): trial strategy directives for this episode
+    - state_read(name='playbook_research'): behavioral playbook
+    - state_read(name='status_research'): cash, research speed/topics, and park status.
+    - state_read(name='economics_research'): cost per day/points gained per tier
+    - state_read(name='economics_all'): what every ride/shop/staff tier costs to build/what it earns.
+
+- Return one proposal in the strict JSON array below or [] if no action needed. No other text.
+[{
+    "action": "set_research",
+    "research_speed": "<SPEED>",              // e.g. "fast", "medium", "slow"
+    "research_topics": ["<TOPIC1>", ...],     // ride/shop/staff subtypes, e.g. ["ferris_wheel", "janitor"]
+    "rationale": "<One brief line reason>"
+}]
+
+ERROR HANDLING: if any tool call or downstream agent returns an error, STOP and reply with
+`ERROR: <the verbatim error text>`. Never swallow, paraphrase, retry silently, or continue past it.
+""",
+            middleware = [
+                {"class": "middleware.trim_history_middleware.TrimHistoryMiddleware", "args": {}}
+                {"class": "middleware.static_prompt_caching_middleware.StaticPromptCachingMiddleware", "args": {"ttl": "1h"}}
+            ],
+            tools = ["state_read", "ActiveTrials"]
+        },
+
+        {
+            name = "guest_analyst",
+            llm_config = ${player_llm_config},
+            max_message_history = 2,
+            function = ${inquiry_call} {
+                description = "On-demand guest diagnosis: names the likely bottleneck behind park_rating, and proposes a paid survey when the evidence leaves the cause open. Consulted when the coordinator needs direction on rating."
+            },
+            instructions = ${instructions_prefix} """
+You analyze guest needs and park health from free signals and — only when warranted — propose a paid guest survey.
+
+1. For context:
+    - ActiveTrials(domain=survey) — trial strategy directives for this episode
+    - state_read(name='playbook_survey') — behavioral playbook
+    - state_read(name='status_survey') — free guest signals (current park status)
+
+2. When the coordinator consults you (only when it wants direction on park_rating), analyze the current
+park status; if you can name the bottleneck, skip step 3 and reply with ONE line stating the issue.
+
+3. Otherwise if a PAID SURVEY is required, return a JSON array:
+   [{"action":"survey_guests","num_guests":N, "rationale": "<your rationale>"}] where N = min(total_guests, 25).
+
+ERROR HANDLING: if any tool call or downstream agent returns an error, STOP and reply with
+`ERROR: <the verbatim error text>`. Never swallow, paraphrase, retry silently, or continue past it.
+""",
+            middleware = [
+                {"class": "middleware.trim_history_middleware.TrimHistoryMiddleware", "args": {}}
+                {"class": "middleware.static_prompt_caching_middleware.StaticPromptCachingMiddleware", "args": {"ttl": "1h"}}
+            ],
+            tools = ["state_read", "ActiveTrials"]
+        },
+
+        {
+            name = "FinanceGate",
+            class = "coded_tools.finance_gate.FinanceGate",
+            function = {
+                description = "Budget gate: computes daily operating cost, enriches each proposal with its derived fields, and approves or rejects it against deterministic affordability rules. An approved row carries the fully enriched proposal.",
+                parameters = {
+                    type = "object",
+                    properties = {
+                        proposals = {
+                            type = "string",
+                            description = "JSON-encoded array of the specialists' raw proposals. Pass them through unchanged — each need carry only {action, type, subtype, subclass, order_quantity, x, y, research_speed, research_topics}; every derived field (one_time_cost, is_research, has_food_or_atm, has_profitable_ride, research_daily_cost, research_days, label) is computed here. A tier upgrade is a plain remove followed by a place: there is no upgrade field. Example: [{\"action\":\"place\",\"type\":\"ride\",\"subtype\":\"carousel\",\"subclass\":\"yellow\"}]"
+                        }
+                    },
+                    required = ["proposals"]
+                }
+            }
+        },
+
+        {
+            name = "ActiveTrials",
+            class = "coded_tools.active_trials.ActiveTrials",
+            function = {
+                description = "Returns the trial rules in force this episode. Pass domain=<your domain> to filter (rides/shops/staff/research/layout/survey/coordinator); omit it for all domains. Returns {domain, count, trials:[{trial_id, rule, edit_type, find_text, ...}]}.",
+                parameters = {
+                    type = "object",
+                    properties = {
+                        domain = { type = "string", description = "Filter to one domain: rides, shops, staff, research, layout, survey or coordinator. Omit for every active trial." }
+                    }
+                }
+            }
+        },
+
+        {
+            name = "scratchpad",
+            class = "coded_tools.scratchpad.Scratchpad",
+            function = {
+                description = "Private one-turn memo for the coordinator; the watcher and planner hold their own. No args reads and clears the previous turn's note; note=<text> leaves up to 5 lines for the next turn. Writes replace; no history is kept.",
+                parameters = {
+                    type = "object",
+                    properties = {
+                        note = {
+                            type = "string",
+                            description = "Up to 5 lines to carry into the NEXT turn only. Omit to read-and-clear instead."
+                        }
+                    }
+                }
+            }
+            args = { pad = "player" }
+        },
+
+        {
+            name = "state_read",
+            class = "coded_tools.state_read.StateRead",
+            function = {
+                description = "Reads one file by its logical name from the operator-configured name_map. Errors if the name is unmapped or the file is absent.",
+                parameters = {
+                    type = "object",
+                    properties = {
+                        name = {
+                            type = "string",
+                            description = "Logical name of the file to read; must be one the operator mapped in name_map.",
+                            enum = [
+                                "economics", "economics_all", "economics_research", "economics_rides", "economics_shops", "economics_staff",
+                                "last_reward", "map_layout",
+                                "playbook_coordinator", "playbook_layout", "playbook_research", "playbook_rides", "playbook_shops", "playbook_staff", "playbook_survey",
+                                "seed_playbook_coordinator", "seed_playbook_layout", "seed_playbook_research", "seed_playbook_rides", "seed_playbook_shops", "seed_playbook_staff", "seed_playbook_survey",
+                                "status_coordinator", "status_layout", "status_research", "status_rides", "status_shops", "status_staff", "status_survey",
+                                "trial_strategies", "trial_strategies_criteria", "trial_strategies_outcome"
+                            ]
+                        }
+                    },
+                    required = ["name"]
+                }
+            },
+            args = {
+                name_map = {
+                    # State files (mutable runtime)
+                    trial_strategies     = ${maps_state_dir}"/trial_strategies.md"
+                    trial_strategies_outcome = ${maps_state_dir}"/trial_strategies_outcome.md"
+                    trial_strategies_criteria = ${maps_state_dir}"/trial_strategies_criteria.md"
+                    last_reward          = ${maps_state_dir}"/last_reward.md"
+                    playbook_coordinator = ${maps_state_dir}"/playbook_coordinator.md"
+                    playbook_rides       = ${maps_state_dir}"/playbook_rides.md"
+                    playbook_shops       = ${maps_state_dir}"/playbook_shops.md"
+                    playbook_staff       = ${maps_state_dir}"/playbook_staff.md"
+                    playbook_survey      = ${maps_state_dir}"/playbook_survey.md"
+                    playbook_research    = ${maps_state_dir}"/playbook_research.md"
+                    playbook_layout      = ${maps_state_dir}"/playbook_layout.md"
+                    # Read-only economics references (numeric tables)
+                    economics            = "coded_tools/config_files/economics_all.md"
+                    economics_rides      = "coded_tools/config_files/economics_rides.md"
+                    economics_shops      = "coded_tools/config_files/economics_shops.md"
+                    economics_staff      = "coded_tools/config_files/economics_staff.md"
+                    economics_research   = "coded_tools/config_files/economics_research.md"
+                    economics_all        = "coded_tools/config_files/economics_all.md"
+                    # Per-specialist status slices (written each turn by ParkStatus)
+                    status_rides         = ${maps_state_dir}"/status_rides.json"
+                    status_shops         = ${maps_state_dir}"/status_shops.json"
+                    status_research      = ${maps_state_dir}"/status_research.json"
+                    status_staff         = ${maps_state_dir}"/status_staff.json"
+                    status_survey        = ${maps_state_dir}"/status_survey.json"
+                    status_layout        = ${maps_state_dir}"/status_layout.json"
+                    map_layout           = ${maps_state_dir}"/status_layout.json"
+                    status_coordinator   = ${maps_state_dir}"/status_coordinator.json"
+                    # Seed sources (consumed once on episode 1 by curator.seed and parkstatus_reader)
+                    seed_playbook_coordinator = ${maps_seed_dir}"/seed_playbook_coordinator.md"
+                    seed_playbook_rides       = ${maps_seed_dir}"/seed_playbook_rides.md"
+                    seed_playbook_shops       = ${maps_seed_dir}"/seed_playbook_shops.md"
+                    seed_playbook_staff       = ${maps_seed_dir}"/seed_playbook_staff.md"
+                    seed_playbook_survey      = ${maps_seed_dir}"/seed_playbook_survey.md"
+                    seed_playbook_research    = ${maps_seed_dir}"/seed_playbook_research.md"
+                    seed_playbook_layout      = ${maps_seed_dir}"/seed_playbook_layout.md"
+                }
+            }
+        },
+
+        {
+            name = "ProposeAction",
+            class = "coded_tools.propose_action.ProposeAction",
+            function = {
+                description = "Validates and persists ONE proposed action — action name, required fields, placement bounds, affordability — and fills in the economics price. The runner reads the persisted proposal to step the environment. On validation.ok=false the reasons say what to correct; fix them and call again to commit.",
+                parameters = {
+                    type = "object",
+                    properties = {
+                        action = {
+                            type = "string",
+                            description = "One of: wait, place, move, remove, modify, set_research, survey_guests."
+                        },
+                        args = {
+                            type = "object",
+                            description = "The chosen action's arguments, using the same key layout ActionDispatcher expects, with every numeric value quoted as a string. Omit price — it is set from the economics tables."
+                        }
+                    },
+                    required = ["action", "args"]
+                }
+            }
+        }
+    ]
+# END INLINED: registries/ablations/embedded_player_planner_watcher/player_embedded_advisors.hocon
+    metadata = {
+        description = "Combined player + planner + watcher ablation. The player strategy_coordinator is the public entry point and directly calls the embedded lifecycle agents."
+        tags = ["MAPs", "experiment", "combined-network", "player", "planner", "watcher"]
+        sample_queries = [
+            "[PREFLIGHT MODE] fresh_episode\n\nStart the run. Take one action on park 0."
+            "kind=episode_start episode=1 step=0 cumulative_reward=0 final_reward=null"
+            "kind=periodic episode=1 step=20 cumulative_reward=1500 final_reward=null"
+            "kind=episode_end episode=1 step=100 cumulative_reward=90000 final_reward=90000"
+        ]
+    }
+
+    # player_embedded_advisors is included last, so its canonical player tools remain
+    # first and strategy_coordinator is the public entry point.
+    tools = ${tools} ${planner_tools} ${watcher_tools}
+}

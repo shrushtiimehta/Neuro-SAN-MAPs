@@ -43,6 +43,17 @@ class StateRead(CodedTool):
 
     MAX_BODY_BYTES: ClassVar[int] = 10 * 1024 * 1024  # 10 MB
     DEFAULT_MAX_CHARS: ClassVar[int] = 20000
+    # These logical names are intentionally complete cross-domain snapshots.
+    # Applying the generic text cap would silently turn "full" back into a prefix
+    # once a mature park has enough assets. An explicit caller cap still wins.
+    UNTRUNCATED_NAMES: ClassVar[frozenset[str]] = frozenset(
+        {
+            "status_full",
+            "status_champion",
+            "status_coordinator",
+            "status_coordinator_champion",
+        }
+    )
 
     def __init__(self) -> None:
         self.logger = logging.getLogger(__name__)
@@ -67,12 +78,19 @@ class StateRead(CodedTool):
         """
         del sly_data
 
+        requested_name = args.get("name")
+        name_map = args.get("name_map")
+        if isinstance(requested_name, str) and isinstance(name_map, dict):
+            canonical_name = NameMap.resolve_alias(requested_name, name_map)
+            if canonical_name != requested_name:
+                args = {**args, "name": canonical_name}
+
         validation_error = NameMap.validate(args)
         if validation_error is not None:
             return validation_error
 
         name = args["name"]
-        name_map: dict[str, str] = args["name_map"]
+        name_map = args["name_map"]
         file_path = name_map[name]
 
         body_or_error = FileIO.read_capped(file_path, self.MAX_BODY_BYTES, self.logger)
@@ -82,7 +100,10 @@ class StateRead(CodedTool):
 
         start_line = args.get("start_line")
         end_line = args.get("end_line")
-        max_chars = int(args.get("max_content_chars") or self.DEFAULT_MAX_CHARS)
+        explicit_max = args.get("max_content_chars")
+        max_chars = int(
+            explicit_max or (self.MAX_BODY_BYTES if name in self.UNTRUNCATED_NAMES else self.DEFAULT_MAX_CHARS)
+        )
 
         sliced, total_lines = self._slice_lines(body, start_line, end_line)
         truncated = False
@@ -90,7 +111,7 @@ class StateRead(CodedTool):
             sliced = sliced[:max_chars]
             truncated = True
 
-        return {
+        result = {
             "status": "ok",
             "name": name,
             "file_path": file_path,
@@ -98,6 +119,10 @@ class StateRead(CodedTool):
             "line_count": total_lines,
             "truncated": truncated,
         }
+        if requested_name != name:
+            result["requested_name"] = requested_name
+            result["alias_resolved"] = True
+        return result
 
     async def async_invoke(self, args: dict[str, Any], sly_data: dict[str, Any]) -> dict[str, Any] | str:
         """Delegate to the synchronous invoke."""

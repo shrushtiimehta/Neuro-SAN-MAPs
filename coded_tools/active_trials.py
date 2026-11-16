@@ -65,6 +65,7 @@ def _current_episode() -> int | None:
         return None
     if not isinstance(cache, dict):
         return None
+    entries: Any
     for entries in cache.values():
         last = entries[-1] if isinstance(entries, list) and entries else entries
         if isinstance(last, dict) and isinstance(last.get("episode"), int):
@@ -92,6 +93,8 @@ class ActiveTrials(CodedTool):
         del sly_data
         domain = args.get("domain")
         domain = str(domain).strip().lower() if domain else None
+        if domain == "all":
+            domain = None
         # NOT 'origin': the AAOSA framework injects a reserved 'origin' key (the
         # agent call-chain) into every tool call, which clobbered this filter and
         # silently dropped every trial (count=0 forever, killing the learning
@@ -110,6 +113,8 @@ class ActiveTrials(CodedTool):
 
         trials: list[dict[str, Any]] = []
         stale: list[str] = []
+        trial_id: Any
+        rule: Any
         for trial_id, rule in strategies.items():
             crit = criteria.get(trial_id, {})
             trial_domain = crit.get("domain")
@@ -127,25 +132,30 @@ class ActiveTrials(CodedTool):
                 if trial_ep < oldest_kept:
                     stale.append(trial_id)
                     continue
-            trials.append({
-                "trial_id": trial_id,
-                "rule": rule,
-                "domain": trial_domain,
-                "origin": crit.get("origin"),
-                "section": crit.get("section"),
-                "edit_type": crit.get("edit"),
-                "find_text": crit.get("find"),
-                "step_start": crit.get("step_start"),
-                "ep": crit.get("ep"),
-                "success_criterion": crit.get("success"),
-                "failure_criterion": crit.get("failure"),
-                "rationale": crit.get("rationale"),
-            })
+            trials.append(
+                {
+                    "trial_id": trial_id,
+                    "rule": rule,
+                    "domain": trial_domain,
+                    "origin": crit.get("origin"),
+                    "section": crit.get("section"),
+                    "edit_type": crit.get("edit"),
+                    "find_text": crit.get("find"),
+                    "step_start": crit.get("step_start"),
+                    "ep": crit.get("ep"),
+                    "success_criterion": crit.get("success"),
+                    "failure_criterion": crit.get("failure"),
+                    "rationale": crit.get("rationale"),
+                }
+            )
 
         # `withheld_stale` is reported, not hidden: a silently shrinking trial list
         # would look like the learning loop simply stopped producing.
         result: dict[str, Any] = {
-            "domain": domain, "origin": origin, "count": len(trials), "trials": trials,
+            "domain": domain,
+            "origin": origin,
+            "count": len(trials),
+            "trials": trials,
         }
         if stale:
             result["withheld_stale"] = stale

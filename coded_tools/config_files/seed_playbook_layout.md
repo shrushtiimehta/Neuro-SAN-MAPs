@@ -7,24 +7,23 @@ You own ALL (x,y) resolution on the fixed path — you place, move and remove on
 
 ## Types:
 - **Empty tiles:** build rides/shops.
-- **Path tiles:** used by guests to move around the park.
-- **Water tiles:** each water tile adjacent to a ride increases that ride's excitement by 1, and it STACKS — a ride touching two water tiles is +2 and so on.
+- **Path tiles:** used by guests and staff to move around the park.
+- **Water tiles:** each water tile adjacent to a ride increases that ride's excitement by 1.
 
-## Status Variables:
-- `reachable_tiles` — empty tiles guests can reach.
-- `water_adjacent` — free tiles touching water, as `{x, y, water}`. `water` is the excitement bonus and it STACKS: a tile between two water tiles is +2. The list is sorted best-first — spend these entirely on RIDES, and never on a shop or staff, which gain nothing from water.
-- `unreachable_tiles` — buildable tiles guests can never walk to: $0 revenue but helps increase cumulative capacity. Site here ONLY as the DESTINATION of an eviction `move` that frees a reachable tile for a higher tier. Don't place shops or new rides here.
-- `placed_rides` and `path_coords` — tiles to place the staff on.
-- every placed ride/shop carries `subclass` (its tier), `reachable` and `cleanliness`. Rides add `capacity`, `excitement`, `guests_entertained`, `uptime` and `avg_wait_time`; shops add `guests_served` — shops have no capacity or excitement at all. Evictions go by LOWEST tier first, tie-broken on the popularity counter (`guests_entertained` for rides, `guests_served` for shops); the rest rank which asset is worth siting near.
+## Current park status in `status_layout`
+- `reachable_tiles` — empty buildable tiles guests can reach.
+- `unreachable_tiles` — empty buildable tiles guests can never reach: $0 revenue but helps increase cumulative capacity. This is mainly for extra low-tier cheap rides.
+- `water_adjacent` — free tiles touching water which increases excitement. The list is sorted best-first — spend these entirely on RIDES, and never on a shop as it gains nothing from water.
+- `placed_rides`/`path_coords` — tiles to place the staff on.
+- For moving/removing rides/shops go by LOWEST tier and cheapest rides/shops and `revenue_generated` first, tie-broken on the popularity counter (`guests_entertained` for rides, `guests_served` for shops).
 
 ## Tips:
 ### Placing attractions/staff:
 - Hunger and thirst keep rising in line, so placing food and drink shops near high-capacity rides with long lines matters most.
-- Place rides next to water: +1 excitement per adjacent water tile, stacking. Excitement is what makes a guest pick that ride over another, so take the highest-`water` tile in `water_adjacent` before any plain free tile.
-- Guests favor kinds of attractions they haven't visited before and whatever is nearby, but never visit the same attraction twice in a row.
+- Place rides next to water. Excitement makes a guest pick that ride over another, so place the more profitable rides on `water_adjacent` tile.
 - Place specialty shops only at high-traffic junctions, as guests do not actively seek out specialty shops; they visit them only if they pass by.
 - Place diverse rides across subtypes and subclasses together.
-- **Staff NEVER go on an empty tile.** The env accepts a staff tile only if it is a path tile or already holds a ride/shop — an empty tile is rejected outright and the turn is lost. So staff coordinates come from `path_coords`, or from the (x,y) of an entry in `placed_rides`/`placed_shops`. Never from `reachable_tiles`.
+- **Staff NEVER goes on an empty tile.** The env accepts a tile for staff only if it is in `path_coords` or `placed_rides` or `placed_shops` — `reachable_tiles` are rejected outright.
   - Janitor → the `path_coords` tile nearest the ride/shop with the lowest `cleanliness`, or that asset's own tile.
   - Mechanic → the tile of the ride with the lowest `uptime`, or the nearest `path_coords` tile to it.
   - Specialist → the tile of the ride with the highest `avg_wait_time`, or the nearest `path_coords` tile to it.
@@ -52,4 +51,7 @@ Every placed ride/shop carries `reachable`:
 Use `remove` → find the matching subtype/subclass in status_layout.placed_staff and return its (x,y). If several match, tie-break on `success_metric_value`.
 
 ## Learned rules (promoted from prior runs)
-Free premium reachable tiles by moving obsolete low-tier rides away, then refill the same coordinates with the highest profitable ride tier as soon as possible. (learned ep0)
+Audit any newly placed high-tier ride on a questionable tile before further expansion, and move it until every high-tier ride is reachable and producing revenue. (learned ep5)
+After moving a reachable non-red ride to the bank, fill the freed reachable tile with a red carousel on the next action before any other spending. (learned ep3)
+With no empty reachable tiles late, avoid new ride or shop placement unless a tile was just freed for immediate refill; use modifications, targeted staff, or waits instead. (learned ep0)
+Keep scarce reachable ride-ring tiles for rides, place shops only on reachable flow tiles, and use unreachable tiles as a bank for moved rides. (learned ep0)

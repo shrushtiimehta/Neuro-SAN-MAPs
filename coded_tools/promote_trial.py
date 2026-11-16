@@ -42,7 +42,7 @@ code never creates it. Best-effort: a missing seed, missing section, or a line
 already present never fails the promotion.
 
 Returns {action_taken, playbook, line, seed_mirror} where action_taken is one of:
-  promoted, skipped_section_missing, skipped_not_found, skipped_ambiguous,
+  promoted, already_promoted, skipped_section_missing, skipped_not_found, skipped_ambiguous,
   skipped_playbook_missing; and seed_mirror is one of:
   appended, duplicate_skipped, section_missing, seed_missing, not_attempted (when
   the live edit did not promote).
@@ -56,22 +56,27 @@ from typing import ClassVar
 
 from neuro_san.interfaces.coded_tool import CodedTool
 
+from coded_tools.file_io import FileIO
+from coded_tools.state_dir import MERGED_CONTEXT as _MERGED
+from coded_tools.state_dir import SEED_DIR as _SEED_DIR
+from coded_tools.state_dir import STATE_DIR as _STATE_DIR
+
 
 class PromoteTrial(CodedTool):
     """Apply a confirmed trial's add_line/replace_line edit to playbook_<domain>.md."""
 
-    STATE_DIR: ClassVar[str] = "coded_tools/state"
-    SEED_DIR: ClassVar[str] = "coded_tools/config_files"
+    STATE_DIR: ClassVar[str] = _STATE_DIR
+    SEED_DIR: ClassVar[str] = _SEED_DIR
     # domain -> config seed filename. Mirrors SeedPlaybooks.PLAYBOOKS;
     # every domain maps to seed_playbook_<domain>.md.
     SEED_FILES: ClassVar[dict[str, str]] = {
         "coordinator": "seed_playbook_coordinator.md",
-        "rides":       "seed_playbook_rides.md",
-        "shops":       "seed_playbook_shops.md",
-        "staff":       "seed_playbook_staff.md",
-        "research":    "seed_playbook_research.md",
-        "layout":      "seed_playbook_layout.md",
-        "survey":      "seed_playbook_survey.md",
+        "rides": "seed_playbook_rides.md",
+        "shops": "seed_playbook_shops.md",
+        "staff": "seed_playbook_staff.md",
+        "research": "seed_playbook_research.md",
+        "layout": "seed_playbook_layout.md",
+        "survey": "seed_playbook_survey.md",
     }
     # Header under which mirrored learned rules accumulate in the seed file.
     LEARNED_SECTION: ClassVar[str] = "## Learned rules (promoted from prior runs)"
@@ -79,7 +84,18 @@ class PromoteTrial(CodedTool):
     # it, protecting the hand-authored baseline from demotion.
     LEARNED_MARKER: ClassVar[str] = "(learned ep"
     DOMAINS: ClassVar[frozenset[str]] = frozenset(SEED_FILES)
+    # The solo arm (registries/ablations/single_agent/player_solo.hocon)
+    # consolidates all seven playbooks
+    # into ONE file, so every domain's rules live in playbook_all.md and every
+    # mirror in seed_playbook_all.md — a file no other arm reads, which is what
+    # keeps this arm's promotions out of their baseline even though the seed dir
+    # is shared. Selected by MAPS_MERGED_CONTEXT, so the per-domain arms keep the
+    # exact path they always took.
+    MERGED_PLAYBOOK: ClassVar[str] = "playbook_all.md"
+    MERGED_SEED: ClassVar[str] = "seed_playbook_all.md"
+    MERGED: ClassVar[bool] = _MERGED
     END_SECTIONS: ClassVar[frozenset[str]] = frozenset({"", "end", "new"})
+    NO_CROSS_EPISODE_ENV: ClassVar[str] = "MAPS_NO_CROSS_EPISODE"
 
     def invoke(self, args: dict[str, Any], sly_data: dict[str, Any]) -> dict[str, Any] | str:
         """
@@ -105,8 +121,7 @@ class PromoteTrial(CodedTool):
             except (TypeError, ValueError):
                 return "ERROR: episode is required and must be an integer"
 
-        playbook = f"playbook_{domain}"
-        path = os.path.join(self.STATE_DIR, f"{playbook}.md")
+        playbook, path = self._playbook(domain)
         if not os.path.exists(path):
             return {
                 "action_taken": "skipped_playbook_missing",
@@ -127,7 +142,21 @@ class PromoteTrial(CodedTool):
                 return "ERROR: remove_line requires find_text"
             return self._remove_line(domain, playbook, path, text, find_text)
 
-        final_line = f"{new_text} (learned ep{episode})"
+        # One '## Learned rules' section holds every domain in the merged playbook,
+        # so the line has to say which role it binds.
+        tag = f"[{domain}] " if playbook == "playbook_all" else ""
+        final_line = f"{tag}{new_text} (learned ep{episode})"
+
+        # A close-out may be retried after this tool succeeded but a later tool
+        # failed.  Treat the exact episode-tagged edit as a committed operation,
+        # and retry the best-effort seed mirror without duplicating the live rule.
+        if final_line in text.splitlines():
+            return {
+                "action_taken": "already_promoted",
+                "playbook": playbook,
+                "line": final_line,
+                "seed_mirror": self._mirror_to_seed(domain, final_line),
+            }
 
         if edit_type == "add_line":
             section = str(args.get("section", "")).strip()
@@ -169,8 +198,7 @@ class PromoteTrial(CodedTool):
             action = "promoted"
 
         try:
-            with open(path, "w", encoding="utf-8") as fh:
-                fh.write(new_body)
+            FileIO.write_text_atomic(path, new_body)
         except OSError as err:
             return f"ERROR: could not write {path}: {err}"
 
@@ -182,9 +210,19 @@ class PromoteTrial(CodedTool):
             "seed_mirror": seed_mirror,
         }
 
-    def _remove_line(
-        self, domain: str, playbook: str, path: str, text: str, find_text: str
-    ) -> dict[str, Any] | str:
+    def _playbook(self, domain: str) -> tuple[str, str]:
+        """(logical playbook name, path) for `domain` — one merged file, or per-domain."""
+        if self.MERGED:
+            return "playbook_all", os.path.join(self.STATE_DIR, self.MERGED_PLAYBOOK)
+        return f"playbook_{domain}", os.path.join(self.STATE_DIR, f"playbook_{domain}.md")
+
+    def _seed_path(self, domain: str) -> str:
+        """The seed mirror for `domain` — the merged seed, or the domain's own."""
+        if self.MERGED:
+            return os.path.join(self.SEED_DIR, self.MERGED_SEED)
+        return os.path.join(self.SEED_DIR, self.SEED_FILES[domain])
+
+    def _remove_line(self, domain: str, playbook: str, path: str, text: str, find_text: str) -> dict[str, Any] | str:
         """Demotion: remove the unique learned line containing find_text from the
         playbook and its seed mirror. Only '(learned ep<N>)'-tagged lines qualify,
         so the hand-authored baseline is never removed.
@@ -195,35 +233,56 @@ class PromoteTrial(CodedTool):
         lines = text.splitlines()
         matched = [ln for ln in lines if find_text in ln]
         if not matched:
-            return {"action_taken": "skipped_not_found", "playbook": playbook,
-                    "line": "", "seed_mirror": "not_attempted"}
+            return {
+                "action_taken": "skipped_not_found",
+                "playbook": playbook,
+                "line": "",
+                "seed_mirror": "not_attempted",
+            }
         if len(matched) > 1:
-            return {"action_taken": "skipped_ambiguous", "playbook": playbook,
-                    "line": "", "seed_mirror": "not_attempted"}
+            return {
+                "action_taken": "skipped_ambiguous",
+                "playbook": playbook,
+                "line": "",
+                "seed_mirror": "not_attempted",
+            }
         target = matched[0]
         if self.LEARNED_MARKER not in target:
             # Baseline protection — never demote a hand-authored rule.
-            return {"action_taken": "skipped_not_learned", "playbook": playbook,
-                    "line": target, "seed_mirror": "not_attempted"}
+            return {
+                "action_taken": "skipped_not_learned",
+                "playbook": playbook,
+                "line": target,
+                "seed_mirror": "not_attempted",
+            }
 
         new_body = "\n".join(ln for ln in lines if ln != target)
         if new_body:
             new_body += "\n"
         try:
-            with open(path, "w", encoding="utf-8") as fh:
-                fh.write(new_body)
+            FileIO.write_text_atomic(path, new_body)
         except OSError as err:
             return f"ERROR: could not write {path}: {err}"
 
-        return {"action_taken": "demoted", "playbook": playbook,
-                "line": target, "seed_mirror": self._remove_from_seed(domain, target)}
+        return {
+            "action_taken": "demoted",
+            "playbook": playbook,
+            "line": target,
+            "seed_mirror": self._remove_from_seed(domain, target),
+        }
 
     def _remove_from_seed(self, domain: str, target_line: str) -> str:
         """Remove the same learned line from the config seed mirror. Best-effort.
 
         :return: 'removed' | 'not_found' | 'seed_missing'.
         """
-        seed_path = os.path.join(self.SEED_DIR, self.SEED_FILES[domain])
+        if os.environ.get(self.NO_CROSS_EPISODE_ENV) == "1":
+            return "disabled_no_cross_episode"
+        # The merged solo seed is a frozen experiment input. Live learning is
+        # kept in state_solo and its champion snapshots, never in this source.
+        if self.MERGED:
+            return "immutable_seed_skipped"
+        seed_path = self._seed_path(domain)
         if not os.path.exists(seed_path):
             return "seed_missing"
         try:
@@ -237,8 +296,7 @@ class PromoteTrial(CodedTool):
         if new_body:
             new_body += "\n"
         try:
-            with open(seed_path, "w", encoding="utf-8") as fh:
-                fh.write(new_body)
+            FileIO.write_text_atomic(seed_path, new_body)
         except OSError:
             return "seed_missing"
         return "removed"
@@ -252,7 +310,11 @@ class PromoteTrial(CodedTool):
         so a seed problem cannot undo the (already-written) live playbook edit.
         :return: 'appended' | 'duplicate_skipped' | 'section_missing' | 'seed_missing'.
         """
-        seed_path = os.path.join(self.SEED_DIR, self.SEED_FILES[domain])
+        if os.environ.get(self.NO_CROSS_EPISODE_ENV) == "1":
+            return "disabled_no_cross_episode"
+        if self.MERGED:
+            return "immutable_seed_skipped"
+        seed_path = self._seed_path(domain)
         if not os.path.exists(seed_path):
             return "seed_missing"
         try:
@@ -274,8 +336,7 @@ class PromoteTrial(CodedTool):
         new_text = text.replace(anchor, anchor + final_line + "\n", 1)
 
         try:
-            with open(seed_path, "w", encoding="utf-8") as fh:
-                fh.write(new_text)
+            FileIO.write_text_atomic(seed_path, new_text)
         except OSError:
             return "seed_missing"
         return "appended"

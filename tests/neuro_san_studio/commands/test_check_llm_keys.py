@@ -47,7 +47,7 @@ class TestMaskValue:
 
     def test_exactly_12_chars_returns_stars(self) -> None:
         """The 12-char boundary is still fully masked."""
-        assert EnvValidator.mask_value("a" * 12) == "***"
+        assert EnvValidator.mask_value("aaaaaaaaaaaa") == "***"
 
     def test_long_returns_first4_last4(self) -> None:
         """Long values reveal only the first 4 and last 4 characters."""
@@ -140,7 +140,7 @@ class TestValidateTier2:
 
     def test_aws_access_key_valid(self, monkeypatch: MonkeyPatch) -> None:
         """AWS Access Key ID with `AKIA` prefix and exact 20 length → VALID."""
-        monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIA" + "A" * 16)
+        monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIAAAAAAAAAAAAAAAAA")
         result = EnvValidator().validate_tier2("AWS_ACCESS_KEY_ID")
         assert result.status == ValidationStatus.VALID
 
@@ -263,7 +263,7 @@ class TestCheckLlmKeysCommand:
     def test_tier3_google_mocked(self, monkeypatch: MonkeyPatch) -> None:
         """Tier 3 Google path uses the mocked genai.Client — no real call."""
         _wipe_env(monkeypatch)
-        monkeypatch.setenv("GOOGLE_API_KEY", "AIzaSy" + "x" * 30)
+        monkeypatch.setenv("GOOGLE_API_KEY", "AIzaSyxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx")
 
         mock_client = MagicMock()
         mock_client.models.list.return_value = iter([])

@@ -20,16 +20,25 @@ Reads the latest observation envelope from LatestObservation and maps the
 real simulator field names to a clean summary:
 
   - cash (from observation.money)
+  - asset_investment: successful ride/shop construction cost on this step
+  - daily_profit: daily P&L with asset investment added back
   - step, park_rating, park_value, cumulative_reward, done
+  - ride/shop/staff counts, revenue, and operating-cost aggregates
+  - research_progress: exact target subtype, target tier, and turns remaining
   - entrance, exit: [x, y] positions
   - path_coords: list of {x, y} path tiles (for staff placement)
   - reachable_tiles: from observation.valid_placement_coords — tiles ready for
     placement (already computed by the simulator, no grid scan needed)
+  - num_empty_reachable_tiles, num_empty_unreachable_tiles,
+    num_water_adjacent_tiles: compact layout availability counts
+  - num_ride_placement_tiles, num_shop_placement_tiles: empty buildable tile
+    totals by attraction type (rides may use unreachable tiles; shops may not)
   - water_adjacent: free tiles touching water as {x, y, water}, where `water`
     is the excitement bonus (+1 per adjacent water tile, stacking), best first
   - unreachable_tiles: buildable tiles guests can never walk to (capacity only)
   - broken_rides: entries from ride_list where out_of_service=true
   - out_of_service: true if any ride is out of service (park-wide flag)
+  - shops_out_of_service: true if any shop is out of service
   - min_uptime: park-wide worst uptime across rides and shops
   - min_cleanliness: park-wide worst tile cleanliness (from observation)
   - placed_rides: observation.rides.ride_list
@@ -42,59 +51,134 @@ real simulator field names to a clean summary:
   - guest_survey_results: paid survey detail {age_of_results, list_of_results}
 
 As a side effect, writes per-specialist snapshot files to
-coded_tools/state/ so each specialist reads only the fields it
+state/ so each specialist reads only the fields it
 needs via state_read(name='status_<domain>').
 """
 
 from __future__ import annotations
 
 import json
-import math
-import re
+import os
 from pathlib import Path
 from typing import Any
 
 from neuro_san.interfaces.coded_tool import CodedTool
 
+from coded_tools.financial_metrics import financial_metrics
 from coded_tools.latest_observation import LatestObservation
+from coded_tools.research_progress import normalize_research_progress
+from coded_tools.state_dir import MERGED_CONTEXT
+from coded_tools.state_dir import STATE_DIR
 
-_STATE_DIR = Path("coded_tools/state")
-# The macro writes the full turn-phased plan here at episode start; ParkStatus
-# surfaces ONLY the line whose turn-range covers the current step (current_phase)
-# so the game-runner never carries the whole checklist per turn.
-_EPISODE_CHECKLIST = _STATE_DIR / "episode_checklist.md"
-# Matches a checklist line "turns A-B: <goal>" (or "turns A: <goal>").
-_PHASE_RE = re.compile(r"turns?\s+(\d+)\s*(?:[-–]\s*(\d+))?\s*:\s*(.+)", re.IGNORECASE)
+_STATE_DIR = Path(STATE_DIR)
 
 # Top-level keys written into each specialist's status file.
 _SPECIALIST_FIELDS: dict[str, list[str]] = {
-    "rides":       ["step", "cash", "park_rating", "park_capacity", "avg_intensity", "placed_rides",
-                    "available_entities", "broken_rides", "next_unlock"],
+    "rides": [
+        "step",
+        "cash",
+        "park_rating",
+        "park_value",
+        "park_capacity",
+        "avg_intensity",
+        "num_rides",
+        "ride_revenue",
+        "ride_op_cost",
+        "available_entities",
+        "broken_rides",
+        "guests",
+        "next_unlock",
+        "placed_rides",
+    ],
     # +guests: order_quantity is sized off total_guests, and shop `uptime` counts
     # stock-outs only (an unaffordable item never reaches services_attempted), so
     # GuestStats is the manager's only read on real demand.
-    "shops":       ["step", "cash", "park_rating", "placed_shops", "available_entities",
-                    "guests", "next_unlock"],
-    # +daily_profit/horizon: the playbook's two live constraints — "never starve
-    # daily operating cash" needs the park's net P&L, not just the cash stock, and
-    # "unlock early enough to exploit it" needs the turns left to build with.
-    "research":    ["step", "horizon", "cash", "daily_profit", "park_rating", "park_value",
-                    "research_speed", "research_topics", "research_operating_cost",
-                    "available_entities", "next_unlock"],
-    "staff":       ["step", "cash", "park_rating", "out_of_service", "min_uptime", "min_cleanliness",
-                    "placed_staff", "available_entities", "next_unlock"],
-    "survey":      ["step", "cash", "park_rating", "guests", "guest_survey_results"],
-    "layout":      ["step", "park_rating", "reachable_tiles", "water_adjacent", "unreachable_tiles",
-                    "path_coords", "placed_rides", "placed_shops", "placed_staff", "entrance", "exit"],
-    # +available_entities: FinanceGate reads this slice to price a research run
-    # against the tier it will actually unlock next, so the unlock ledger has to
-    # be here — it replaced the LLM-supplied `target_tier`.
-    # +next_unlock: the coordinator picks the ONE action, so "don't spend the last
-    # reachable tile today, a higher tier lands tomorrow" is its call to make, not
-    # the proposing specialist's.
-    "coordinator": ["step", "horizon", "cash", "park_rating", "park_value", "daily_profit", "park_capacity",
-                    "avg_intensity", "research_speed", "current_phase", "available_entities",
-                    "placed_staff", "placed_shops", "placed_rides", "next_unlock"],
+    "shops": [
+        "step",
+        "cash",
+        "park_rating",
+        "park_value",
+        "num_shops",
+        "shop_revenue",
+        "shop_op_cost",
+        "out_of_service",
+        "available_entities",
+        "guests",
+        "next_unlock",
+        "placed_shops",
+    ],
+    # Keep construction investment and corrected daily profit together so a
+    # build day cannot masquerade as a recurring loss.
+    "research": [
+        "step",
+        "horizon",
+        "cash",
+        "daily_profit",
+        "asset_investment",
+        "park_rating",
+        "park_value",
+        "research_speed",
+        "research_topics",
+        "research_progress",
+        "research_operating_cost",
+        "available_entities",
+        "next_unlock",
+    ],
+    "staff": [
+        "step",
+        "cash",
+        "park_rating",
+        "park_value",
+        "num_staff",
+        "staff_op_cost",
+        "out_of_service",
+        "min_uptime",
+        "min_cleanliness",
+        "available_entities",
+        "guests",
+        "next_unlock",
+        "placed_staff",
+    ],
+    "survey": ["step", "cash", "park_rating", "guests", "guest_survey_results"],
+    "layout": [
+        "step",
+        "park_rating",
+        "num_rides",
+        "num_shops",
+        "num_staff",
+        "num_empty_reachable_tiles",
+        "num_empty_unreachable_tiles",
+        "num_water_adjacent_tiles",
+        "num_ride_placement_tiles",
+        "num_shop_placement_tiles",
+        "reachable_tiles",
+        "water_adjacent",
+        "unreachable_tiles",
+        "path_coords",
+        "placed_rides",
+        "placed_shops",
+        "placed_staff",
+        "entrance",
+        "exit",
+    ],
+    # This compact projection remains available to ablation configurations that
+    # intentionally test filtered context. The baseline reads status_full.
+    "coordinator": [
+        "step",
+        "horizon",
+        "cash",
+        "park_rating",
+        "park_value",
+        "daily_profit",
+        "park_capacity",
+        "avg_intensity",
+        "research_speed",
+        "available_entities",
+        "placed_staff",
+        "placed_shops",
+        "placed_rides",
+        "next_unlock",
+    ],
 }
 
 # available_entities lists every buildable subtype across ALL domains; each
@@ -106,12 +190,16 @@ _DOMAIN_SUBTYPES: dict[str, frozenset[str]] = {
     "staff": frozenset({"janitor", "mechanic", "specialist"}),
 }
 
+_RIDES_GUEST_FIELDS = (
+    "total_guests",
+    "avg_money_spent",
+    "avg_time_in_park",
+    "avg_rides_visited",
+)
+
 # Per-specialist entity field pruning: (specialist, list_key) → fields to keep.
 # None means keep all fields. Reduces token cost for consumers that don't need
 # full operational stats — e.g. FinanceGate only needs subtype+subclass.
-# Research points bought per day, per speed (shared/config.yaml research.speed_progress).
-_SPEED_POINTS: dict[str, int] = {"none": 0, "slow": 25, "medium": 50, "fast": 100}
-
 _IDENTITY = ["subtype", "subclass"]
 _POSITION = ["subtype", "subclass", "x", "y"]
 # Position + siting signals shared by layout's ride and shop lists. Layout evicts
@@ -126,34 +214,45 @@ _ENTITY_FIELDS: dict[tuple[str, str], list[str]] = {
     # (uptime/cleanliness/out_of_service) — those are staff/layout concerns.
     # avg_guests_per_operation pairs with capacity: a ride waits capacity*2 ticks
     # for its queue to fill, so the gap between the two is the oversized-ride tell.
-    ("rides",       "placed_rides"):  _POSITION + ["ticket_price", "capacity",
-                                                   "avg_guests_per_operation", "intensity",
-                                                   "excitement", "guests_entertained", "avg_wait_time",
-                                                   "reachable"],
+    ("rides", "placed_rides"): _POSITION
+    + [
+        "ticket_price",
+        "capacity",
+        "avg_guests_per_operation",
+        "intensity",
+        "excitement",
+        "guests_entertained",
+        "revenue_generated",
+        "avg_wait_time",
+        "reachable",
+    ],
     # Shops manager drops number_of_restocks (only ever nonzero once staff hires
     # a blue stocker — a staffing outcome the shops manager has no lever on).
-    ("shops",       "placed_shops"):  _POSITION + ["item_price", "item_cost", "uptime", "order_quantity",
-                                                   "inventory", "cleanliness",
-                                                   "guests_served", "out_of_service",
-                                                   "reachable"],
+    ("shops", "placed_shops"): _POSITION
+    + [
+        "item_price",
+        "item_cost",
+        "uptime",
+        "order_quantity",
+        "inventory",
+        "cleanliness",
+        "guests_served",
+        "out_of_service",
+        "reachable",
+    ],
     # A broken ride needs identity + how bad it is; passing the full ride record
     # would smuggle raw revenue_generated/operating_cost in.
-    ("rides",       "broken_rides"):  _POSITION + ["uptime"],
-    # +operating_cost so FinanceGate can charge the park's REAL daily burn against
-    # a proposal (the sim's own realized figure: cost_per_operation x times_operated
-    # for a ride, order_quantity x item_cost for a shop) instead of counting only
-    # staff salaries + research. Identity alone left the "1-day buffer" rule blind
-    # to the two largest recurring costs in the park.
-    ("coordinator", "placed_rides"):  _IDENTITY + ["operating_cost"],
-    ("coordinator", "placed_shops"):  _IDENTITY + ["operating_cost"],
-    ("coordinator", "placed_staff"):  _IDENTITY,
-    ("layout",      "placed_rides"):  _PERF + ["capacity", "excitement", "guests_entertained",
-                                               "uptime", "avg_wait_time"],
+    ("rides", "broken_rides"): _POSITION + ["uptime"],
+    ("coordinator", "placed_rides"): _IDENTITY + ["operating_cost"],
+    ("coordinator", "placed_shops"): _IDENTITY + ["operating_cost"],
+    ("coordinator", "placed_staff"): _IDENTITY,
+    ("layout", "placed_rides"): _PERF
+    + ["capacity", "excitement", "guests_entertained", "revenue_generated", "uptime", "avg_wait_time"],
     # guests_served is the shop's equivalent of guests_entertained — the shop
     # record has no guests_entertained, so that tie-break never fired.
-    ("layout",      "placed_shops"):  _PERF + ["guests_served"],
+    ("layout", "placed_shops"): _PERF + ["guests_served"],
     # +success_metric_value so layout can tie-break which duplicate staff to remove.
-    ("layout",      "placed_staff"):  _POSITION + ["success_metric_value"],
+    ("layout", "placed_staff"): _POSITION + ["success_metric_value"],
     # staff keeps ALL fields on placed_staff (salary, operating_cost, success_metric*,
     # tiles_traversed) so the manager can judge which hire to dismiss.
 }
@@ -162,123 +261,150 @@ _ENTITY_FIELDS: dict[tuple[str, str], list[str]] = {
 class ParkStatus(CodedTool):
     """Return a structured park snapshot from the latest observation envelope."""
 
-    async def async_invoke(
-        self, args: dict[str, Any], sly_data: dict[str, Any]
-    ) -> dict[str, Any] | str:
+    async def async_invoke(self, args: dict[str, Any], sly_data: dict[str, Any]) -> dict[str, Any] | str:
+        """Build and persist the latest structured park snapshot."""
         park = str(args.get("park") or "0")
 
-        window = await LatestObservation().async_invoke(
-            {"mode": "read", "park": park}, sly_data
-        )
+        window = await LatestObservation().async_invoke({"mode": "read", "park": park}, sly_data)
         if not isinstance(window, dict):
             return {"error": f"LatestObservation returned unexpected type: {type(window).__name__}"}
         if window.get("window_size", 0) == 0:
             return {
                 "error": "No observation stored yet — first step of the episode. "
-                         "Proceed with placing a ride or other productive action."
+                "Proceed with placing a ride or other productive action."
             }
 
         envelope = window.get("latest") or {}
         obs = envelope.get("observation") or {}
+        finances = financial_metrics(envelope, obs)
+        path_coords = self._to_xy_list(obs.get("path_coords") or [])
+        reachable_tiles = self._to_xy_list(obs.get("valid_placement_coords") or [])
+        empty_reachable = {(tile["x"], tile["y"]) for tile in reachable_tiles}
+        # Count and expose only water-adjacent tiles that are still present in
+        # the simulator's current empty-placement set. The MCP already applies
+        # this filter; repeating it here prevents stale/foreign observations
+        # from inflating layout availability.
+        water_adjacent = [
+            tile
+            for tile in (obs.get("water_adjacent") or [])
+            if isinstance(tile, dict) and (tile.get("x"), tile.get("y")) in empty_reachable
+        ]
+        unreachable_tiles = self._to_xy_list(obs.get("unreachable_tiles") or [])
 
         snapshot = {
-            "episode":            envelope.get("episode"),
-            "cash":               obs.get("money"),
-            "step":               obs.get("step") or envelope.get("step"),
+            "episode": envelope.get("episode"),
+            "cash": obs.get("money"),
+            "step": obs.get("step") or envelope.get("step"),
             # Runway. Every "does this repay before the run ends?" rule (research
             # spend, ride payback) needs horizon - step; without it `step` alone
             # says nothing about how much episode is left.
-            "horizon":            obs.get("horizon"),
-            "park_rating":        obs.get("park_rating"),
-            "park_value":         obs.get("value"),
-            "daily_profit":       obs.get("profit"),
-            "park_capacity":      (obs.get("rides") or {}).get("total_capacity"),
-            "avg_intensity":      (obs.get("rides") or {}).get("avg_intensity"),
-            "cumulative_reward":  envelope.get("cumulative_reward"),
-            "done":               envelope.get("done", False),
-            "entrance":           obs.get("entrance"),
-            "exit":               obs.get("exit"),
-            "path_coords":        self._to_xy_list(obs.get("path_coords") or []),
-            "reachable_tiles":         self._to_xy_list(obs.get("valid_placement_coords") or []),
+            "horizon": obs.get("horizon"),
+            "park_rating": obs.get("park_rating"),
+            "park_value": obs.get("value"),
+            **finances,
+            "park_capacity": (obs.get("rides") or {}).get("total_capacity"),
+            "avg_intensity": (obs.get("rides") or {}).get("avg_intensity"),
+            "num_rides": (obs.get("rides") or {}).get("total_rides"),
+            "ride_revenue": (obs.get("rides") or {}).get("total_revenue_generated"),
+            "ride_op_cost": (obs.get("rides") or {}).get("total_operating_cost"),
+            "num_shops": (obs.get("shops") or {}).get("total_shops"),
+            "shop_revenue": (obs.get("shops") or {}).get("total_revenue_generated"),
+            "shop_op_cost": (obs.get("shops") or {}).get("total_operating_cost"),
+            "num_staff": len((obs.get("staff") or {}).get("staff_list") or []),
+            "staff_op_cost": (obs.get("staff") or {}).get("total_operating_cost"),
+            "cumulative_reward": envelope.get("cumulative_reward"),
+            "done": envelope.get("done", False),
+            "entrance": obs.get("entrance"),
+            "exit": obs.get("exit"),
+            "path_coords": path_coords,
+            "reachable_tiles": reachable_tiles,
             # Passed through, NOT _to_xy_list — that would strip the `water`
             # bonus count and the highest-first ordering the server sorted by.
-            "water_adjacent":     obs.get("water_adjacent") or [],
-            "unreachable_tiles":  self._to_xy_list(obs.get("unreachable_tiles") or []),
-            "broken_rides":       self._broken_rides(obs),
-            "out_of_service":     bool(self._broken_rides(obs)),
-            "min_uptime":         self._min_uptime(obs),
-            "min_cleanliness":    obs.get("min_cleanliness"),
-            "placed_rides":       self._section_list(obs, "rides", "ride_list"),
-            "placed_shops":       self._section_list(obs, "shops", "shop_list"),
-            "placed_staff":       self._section_list(obs, "staff", "staff_list"),
+            "water_adjacent": water_adjacent,
+            "unreachable_tiles": unreachable_tiles,
+            "num_empty_reachable_tiles": len(reachable_tiles),
+            "num_empty_unreachable_tiles": len(unreachable_tiles),
+            "num_water_adjacent_tiles": len(water_adjacent),
+            # Rides may use reachable or stranded buildable tiles. Shops are
+            # restricted to reachable tiles because a stranded shop earns $0.
+            "num_ride_placement_tiles": len(reachable_tiles) + len(unreachable_tiles),
+            "num_shop_placement_tiles": len(reachable_tiles),
+            "broken_rides": self._broken_rides(obs),
+            "out_of_service": bool(self._broken_rides(obs)),
+            "shops_out_of_service": any(
+                bool(shop.get("out_of_service"))
+                for shop in self._section_list(obs, "shops", "shop_list")
+                if isinstance(shop, dict)
+            ),
+            "min_uptime": self._min_uptime(obs),
+            "min_cleanliness": obs.get("min_cleanliness"),
+            "placed_rides": self._section_list(obs, "rides", "ride_list"),
+            "placed_shops": self._section_list(obs, "shops", "shop_list"),
+            "placed_staff": self._section_list(obs, "staff", "staff_list"),
             "available_entities": obs.get("available_entities") or {},
-            "research_speed":     obs.get("research_speed"),
-            "research_topics":    obs.get("research_topics") or [],
+            "research_speed": obs.get("research_speed"),
+            "research_topics": obs.get("research_topics") or [],
+            "research_progress": normalize_research_progress(obs.get("research_progress"), obs.get("research_speed")),
             "research_operating_cost": obs.get("research_operating_cost"),
-            "next_unlock":        self._next_unlock(obs),
-            "guests":             obs.get("guests") or {},
+            "next_unlock": self._next_unlock(obs),
+            "guests": obs.get("guests") or {},
             "guest_survey_results": obs.get("guest_survey_results") or {},
-            "current_phase":      self._current_phase(obs.get("step") or envelope.get("step")),
         }
 
         self._write_specialist_snapshots(snapshot)
         return snapshot
 
-    def _current_phase(self, step: Any) -> str | None:
-        """The single checklist line whose 'turns A-B' range covers `step`.
-
-        The macro owns the full plan (episode_checklist.md); we surface only the
-        relevant line so park_director forwards one phase per turn instead of the
-        whole checklist. Step below the first range -> first line; above the last
-        -> last line. Returns None if there is no (parseable) checklist.
-        """
-        try:
-            s = int(step)
-        except (TypeError, ValueError):
-            return None
-        if not _EPISODE_CHECKLIST.exists():
-            return None
-        try:
-            lines = _EPISODE_CHECKLIST.read_text(encoding="utf-8").splitlines()
-        except OSError:
-            return None
-        phases: list[tuple[int, int, str]] = []
-        for ln in lines:
-            m = _PHASE_RE.search(ln)
-            if not m:
-                continue
-            lo = int(m.group(1))
-            hi = int(m.group(2)) if m.group(2) else lo
-            phases.append((lo, hi, ln.strip()))
-        if not phases:
-            return None
-        for lo, hi, full in phases:
-            if lo <= s <= hi:
-                return full
-        phases.sort(key=lambda p: p[0])
-        return phases[0][2] if s < phases[0][0] else phases[-1][2]
+    @staticmethod
+    def _write_coordinator_projection() -> bool:
+        """Keep the filtered projection only for non-baseline ablation arms."""
+        arm_name = os.environ.get("MAPS_ARM_NAME", "").strip()
+        return not MERGED_CONTEXT and arm_name not in {"", "baseline"}
 
     def _write_specialist_snapshots(self, snapshot: dict[str, Any]) -> None:
         _STATE_DIR.mkdir(parents=True, exist_ok=True)
+        # All player agents can inspect one complete park snapshot without
+        # sharing conversation history or mutable agent memory.
+        (_STATE_DIR / "status_full.json").write_text(json.dumps(snapshot, indent=2), encoding="utf-8")
+        # The two-agent baseline has no domain specialists. Give its player and
+        # planner one complete snapshot instead of seven overlapping projections.
+        if MERGED_CONTEXT:
+            (_STATE_DIR / "status_solo.json").write_text(json.dumps(snapshot, indent=2), encoding="utf-8")
+            return
+        specialist: Any
+        fields: Any
         for specialist, fields in _SPECIALIST_FIELDS.items():
+            if specialist == "coordinator" and not self._write_coordinator_projection():
+                continue
             data: dict[str, Any] = {}
+            k: Any
             for k in fields:
+                # The full snapshot's out_of_service flag remains ride-specific
+                # for staffing. The shops projection receives its own aggregate
+                # under the shorter domain-local name.
+                if specialist == "shops" and k == "out_of_service":
+                    data[k] = snapshot.get("shops_out_of_service", False)
+                    continue
+                if specialist == "rides" and k == "guests":
+                    guests = snapshot.get("guests") or {}
+                    data[k] = {field: guests[field] for field in _RIDES_GUEST_FIELDS if field in guests}
+                    continue
+                if specialist == "shops" and k == "guests":
+                    guests = snapshot.get("guests") or {}
+                    data[k] = {field: value for field, value in guests.items() if field != "avg_rides_visited"}
+                    continue
                 if k not in snapshot:
                     continue
                 if k == "available_entities":
                     allowed = _DOMAIN_SUBTYPES.get(specialist)
                     data[k] = (
                         {s: v for s, v in snapshot[k].items() if s in allowed}
-                        if allowed and isinstance(snapshot[k], dict) else snapshot[k]
+                        if allowed and isinstance(snapshot[k], dict)
+                        else snapshot[k]
                     )
                     continue
                 keep = _ENTITY_FIELDS.get((specialist, k))
                 if keep is not None and isinstance(snapshot[k], list):
-                    data[k] = [
-                        {f: e[f] for f in keep if f in e}
-                        for e in snapshot[k]
-                        if isinstance(e, dict)
-                    ]
+                    data[k] = [{f: e[f] for f in keep if f in e} for e in snapshot[k] if isinstance(e, dict)]
                 else:
                     data[k] = snapshot[k]
             path = _STATE_DIR / f"status_{specialist}.json"
@@ -286,6 +412,7 @@ class ParkStatus(CodedTool):
 
     def _to_xy_list(self, coords: list) -> list[dict[str, int]]:
         result: list[dict[str, int]] = []
+        c: Any
         for c in coords:
             if isinstance(c, (list, tuple)) and len(c) >= 2:
                 result.append({"x": int(c[0]), "y": int(c[1])})
@@ -304,22 +431,20 @@ class ParkStatus(CodedTool):
         """Exact {subtype, tier, days} until the next subclass unlocks, so
         rides/shops/staff can reserve cash and a free tile BEFORE it lands.
 
-        Reads `research_progress` — the sim's own live counters, forwarded by
-        maps_mcp_server. `points_remaining` is what is actually left on the tier
-        the sim is grinding right now, so this is arithmetic, not the estimate
-        the old version reconstructed from the days-since-unlock counters.
+        Reads `research_progress` — the sim's live ETA, forwarded by
+        maps_mcp_server. Legacy cached point counts are converted using the
+        active research speed.
 
         None when research is off or every listed topic is fully unlocked (the
-        sim leaves current_entity undefined in both cases).
+        sim leaves its research target undefined in both cases).
         """
-        progress = obs.get("research_progress")
-        if not isinstance(progress, dict):
+        progress = normalize_research_progress(obs.get("research_progress"), obs.get("research_speed"))
+        if progress is None:
             return None
-        per_day = _SPEED_POINTS.get(obs.get("research_speed") or "none", 0)
-        remaining = progress.get("points_remaining")
-        if not per_day or not isinstance(remaining, (int, float)):
+        turns = progress.get("turns_remaining")
+        if not isinstance(turns, (int, float)):
             return None
-        entity, tier = progress.get("current_entity"), progress.get("current_color")
+        entity, tier = progress.get("target_subtype"), progress.get("target_tier")
 
         # The queue behind the head. Research runs round-robin, so every topic
         # still missing THIS tier reaches it before any moves on to the next --
@@ -333,18 +458,15 @@ class ParkStatus(CodedTool):
             queue = queue[cut:] + queue[:cut]
 
         return {
-            "subtype":  entity,
-            "tier":     tier,
-            "days":     math.ceil(remaining / per_day),
+            "subtype": entity,
+            "tier": tier,
+            "days": int(turns),
             "subtypes": queue or [entity],
         }
 
     def _min_uptime(self, obs: dict[str, Any]) -> float | None:
         """Park-wide worst uptime across rides and shops (the sim reports these
         per-section). None if neither section is present."""
-        vals = [
-            (obs.get(sec) or {}).get("min_uptime")
-            for sec in ("rides", "shops")
-        ]
+        vals = [(obs.get(sec) or {}).get("min_uptime") for sec in ("rides", "shops")]
         vals = [v for v in vals if v is not None]
         return min(vals) if vals else None

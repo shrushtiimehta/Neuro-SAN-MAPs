@@ -40,41 +40,39 @@ from typing import ClassVar
 from neuro_san.interfaces.coded_tool import CodedTool
 
 from coded_tools.file_io import FileIO
+from coded_tools.state_dir import MERGED_CONTEXT as _MERGED
+from coded_tools.state_dir import SEED_DIR as _SEED_DIR
+from coded_tools.state_dir import STATE_DIR as _STATE_DIR
+from coded_tools.state_dir import USE_LAST_REWARD as _USE_LAST_REWARD
 
 
 class SeedPlaybooks(CodedTool):
     """Copy config strategy seeds into the working playbook files."""
 
-    SEED_DIR: ClassVar[str] = "coded_tools/config_files"
-    STATE_DIR: ClassVar[str] = "coded_tools/state"
+    SEED_DIR: ClassVar[str] = _SEED_DIR
+    STATE_DIR: ClassVar[str] = _STATE_DIR
 
     # playbook name -> config seed filename. Mirrors the seed_playbook_* ->
     # playbook_* map in the agent HOCONs' state_read/state_write config.
     PLAYBOOKS: ClassVar[dict[str, str]] = {
         "playbook_coordinator": "seed_playbook_coordinator.md",
-        "playbook_rides":       "seed_playbook_rides.md",
-        "playbook_shops":       "seed_playbook_shops.md",
-        "playbook_staff":       "seed_playbook_staff.md",
-        "playbook_survey":      "seed_playbook_survey.md",
-        "playbook_research":    "seed_playbook_research.md",
-        "playbook_layout":      "seed_playbook_layout.md",
+        "playbook_rides": "seed_playbook_rides.md",
+        "playbook_shops": "seed_playbook_shops.md",
+        "playbook_staff": "seed_playbook_staff.md",
+        "playbook_survey": "seed_playbook_survey.md",
+        "playbook_research": "seed_playbook_research.md",
+        "playbook_layout": "seed_playbook_layout.md",
     }
 
-    # State files the consultant networks read via state_read every episode.
-    # Unlike the playbooks these are NOT seeded from config — they accumulate
-    # across runs — but state_read errors on a missing file, so a brand-new
-    # run/state dir leaves the analyzers reading a file that does not exist yet
-    # (the macro close-out then errors with "trial_strategies_outcome.md
-    # missing"). Ensure each one EXISTS (empty), creating it only when absent so
-    # accumulated content is never clobbered.
-    #
-    # Two of these DEADLOCK if missing, because the consultant reads the file in
-    # the same step whose tool is the file's only writer — so the read errors,
-    # the "STOP on any tool error" rule aborts the pass, the write never happens,
-    # and the next episode fails identically. Both were observed dead in a live
-    # run (macro close-out since Aug 8, episode plan since Aug 10):
-    #   last_reward.md       read by episode_end step 1; written by advance_episode step 5
-    #   episode_checklist.md read by episode_start step 5; written by WriteEpisodePlan, same step
+    # The solo arm's single merged playbook: seed_playbook_all.md -> playbook_all.md.
+    # It sits in the same seed dir as the seven; the arm is told which layout it
+    # is by MAPS_MERGED_CONTEXT, never by what happens to be on disk.
+    MERGED_SEED: ClassVar[str] = "seed_playbook_all.md"
+    MERGED: ClassVar[bool] = _MERGED
+    USE_LAST_REWARD: ClassVar[bool] = _USE_LAST_REWARD
+
+    # State files the existing planner/watcher trial flow reads every episode.
+    # Create-if-absent only so accumulated content is never clobbered.
     ENSURED_STATE_FILES: ClassVar[tuple[str, ...]] = (
         "trial_strategies.md",
         "trial_strategies_criteria.md",
@@ -101,7 +99,13 @@ class SeedPlaybooks(CodedTool):
         skipped: list[str] = []
         errors: list[str] = []
 
-        for name, seed_file in self.PLAYBOOKS.items():
+        # The solo arm lays down the checked-in merged playbook instead of the
+        # seven. No runner generates or rewrites that frozen source.
+        playbooks = {"playbook_all": self.MERGED_SEED} if self.MERGED else self.PLAYBOOKS
+
+        name: Any
+        seed_file: Any
+        for name, seed_file in playbooks.items():
             target = os.path.join(self.STATE_DIR, f"{name}.md")
             if not overwrite and os.path.exists(target) and os.path.getsize(target) > 0:
                 skipped.append(name)
@@ -122,21 +126,33 @@ class SeedPlaybooks(CodedTool):
         # accumulated cross-run content) is left as-is regardless of
         # ``overwrite`` — those lessons must survive a fresh run.
         ledgers_created: list[str] = []
-        for fname in self.ENSURED_STATE_FILES:
+        fname: Any
+        ensured_state_files = tuple(
+            fname for fname in self.ENSURED_STATE_FILES if self.USE_LAST_REWARD or fname != "last_reward.md"
+        )
+        for fname in ensured_state_files:
             target = os.path.join(self.STATE_DIR, fname)
             if os.path.exists(target):
                 continue
             # last_reward is read as "cumulative_reward: <N>"; seed it at 0 so the
             # first close-out computes a real delta instead of parsing an empty file.
-            body = "cumulative_reward: 0\n" if fname == "last_reward.md" else ""
+            if fname == "last_reward.md":
+                body = "cumulative_reward: 0\n"
+            else:
+                body = ""
             write_err = FileIO.write_guarded(target, body, self.logger)
             if write_err is not None:
                 errors.append(f"{fname}: {write_err}")
                 continue
             ledgers_created.append(fname)
 
-        return {"status": "ok", "seeded": seeded, "skipped": skipped,
-                "errors": errors, "trial_ledgers_created": ledgers_created}
+        return {
+            "status": "ok",
+            "seeded": seeded,
+            "skipped": skipped,
+            "errors": errors,
+            "trial_ledgers_created": ledgers_created,
+        }
 
     async def async_invoke(self, args: dict[str, Any], sly_data: dict[str, Any]) -> dict[str, Any]:
         """Delegate to the synchronous invoke."""

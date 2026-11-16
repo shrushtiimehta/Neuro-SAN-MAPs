@@ -1,0 +1,4 @@
+{
+    "player_solo.hocon": true,
+    "planner_solo.hocon": true
+}

@@ -29,6 +29,7 @@ import sys
 import time
 from collections import Counter
 from pathlib import Path
+from typing import Any
 
 REPO = Path(__file__).resolve().parents[1]
 THINKING = REPO / "logs/thinking_dir"
@@ -50,8 +51,10 @@ def _age_hours(path: Path) -> float | None:
 
 
 def check_liveness() -> list[str]:
-    print("== LIVENESS " + "=" * 56)
+    print("== LIVENESS ========================================================")
     problems = []
+    name: Any
+    what: Any
     for name, what in LIVENESS.items():
         age = _age_hours(THINKING / name)
         if age is None:
@@ -66,33 +69,37 @@ def check_liveness() -> list[str]:
 
 
 def check_inputs() -> list[str]:
-    print("\n== INPUTS " + "=" * 58)
+    print("\n== INPUTS ==========================================================")
     try:
         from pyhocon import ConfigFactory
     except ImportError:
         print("  (pyhocon not installed; skipped)")
         return []
     missing, total = set(), 0
+    net: Any
     for net in ("player", "watcher", "planner"):
-        cfg = ConfigFactory.parse_string((REPO / f"registries/{net}.hocon").read_text(),
-                                         basedir=str(REPO))
+        cfg = ConfigFactory.parse_string((REPO / f"registries/{net}.hocon").read_text(), basedir=str(REPO))
+        tool: Any
         for tool in cfg["tools"]:
             args = tool.get("args", {})
             name_map = dict(args).get("name_map") if hasattr(args, "get") else None
-            for key, rel in (dict(name_map).items() if name_map else []):
+            key: Any
+            rel: Any
+            for key, rel in dict(name_map).items() if name_map else []:
                 total += 1
                 if not (REPO / str(rel)).exists():
                     missing.add(f"{net}: {key} -> {rel}")
     print(f"  {total} state_read targets checked")
+    m: Any
     for m in sorted(missing):
         print(f"  MISSING  {m}")
     return [f"missing state file: {m}" for m in sorted(missing)]
 
 
 def check_ledger() -> list[str]:
-    print("\n== LEDGER " + "=" * 58)
+    print("\n== LEDGER ==========================================================")
     problems = []
-    strategies = REPO / "coded_tools/state/trial_strategies.md"
+    strategies = REPO / "state/trial_strategies.md"
     if not strategies.exists():
         print("  no trial ledger yet")
         return problems
@@ -104,22 +111,24 @@ def check_ledger() -> list[str]:
     sys.path.insert(0, str(REPO))
     try:
         from coded_tools.active_trials import ActiveTrials
+
         res = ActiveTrials().invoke({}, {})
         print(f"  {res['count']} active, {len(res.get('withheld_stale', []))} withheld as stale")
         if res.get("withheld_stale"):
             print(f"  stranded from old episodes: {sorted(res['withheld_stale'])}")
             problems.append("stranded trials — a close-out is not resolving them")
-    except Exception as exc:                       # noqa: BLE001 - triage must not crash
+    except Exception as exc:  # noqa: BLE001 - triage must not crash
         print(f"  (could not read active trials: {exc})")
     return problems
 
 
 def report_errors(top: int = 12) -> None:
-    print("\n== ERRORS " + "=" * 58)
+    print("\n== ERRORS ==========================================================")
     if not THINKING.exists():
         print("  no thinking dir")
         return
     counts: Counter = Counter()
+    f: Any
     for f in THINKING.iterdir():
         if not f.is_file():
             continue
@@ -127,12 +136,15 @@ def report_errors(top: int = 12) -> None:
             text = f.read_text(errors="ignore")
         except OSError:
             continue
+        m: Any
         for m in re.findall(r"ERROR: [^\"'\\\n]{0,120}", text):
             m = re.sub(r"\d+", "N", m).strip()
             # The prompt's own error-handling boilerplate is not a failure.
             if "verbatim error text" in m:
                 continue
             counts[m] += 1
+    msg: Any
+    n: Any
     for msg, n in counts.most_common(top):
         print(f"  {n:>6}  {msg}")
     if not counts:
@@ -142,23 +154,26 @@ def report_errors(top: int = 12) -> None:
 
 
 def report_retries() -> None:
-    print("\n== RETRIES / COST " + "=" * 50)
+    print("\n== RETRIES / COST ==================================================")
     turns = LOGS / "turns.jsonl"
     if turns.exists():
-        rows = [json.loads(l) for l in turns.read_text().splitlines() if l.strip()]
+        rows = [json.loads(line) for line in turns.read_text().splitlines() if line.strip()]
         # turns.jsonl spans every runner process ever; keep the current one.
         resets = [i for i in range(1, len(rows)) if rows[i]["turn"] <= rows[i - 1]["turn"]]
-        rows = rows[max(resets or [0]):]
+        rows = rows[max(resets or [0]) :]
         att = Counter(r.get("attempts") for r in rows)
         wasted = sum((a - 1) * n for a, n in att.items() if a)
         print(f"  attempts per turn: {dict(sorted(att.items()))}")
         print(f"  wasted round trips: {wasted} of {len(rows)} turns")
     cost = LOGS / "episode_cost.jsonl"
     if cost.exists():
+        line: Any
         for line in cost.read_text().splitlines()[-3:]:
             e = json.loads(line)
-            print(f"  ep{e['episode']}: ${e['cost_usd']:.2f}  reward {e['final_reward']}  "
-                  f"${e['cost_per_reward'] or 0:.6f}/reward")
+            print(
+                f"  ep{e['episode']}: ${e['cost_usd']:.2f}  reward {e['final_reward']}  "
+                f"${e['cost_per_reward'] or 0:.6f}/reward"
+            )
 
 
 def main() -> int:
@@ -166,9 +181,10 @@ def main() -> int:
     problems = check_liveness() + check_inputs() + check_ledger()
     report_errors()
     report_retries()
-    print("\n" + "=" * 68)
+    print("\n====================================================================")
     if problems:
         print(f"{len(problems)} PROBLEM(S):")
+        p: Any
         for p in problems:
             print(f"  - {p}")
         return 1

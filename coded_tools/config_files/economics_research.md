@@ -1,12 +1,8 @@
-| speed | speed_progress | speed_cost |
-|---|---|---|
-| none | 0 | 0 |
-| slow | 25 | 2000 |
-| medium | 50 | 8000 |
-| fast | 100 | 32000 |
+## Research timing and cost
 
-| tier | points_required | days_slow | days_medium | days_fast |
-|---|---|---|---|---|
-| blue | 100 | 4 | 2 | 1 |
-| green | 200 | 8 | 4 | 2 |
-| red | 400 | 16 | 8 | 4 |
+| speed | days_to_blue_unlock | days_to_green_after_blue_unlock | days_to_red_after_green_unlock | cost_per_day |
+|---|---:|---:|---:|---:|
+| none | N/A | N/A | N/A | 0 |
+| slow | 4 | 8 | 16 | 2000 |
+| medium | 2 | 4 | 8 | 8000 |
+| fast | 1 | 2 | 4 | 32000 |

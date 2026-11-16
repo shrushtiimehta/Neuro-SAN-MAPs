@@ -27,7 +27,14 @@ share/python-wheels/
 MANIFEST
 logs/
 # maps_park runtime state — reseeded from config_files/ each run; archived externally
-coded_tools/state/
+state/
+state_solo/
+state_watcher_only/
+state_planner_only/
+state_self_critic/
+state_freeform/
+state_freeform_self_critic/
+ablation_seeds/
 # .python-version appears when we try to use uv
 .python-version
 
@@ -136,6 +143,7 @@ celerybeat.pid
 
 # Environments
 .env
+.ablation-instance.env
 .venv
 env/
 venv/
@@ -199,6 +207,8 @@ TopicMemory.json
 
 # local database
 *.db
+*.sqlite3
+*.sqlite3-*
 
 # Generated agent networks by the designer
 registries/generated/

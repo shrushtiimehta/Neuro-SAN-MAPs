@@ -20,7 +20,7 @@ from coded_tools.finance_gate import FinanceGate
 _STAFF_ECON = fgmod._read_lookup_lines(fgmod._STAFF_ECONOMICS_PATH, "staff")
 _RESEARCH_ECON = fgmod._read_research_lines(fgmod._RESEARCH_ECONOMICS_PATH)
 
-_STAFF = [{"subtype": "janitor", "subclass": "yellow"}]                              # salary 25
+_STAFF = [{"subtype": "janitor", "subclass": "yellow"}]  # salary 25
 _RIDES = [{"subtype": "roller_coaster", "subclass": "blue", "operating_cost": 9000}]
 _SHOPS = [{"subtype": "drink", "subclass": "yellow", "operating_cost": 1200}]
 
@@ -31,9 +31,7 @@ def test_operating_cost_includes_ride_and_shop_burn():
     contractual = cost(_STAFF, "medium", _STAFF_ECON, _RESEARCH_ECON)
     assert contractual == 25 + 8000  # salary + medium research
 
-    assert cost(_STAFF, "medium", _STAFF_ECON, _RESEARCH_ECON, _RIDES, _SHOPS) == (
-        25 + 8000 + 9000 + 1200
-    )
+    assert cost(_STAFF, "medium", _STAFF_ECON, _RESEARCH_ECON, _RIDES, _SHOPS) == (25 + 8000 + 9000 + 1200)
     # Omitting the entities (direct callers / no observation yet) is unchanged.
     assert cost(_STAFF, "medium", _STAFF_ECON, _RESEARCH_ECON, None, None) == contractual
     # Non-dict rows in the observation must not blow up the sum.
@@ -41,15 +39,21 @@ def test_operating_cost_includes_ride_and_shop_burn():
 
 
 def _gate(proposals, **status):
-    """Run the gate against a temporary status_coordinator slice."""
-    path = fgmod._STATUS_COORDINATOR_PATH
+    """Run the gate against a temporary complete status snapshot."""
+    path = fgmod._STATUS_PATH
     os.makedirs(os.path.dirname(path), exist_ok=True)
     backup = path + ".test_bak"
     if os.path.exists(path):
         shutil.copy(path, backup)
     try:
-        slice_ = {"cash": 0, "step": 0, "research_speed": "none",
-                  "placed_staff": [], "placed_rides": [], "placed_shops": []}
+        slice_ = {
+            "cash": 0,
+            "step": 0,
+            "research_speed": "none",
+            "placed_staff": [],
+            "placed_rides": [],
+            "placed_shops": [],
+        }
         slice_.update(status)
         with open(path, "w", encoding="utf-8") as fh:
             json.dump(slice_, fh)
@@ -63,10 +67,14 @@ def _gate(proposals, **status):
 
 def test_gate_rejects_a_spend_the_old_rule_waved_through():
     """cash 9000, blue carousel costs 1500 -> 7500 left, under the 10225 real burn."""
-    out = _gate([{"action": "place", "type": "ride",
-                  "subtype": "carousel", "subclass": "blue"}],
-                cash=9000, step=50, placed_staff=_STAFF,
-                placed_rides=_RIDES, placed_shops=_SHOPS)
+    out = _gate(
+        [{"action": "place", "type": "ride", "subtype": "carousel", "subclass": "blue"}],
+        cash=9000,
+        step=50,
+        placed_staff=_STAFF,
+        placed_rides=_RIDES,
+        placed_shops=_SHOPS,
+    )
 
     assert out["daily_operating_cost"] == 25 + 9000 + 1200
     assert out["results"][0]["approved"] is False
@@ -77,8 +85,7 @@ def test_gate_rejects_a_spend_the_old_rule_waved_through():
 def test_break_even_days_come_from_the_economics_table():
     assert not hasattr(FinanceGate, "BREAK_EVEN_DAYS"), "ClassVar is back; it will drift"
 
-    rc_blue = [{"action": "place", "type": "ride",
-                "subtype": "roller_coaster", "subclass": "blue"}]
+    rc_blue = [{"action": "place", "type": "ride", "subtype": "roller_coaster", "subclass": "blue"}]
     # economics_rides.md gives roller_coaster/blue break_even_days = 17.
     assert _gate(rc_blue, cash=100000, step=80)["results"][0]["approved"] is True
     row = _gate(rc_blue, cash=100000, step=90)["results"][0]
@@ -109,19 +116,15 @@ def test_research_is_priced_against_the_next_tier_not_a_guess():
     assert nxt({}, ["carousel"]) == "blue"
 
     # End to end: same proposal, different ledger -> different runway requirement.
-    prop = [{"action": "set_research", "research_speed": "slow",
-             "research_topics": ["carousel"]}]
+    prop = [{"action": "set_research", "research_speed": "slow", "research_topics": ["carousel"]}]
     rides = [{"subtype": "carousel", "subclass": "yellow"}]
     common = dict(cash=8000, step=80, placed_rides=rides)
     # blue = 100 pts / 25 per slow day = 4 days; 4 + 10 payback = 14 <= 20 remaining.
-    assert _gate(prop, available_entities={"carousel": ["yellow"]}, **common
-                 )["results"][0]["approved"] is True
+    assert _gate(prop, available_entities={"carousel": ["yellow"]}, **common)["results"][0]["approved"] is True
     # green = 200 pts = 8 days; 8 + 10 = 18 <= 20, still fits.
-    assert _gate(prop, available_entities={"carousel": ["yellow", "blue"]}, **common
-                 )["results"][0]["approved"] is True
+    assert _gate(prop, available_entities={"carousel": ["yellow", "blue"]}, **common)["results"][0]["approved"] is True
     # red = 400 pts = 16 days; 16 + 10 = 26 > 20 remaining -> rejected.
-    row = _gate(prop, available_entities={"carousel": ["yellow", "blue", "green"]},
-                **common)["results"][0]
+    row = _gate(prop, available_entities={"carousel": ["yellow", "blue", "green"]}, **common)["results"][0]
     assert row["approved"] is False and "26" in row["reason"], row["reason"]
 
 

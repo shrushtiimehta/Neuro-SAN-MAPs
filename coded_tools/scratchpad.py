@@ -40,7 +40,9 @@ from typing import ClassVar
 
 from neuro_san.interfaces.coded_tool import CodedTool
 
-_DIR = Path("coded_tools/state")
+from coded_tools.state_dir import STATE_DIR
+
+_DIR = Path(STATE_DIR)
 
 
 def _path(pad: Any) -> Path:
